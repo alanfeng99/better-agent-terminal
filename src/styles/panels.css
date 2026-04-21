@@ -465,6 +465,20 @@
 .worker-process-name {
   font-weight: 500;
   font-size: 11px;
+  user-select: none;
+}
+
+.worker-process-name:hover {
+  text-decoration: underline;
+}
+
+.worker-card-dimmed {
+  opacity: 0.35;
+}
+
+.worker-card-spotlight {
+  border-color: var(--accent-color, #61afef);
+  box-shadow: 0 0 0 1px var(--accent-color, #61afef);
 }
 
 .worker-process-actions {

@@ -20,6 +20,7 @@ export interface Workspace {
   group?: string;                // Workspace 分組
   color?: string;                // Workspace 顏色標籤
   lastSdkSessionId?: string;     // 上次使用的 SDK session ID，下次自動 resume
+  focusedTerminalId?: string;    // 上次 focus 的 terminal ID，切換 workspace 時還原
 }
 
 // Claude Agent effort levels — single source of truth.
@@ -229,8 +230,7 @@ export interface AppSettings {
   agentCustomCommand: string;     // 自定義 Agent 命令
   defaultTerminalCount: number;   // 每個 workspace 預設的 terminal 數量
   createDefaultAgentTerminal: boolean;  // 是否預設建立 Agent Terminal
-  allowBypassPermissions: boolean;  // 允許切換 bypassPermissions 模式時不再確認
-  codexCliDangerousMode?: boolean;  // Codex CLI 預設以 danger-full-access 啟動
+  allowBypassPermissions: boolean;  // 允許切換 bypassPermissions 模式不再確認；同時讓 Codex 以 danger-full-access 啟動
   defaultModel?: string;     // 預設模型（空 = 使用 SDK 預設）
   defaultEffort?: EffortLevel;  // 預設 effort level
   showDockBadge?: boolean;               // Dock 圖示顯示待處理數量

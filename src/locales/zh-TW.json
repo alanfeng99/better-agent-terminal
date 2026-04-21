@@ -26,6 +26,13 @@
 
   "settings": {
     "title": "設定",
+    "tabGeneral": "一般",
+    "tabAgent": "代理人",
+    "tabRemote": "遠端",
+    "tabAdvanced": "進階",
+    "agentDefaults": "代理人預設值",
+    "modelAndEffort": "模型與效能",
+    "agentBehavior": "行為設定",
     "shell": "Shell",
     "defaultShell": "預設 Shell",
     "customShellPath": "自訂 Shell 路徑",

@@ -26,6 +26,13 @@
 
   "settings": {
     "title": "Settings",
+    "tabGeneral": "General",
+    "tabAgent": "Agent",
+    "tabRemote": "Remote",
+    "tabAdvanced": "Advanced",
+    "agentDefaults": "Agent Defaults",
+    "modelAndEffort": "Model & Effort",
+    "agentBehavior": "Behavior",
     "shell": "Shell",
     "defaultShell": "Default Shell",
     "customShellPath": "Custom Shell Path",

@@ -92,9 +92,11 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   const logVisibleRef = useRef<Map<string, boolean>>(new Map())
   const pendingBatchRef = useRef<Array<{ name: string; color: string; data: string }>>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const spotlightRef = useRef<string | null>(null)
 
   const [processes, setProcesses] = useState<WorkerProcess[]>([])
   const [logVisible, setLogVisible] = useState<Record<string, boolean>>({})
+  const [spotlightService, setSpotlightService] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => { isActiveRef.current = isActive }, [isActive])
@@ -183,6 +185,30 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     reRenderTerminal(entries, map)
   }, [flushToDisk, terminalId, reRenderTerminal])
 
+  const toggleSpotlight = useCallback(async (name: string) => {
+    const next = spotlightRef.current === name ? null : name
+    spotlightRef.current = next
+    setSpotlightService(next)
+
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current)
+      flushTimerRef.current = null
+    }
+    await flushToDisk()
+
+    const raw = await window.electronAPI.workerBuffer.readAll(terminalId)
+    const entries: Array<{ name: string; color: string; data: string }> = raw
+      ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+      : []
+
+    // Build visibility map: spotlight overrides individual toggles
+    const map = new Map<string, boolean>(logVisibleRef.current)
+    if (next !== null) {
+      for (const proc of processesRef.current) map.set(proc.name, proc.name === next)
+    }
+    reRenderTerminal(entries, map)
+  }, [flushToDisk, terminalId, reRenderTerminal])
+
   const toggleAutoStart = useCallback((name: string) => {
     setProcesses(prev => {
       const updated = prev.map(p =>
@@ -211,8 +237,10 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       return
     }
 
-    // Skip rendering for hidden processes (default = visible)
-    if (logVisibleRef.current.get(name) === false) return
+    // Skip rendering for hidden/non-spotlighted processes
+    if (spotlightRef.current !== null) {
+      if (name !== spotlightRef.current) return
+    } else if (logVisibleRef.current.get(name) === false) return
 
     const maxLen = Math.max(...processesRef.current.map(p => p.name.length))
     const paddedName = name.padEnd(maxLen)
@@ -588,9 +616,17 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
           {processes.map(proc => {
             const isVisible = logVisible[proc.name] !== false
             return (
-              <div key={proc.ptyId} className="worker-process-card">
+              <div
+                key={proc.ptyId}
+                className={`worker-process-card${spotlightService !== null && spotlightService !== proc.name ? ' worker-card-dimmed' : ''}${spotlightService === proc.name ? ' worker-card-spotlight' : ''}`}
+              >
                 <span className={`worker-status-dot worker-status-${proc.status}`} />
-                <span className="worker-process-name" style={{ color: proc.color }}>
+                <span
+                  className="worker-process-name"
+                  style={{ color: proc.color, cursor: 'pointer' }}
+                  onClick={() => toggleSpotlight(proc.name)}
+                  title={spotlightService === proc.name ? 'Exit spotlight' : 'Spotlight: show only this service'}
+                >
                   {proc.name}
                 </span>
                 <div className="worker-process-actions">

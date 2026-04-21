@@ -42,8 +42,11 @@ interface RemoteClientStatus {
   info: { host: string; port: number } | null
 }
 
+type SettingsTab = 'general' | 'agent' | 'remote' | 'advanced'
+
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const { t } = useTranslation()
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [settings, setSettings] = useState<AppSettings>(settingsStore.getSettings())
   const [availableFonts, setAvailableFonts] = useState<Set<FontType>>(new Set())
 
@@ -322,6 +325,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const terminalColors = settingsStore.getTerminalColors()
 
+  const tabs: { id: SettingsTab; label: string }[] = [
+    { id: 'general', label: t('settings.tabGeneral') },
+    { id: 'agent', label: t('settings.tabAgent') },
+    { id: 'remote', label: t('settings.tabRemote') },
+    { id: 'advanced', label: t('settings.tabAdvanced') },
+  ]
+
   return (
     <div className="settings-overlay" onClick={onClose}>
       <div className="settings-panel" onClick={e => e.stopPropagation()}>
@@ -330,867 +340,700 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           <button className="close-btn" onClick={onClose}>×</button>
         </div>
 
+        <div className="settings-tabs">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              className={`settings-tab-btn${activeTab === tab.id ? ' active' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         <div className="settings-content">
-          <div className="settings-section">
-            <h3>{t('settings.language')}</h3>
-            <div className="settings-group">
-              <label>{t('settings.language')}</label>
-              <select
-                value={settings.language || 'en'}
-                onChange={e => {
-                  const value = e.target.value as LanguageCode
-                  settingsStore.setLanguage(value)
-                  i18next.changeLanguage(value)
-                }}
-              >
-                <option value="en">English</option>
-                <option value="zh-TW">繁體中文</option>
-                <option value="zh-CN">简体中文</option>
-              </select>
-            </div>
-          </div>
 
-          <div className="settings-section">
-            <h3>{t('settings.shell')}</h3>
-            <div className="settings-group">
-              <label>{t('settings.defaultShell')}</label>
-              <select
-                value={settings.shell}
-                onChange={e => handleShellChange(e.target.value as ShellType)}
-              >
-                {platformShellOptions.map(opt => (
-                  <option key={opt.id} value={opt.id}>{opt.name}</option>
-                ))}
-              </select>
-            </div>
-
-            {settings.shell === 'custom' && (
-              <div className="settings-group">
-                <label>{t('settings.customShellPath')}</label>
-                <input
-                  type="text"
-                  value={settings.customShellPath}
-                  onChange={e => handleCustomPathChange(e.target.value)}
-                  placeholder={platform === 'win32' ? 'C:\\path\\to\\shell.exe' : '/path/to/shell'}
-                />
-              </div>
-            )}
-
-            <div className="settings-group">
-              <label>{t('settings.defaultTerminalCount', { count: settings.defaultTerminalCount || 1 })}</label>
-              <input
-                type="range"
-                min="1"
-                max="5"
-                value={settings.defaultTerminalCount || 1}
-                onChange={e => settingsStore.setDefaultTerminalCount(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.createDefaultAgentTerminal === true}
-                  onChange={e => settingsStore.setCreateDefaultAgentTerminal(e.target.checked)}
-                />
-                {t('settings.createAgentTerminalByDefault')}
-              </label>
-              <p className="settings-hint">{t('settings.createAgentTerminalHint')}</p>
-            </div>
-
-            {settings.createDefaultAgentTerminal && (
-              <>
+          {/* ── GENERAL TAB ── */}
+          {activeTab === 'general' && (
+            <>
+              <div className="settings-section">
+                <h3>{t('settings.language')}</h3>
                 <div className="settings-group">
-                  <label>{t('settings.defaultAgent')}</label>
+                  <label>{t('settings.language')}</label>
                   <select
-                    value={settings.defaultAgent || 'claude-code'}
-                    onChange={e => settingsStore.setDefaultAgent(e.target.value as AgentPresetId)}
+                    value={settings.language || 'en'}
+                    onChange={e => {
+                      const value = e.target.value as LanguageCode
+                      settingsStore.setLanguage(value)
+                      i18next.changeLanguage(value)
+                    }}
                   >
-                    {getVisiblePresets().filter(p => p.id !== 'none').map(preset => (
-                      <option key={preset.id} value={preset.id}>
-                        {preset.icon} {preset.name}
+                    <option value="en">English</option>
+                    <option value="zh-TW">繁體中文</option>
+                    <option value="zh-CN">简体中文</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <h3>{t('settings.shell')}</h3>
+                <div className="settings-group">
+                  <label>{t('settings.defaultShell')}</label>
+                  <select
+                    value={settings.shell}
+                    onChange={e => handleShellChange(e.target.value as ShellType)}
+                  >
+                    {platformShellOptions.map(opt => (
+                      <option key={opt.id} value={opt.id}>{opt.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {settings.shell === 'custom' && (
+                  <div className="settings-group">
+                    <label>{t('settings.customShellPath')}</label>
+                    <input
+                      type="text"
+                      value={settings.customShellPath}
+                      onChange={e => handleCustomPathChange(e.target.value)}
+                      placeholder={platform === 'win32' ? 'C:\\path\\to\\shell.exe' : '/path/to/shell'}
+                    />
+                  </div>
+                )}
+                <div className="settings-group">
+                  <label>{t('settings.defaultTerminalCount', { count: settings.defaultTerminalCount || 1 })}</label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="5"
+                    value={settings.defaultTerminalCount || 1}
+                    onChange={e => settingsStore.setDefaultTerminalCount(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <h3>{t('settings.appearance')}</h3>
+                <div className="settings-group">
+                  <label>{t('settings.fontSize', { size: settings.fontSize })}</label>
+                  <input
+                    type="range"
+                    min="10"
+                    max="24"
+                    value={settings.fontSize}
+                    onChange={e => handleFontSizeChange(Number(e.target.value))}
+                  />
+                </div>
+                <div className="settings-group">
+                  <label>{t('settings.fontFamily')}</label>
+                  <select
+                    value={settings.fontFamily}
+                    onChange={e => handleFontFamilyChange(e.target.value as FontType)}
+                  >
+                    {FONT_OPTIONS.map(font => (
+                      <option key={font.id} value={font.id} disabled={!availableFonts.has(font.id) && font.id !== 'custom'}>
+                        {font.name} {availableFonts.has(font.id) ? '✓' : t('settings.fontNotInstalled')}
                       </option>
                     ))}
                   </select>
                 </div>
+                {settings.fontFamily === 'custom' && (
+                  <div className="settings-group">
+                    <label>{t('settings.customFontName')}</label>
+                    <input
+                      type="text"
+                      value={settings.customFontFamily}
+                      onChange={e => handleCustomFontFamilyChange(e.target.value)}
+                      placeholder={t('settings.customFontPlaceholder')}
+                    />
+                  </div>
+                )}
+                <div className="settings-group">
+                  <label>{t('settings.colorTheme')}</label>
+                  <select
+                    value={settings.colorPreset}
+                    onChange={e => handleColorPresetChange(e.target.value as ColorPresetId)}
+                  >
+                    {COLOR_PRESETS.map(preset => (
+                      <option key={preset.id} value={preset.id}>{preset.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {settings.colorPreset === 'custom' && (
+                  <>
+                    <div className="settings-group color-picker-group">
+                      <label>{t('settings.backgroundColor')}</label>
+                      <div className="color-input-wrapper">
+                        <input type="color" value={settings.customBackgroundColor} onChange={e => handleCustomBackgroundColorChange(e.target.value)} />
+                        <input type="text" value={settings.customBackgroundColor} onChange={e => handleCustomBackgroundColorChange(e.target.value)} placeholder="#1f1d1a" />
+                      </div>
+                    </div>
+                    <div className="settings-group color-picker-group">
+                      <label>{t('settings.textColor')}</label>
+                      <div className="color-input-wrapper">
+                        <input type="color" value={settings.customForegroundColor} onChange={e => handleCustomForegroundColorChange(e.target.value)} />
+                        <input type="text" value={settings.customForegroundColor} onChange={e => handleCustomForegroundColorChange(e.target.value)} placeholder="#dfdbc3" />
+                      </div>
+                    </div>
+                    <div className="settings-group color-picker-group">
+                      <label>{t('settings.cursorColor')}</label>
+                      <div className="color-input-wrapper">
+                        <input type="color" value={settings.customCursorColor} onChange={e => handleCustomCursorColorChange(e.target.value)} />
+                        <input type="text" value={settings.customCursorColor} onChange={e => handleCustomCursorColorChange(e.target.value)} placeholder="#dfdbc3" />
+                      </div>
+                    </div>
+                  </>
+                )}
+                <div className="settings-group font-preview">
+                  <label>{t('common.preview')}</label>
+                  <div
+                    className="font-preview-box"
+                    style={{ fontFamily: settingsStore.getFontFamilyString(), fontSize: settings.fontSize, backgroundColor: terminalColors.background, color: terminalColors.foreground }}
+                  >
+                    $ echo "Hello World" 你好世界 0123456789
+                  </div>
+                </div>
+              </div>
 
+              <div className="settings-section">
+                <h3>{t('settings.notifications')}</h3>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.showDockBadge !== false} onChange={e => settingsStore.setShowDockBadge(e.target.checked)} />
+                    {t('settings.showDockBadge')}
+                  </label>
+                  <p className="settings-hint">{t('settings.showDockBadgeHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.notifyOnComplete !== false} onChange={e => settingsStore.setNotifyOnComplete(e.target.checked)} />
+                    {t('settings.notifyOnComplete')}
+                  </label>
+                  <p className="settings-hint">{t('settings.notifyOnCompleteHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.notifySound !== false} onChange={e => settingsStore.setNotifySound(e.target.checked)} />
+                    {t('settings.notifySound')}
+                  </label>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.notifyOnlyBackground !== false} onChange={e => settingsStore.setNotifyOnlyBackground(e.target.checked)} />
+                    {t('settings.notifyOnlyBackground')}
+                  </label>
+                  <p className="settings-hint">{t('settings.notifyOnlyBackgroundHint')}</p>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── AGENT TAB ── */}
+          {activeTab === 'agent' && (
+            <>
+              <div className="settings-section">
+                <h3>{t('settings.agentDefaults')}</h3>
                 <div className="settings-group checkbox-group">
                   <label>
                     <input
                       type="checkbox"
-                      checked={settings.agentAutoCommand === true}
-                      onChange={e => settingsStore.setAgentAutoCommand(e.target.checked)}
+                      checked={settings.createDefaultAgentTerminal === true}
+                      onChange={e => settingsStore.setCreateDefaultAgentTerminal(e.target.checked)}
                     />
-                    {t('settings.autoRunAgentCommand')}
+                    {t('settings.createAgentTerminalByDefault')}
                   </label>
-                  <p className="settings-hint">{t('settings.autoRunAgentCommandHint')}</p>
+                  <p className="settings-hint">{t('settings.createAgentTerminalHint')}</p>
                 </div>
-              </>
-            )}
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.allowBypassPermissions === true}
-                  onChange={e => settingsStore.setAllowBypassPermissions(e.target.checked)}
-                />
-                {t('settings.allowBypassPermissions')}
-              </label>
-              <p className="settings-hint">{t('settings.allowBypassPermissionsHint')}</p>
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.codexCliDangerousMode !== false}
-                  onChange={e => settingsStore.setCodexCliDangerousMode(e.target.checked)}
-                />
-                {t('settings.codexCliDangerousMode')}
-              </label>
-              <p className="settings-hint">{t('settings.codexCliDangerousModeHint')}</p>
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.collapseToolOutputs === true}
-                  onChange={e => settingsStore.setCollapseToolOutputs(e.target.checked)}
-                />
-                {t('settings.collapseToolOutputs')}
-              </label>
-              <p className="settings-hint">{t('settings.collapseToolOutputsHint')}</p>
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.cacheExpiryWarning === true}
-                  onChange={e => settingsStore.setCacheExpiryWarning(e.target.checked)}
-                />
-                {t('settings.cacheExpiryWarning')}
-              </label>
-              <p className="settings-hint">{t('settings.cacheExpiryWarningHint')}</p>
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.cacheAlarmTimer === true}
-                  onChange={e => settingsStore.setCacheAlarmTimer(e.target.checked)}
-                />
-                {t('settings.cacheAlarmTimer')}
-              </label>
-              <p className="settings-hint">{t('settings.cacheAlarmTimerHint')}</p>
-            </div>
-
-            <div className="settings-group">
-              <label>{t('settings.defaultModel')}</label>
-              <input
-                type="text"
-                value={settings.defaultModel || ''}
-                onChange={e => settingsStore.setDefaultModel(e.target.value)}
-                placeholder={t('settings.defaultModelPlaceholder')}
-              />
-              <p className="settings-hint">{t('settings.defaultModelHint')}</p>
-            </div>
-
-            <div className="settings-group">
-              <label>{t('settings.defaultEffort')}</label>
-              <select
-                value={settings.defaultEffort || 'high'}
-                onChange={e => settingsStore.setDefaultEffort(e.target.value as EffortLevel)}
-              >
-                {EFFORT_LEVELS.map(level => (
-                  <option key={level} value={level}>
-                    {level.charAt(0).toUpperCase() + level.slice(1)}
-                    {level === 'max' ? ' (Opus only)' : ''}
-                  </option>
-                ))}
-              </select>
-              <p className="settings-hint">{t('settings.defaultEffortHint')}</p>
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={!!settings.autoCompactWindow}
-                  onChange={e => settingsStore.setAutoCompactWindow(e.target.checked ? 400000 : undefined)}
-                />
-                {t('settings.autoCompactWindow')}
-              </label>
-              {!!settings.autoCompactWindow && (
-                <input
-                  type="number"
-                  value={settings.autoCompactWindow}
-                  onChange={e => {
-                    const val = parseInt(e.target.value, 10)
-                    settingsStore.setAutoCompactWindow(val >= 200000 ? val : 200000)
-                  }}
-                  placeholder="400000"
-                  min={200000}
-                  step={10000}
-                  style={{ marginTop: 4, width: 140 }}
-                />
-              )}
-              <p className="settings-hint">{t('settings.autoCompactWindowHint')}</p>
-            </div>
-
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={!!settings.perTerminalHistory}
-                  onChange={e => {
-                    if (e.target.checked) {
-                      if (confirm(t('settings.perTerminalHistorySecurityWarning'))) {
-                        settingsStore.setPerTerminalHistory(true)
-                      }
-                    } else {
-                      settingsStore.setPerTerminalHistory(false)
-                    }
-                  }}
-                />
-                {t('settings.perTerminalHistory')}
-              </label>
-              <p className="settings-hint">{t('settings.perTerminalHistoryHint')}</p>
-              <button
-                className="settings-btn settings-btn-danger"
-                style={{ marginTop: 6 }}
-                onClick={async () => {
-                  if (confirm(t('settings.clearTerminalHistoryConfirm'))) {
-                    await window.electronAPI.settings.clearTerminalHistory()
-                    alert(t('settings.clearTerminalHistoryDone'))
-                  }
-                }}
-              >
-                {t('settings.clearTerminalHistory')}
-              </button>
-            </div>
-          </div>
-
-          <div className="settings-section">
-            <h3>{t('settings.notifications')}</h3>
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.showDockBadge !== false}
-                  onChange={e => settingsStore.setShowDockBadge(e.target.checked)}
-                />
-                {t('settings.showDockBadge')}
-              </label>
-              <p className="settings-hint">{t('settings.showDockBadgeHint')}</p>
-            </div>
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.notifyOnComplete !== false}
-                  onChange={e => settingsStore.setNotifyOnComplete(e.target.checked)}
-                />
-                {t('settings.notifyOnComplete')}
-              </label>
-              <p className="settings-hint">{t('settings.notifyOnCompleteHint')}</p>
-            </div>
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.notifySound !== false}
-                  onChange={e => settingsStore.setNotifySound(e.target.checked)}
-                />
-                {t('settings.notifySound')}
-              </label>
-            </div>
-            <div className="settings-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={settings.notifyOnlyBackground !== false}
-                  onChange={e => settingsStore.setNotifyOnlyBackground(e.target.checked)}
-                />
-                {t('settings.notifyOnlyBackground')}
-              </label>
-              <p className="settings-hint">{t('settings.notifyOnlyBackgroundHint')}</p>
-            </div>
-          </div>
-
-          <div className="settings-section">
-            <h3>{t('settings.appearance')}</h3>
-            <div className="settings-group">
-              <label>{t('settings.fontSize', { size: settings.fontSize })}</label>
-              <input
-                type="range"
-                min="10"
-                max="24"
-                value={settings.fontSize}
-                onChange={e => handleFontSizeChange(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="settings-group">
-              <label>{t('settings.fontFamily')}</label>
-              <select
-                value={settings.fontFamily}
-                onChange={e => handleFontFamilyChange(e.target.value as FontType)}
-              >
-                {FONT_OPTIONS.map(font => (
-                  <option key={font.id} value={font.id} disabled={!availableFonts.has(font.id) && font.id !== 'custom'}>
-                    {font.name} {availableFonts.has(font.id) ? '✓' : t('settings.fontNotInstalled')}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {settings.fontFamily === 'custom' && (
-              <div className="settings-group">
-                <label>{t('settings.customFontName')}</label>
-                <input
-                  type="text"
-                  value={settings.customFontFamily}
-                  onChange={e => handleCustomFontFamilyChange(e.target.value)}
-                  placeholder={t('settings.customFontPlaceholder')}
-                />
-              </div>
-            )}
-
-            <div className="settings-group">
-              <label>{t('settings.colorTheme')}</label>
-              <select
-                value={settings.colorPreset}
-                onChange={e => handleColorPresetChange(e.target.value as ColorPresetId)}
-              >
-                {COLOR_PRESETS.map(preset => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {settings.colorPreset === 'custom' && (
-              <>
-                <div className="settings-group color-picker-group">
-                  <label>{t('settings.backgroundColor')}</label>
-                  <div className="color-input-wrapper">
-                    <input
-                      type="color"
-                      value={settings.customBackgroundColor}
-                      onChange={e => handleCustomBackgroundColorChange(e.target.value)}
-                    />
-                    <input
-                      type="text"
-                      value={settings.customBackgroundColor}
-                      onChange={e => handleCustomBackgroundColorChange(e.target.value)}
-                      placeholder="#1f1d1a"
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-group color-picker-group">
-                  <label>{t('settings.textColor')}</label>
-                  <div className="color-input-wrapper">
-                    <input
-                      type="color"
-                      value={settings.customForegroundColor}
-                      onChange={e => handleCustomForegroundColorChange(e.target.value)}
-                    />
-                    <input
-                      type="text"
-                      value={settings.customForegroundColor}
-                      onChange={e => handleCustomForegroundColorChange(e.target.value)}
-                      placeholder="#dfdbc3"
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-group color-picker-group">
-                  <label>{t('settings.cursorColor')}</label>
-                  <div className="color-input-wrapper">
-                    <input
-                      type="color"
-                      value={settings.customCursorColor}
-                      onChange={e => handleCustomCursorColorChange(e.target.value)}
-                    />
-                    <input
-                      type="text"
-                      value={settings.customCursorColor}
-                      onChange={e => handleCustomCursorColorChange(e.target.value)}
-                      placeholder="#dfdbc3"
-                    />
-                  </div>
-                </div>
-              </>
-            )}
-
-            <div className="settings-group font-preview">
-              <label>{t('common.preview')}</label>
-              <div
-                className="font-preview-box"
-                style={{
-                  fontFamily: settingsStore.getFontFamilyString(),
-                  fontSize: settings.fontSize,
-                  backgroundColor: terminalColors.background,
-                  color: terminalColors.foreground
-                }}
-              >
-                $ echo "Hello World" 你好世界 0123456789
-              </div>
-            </div>
-          </div>
-
-          {/* Statusline Configuration */}
-          <div className="settings-section">
-            <h3>{t('settings.statusline')}</h3>
-            <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-              {t('settings.statuslineHint')}
-            </p>
-            <div className="statusline-config-list">
-              {slItems.map(item => {
-                const def = STATUSLINE_ITEMS.find(d => d.id === item.id)
-                if (!def) return null
-                return (
-                  <div key={item.id}
-                    className={`statusline-config-item${slDragId === item.id ? ' dragging' : ''}${slDropId === item.id ? ` drop-${slDropPos}` : ''}`}
-                    draggable
-                    onDragStart={() => setSlDragId(item.id)}
-                    onDragEnd={() => { setSlDragId(null); setSlDropId(null) }}
-                    onDragOver={(e) => {
-                      e.preventDefault()
-                      const rect = e.currentTarget.getBoundingClientRect()
-                      setSlDropPos(e.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-                      setSlDropId(item.id)
-                    }}
-                    onDragLeave={() => setSlDropId(null)}
-                    onDrop={(e) => {
-                      e.preventDefault()
-                      if (!slDragId || slDragId === item.id) return
-                      const items = [...slItems]
-                      const dragIdx = items.findIndex(i => i.id === slDragId)
-                      const targetIdx = items.findIndex(i => i.id === item.id)
-                      if (dragIdx === -1 || targetIdx === -1) return
-                      const [dragged] = items.splice(dragIdx, 1)
-                      const insertIdx = slDropPos === 'after' ? targetIdx + (dragIdx < targetIdx ? 0 : 1) : targetIdx + (dragIdx < targetIdx ? -1 : 0)
-                      items.splice(Math.max(0, insertIdx), 0, dragged)
-                      setSlItems(items)
-                      settingsStore.setStatuslineItems(items)
-                      setSlDragId(null); setSlDropId(null)
-                    }}
-                    title={def.description}
-                  >
-                    <span className="statusline-config-drag">&#x2630;</span>
-                    <span className="statusline-config-label">{def.label}</span>
-                    <span className="statusline-config-align">
-                      {(['left', 'center', 'right'] as const).map(a => (
-                        <button key={a}
-                          className={`statusline-align-btn${(item.align || 'left') === a ? ' active' : ''}`}
-                          onClick={() => {
-                            const updated = slItems.map(i => i.id === item.id ? { ...i, align: a } : i)
-                            setSlItems(updated); settingsStore.setStatuslineItems(updated)
-                          }}
-                          title={a}
-                        >{a === 'left' ? 'L' : a === 'center' ? 'C' : 'R'}</button>
-                      ))}
-                    </span>
-                    <button
-                      className={`statusline-sep-btn${item.separatorAfter ? ' active' : ''}`}
-                      onClick={() => {
-                        const updated = slItems.map(i => i.id === item.id ? { ...i, separatorAfter: !i.separatorAfter } : i)
-                        setSlItems(updated); settingsStore.setStatuslineItems(updated)
-                      }}
-                      title={t('settings.statuslineToggleSeparator')}
-                    >&gt;</button>
-                    <span className="statusline-color-swatches">
-                      {['', '#e06c75', '#e5c07b', '#98c379', '#56b6c2', '#61afef', '#c678dd', '#d19a66', '#abb2bf'].map(c => (
-                        <button
-                          key={c || 'default'}
-                          className={`statusline-color-swatch${(item.color || '') === c ? ' active' : ''}`}
-                          style={{ background: c || 'var(--text-secondary)' }}
-                          onClick={() => {
-                            const updated = slItems.map(i => i.id === item.id ? { ...i, color: c || undefined } : i)
-                            setSlItems(updated); settingsStore.setStatuslineItems(updated)
-                          }}
-                          title={c || 'Default'}
+                {settings.createDefaultAgentTerminal && (
+                  <>
+                    <div className="settings-group">
+                      <label>{t('settings.defaultAgent')}</label>
+                      <select
+                        value={settings.defaultAgent || 'claude-code'}
+                        onChange={e => settingsStore.setDefaultAgent(e.target.value as AgentPresetId)}
+                      >
+                        {getVisiblePresets().filter(p => p.id !== 'none').map(preset => (
+                          <option key={preset.id} value={preset.id}>{preset.icon} {preset.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="settings-group checkbox-group">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={settings.agentAutoCommand === true}
+                          onChange={e => settingsStore.setAgentAutoCommand(e.target.checked)}
                         />
-                      ))}
-                      <input
-                        type="color"
-                        className="statusline-color-custom"
-                        value={item.color || '#999999'}
-                        onChange={e => {
-                          const updated = slItems.map(i => i.id === item.id ? { ...i, color: e.target.value } : i)
-                          setSlItems(updated); settingsStore.setStatuslineItems(updated)
-                        }}
-                        title={t('settings.statuslineCustomColor')}
-                      />
-                    </span>
-                    <label className="statusline-config-toggle">
-                      <input type="checkbox" checked={item.visible} onChange={() => {
-                        const updated = slItems.map(i => i.id === item.id ? { ...i, visible: !i.visible } : i)
-                        setSlItems(updated); settingsStore.setStatuslineItems(updated)
-                      }} />
-                    </label>
-                  </div>
-                )
-              })}
-            </div>
-            <div className="statusline-template-bar" style={{ marginTop: '8px', display: 'flex', gap: '4px', alignItems: 'center' }}>
-              {slImporting ? (
-                <>
+                        {t('settings.autoRunAgentCommand')}
+                      </label>
+                      <p className="settings-hint">{t('settings.autoRunAgentCommandHint')}</p>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="settings-section">
+                <h3>{t('settings.modelAndEffort')}</h3>
+                <div className="settings-group">
+                  <label>{t('settings.defaultModel')}</label>
                   <input
-                    value={slImportText}
-                    onChange={e => setSlImportText(e.target.value)}
-                    placeholder="sessionId,tokens > cost | prompts"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && slImportText.trim()) {
-                        const parsed = parseStatuslineTemplate(slImportText.trim())
-                        setSlItems(parsed); settingsStore.setStatuslineItems(parsed)
-                        setSlImporting(false); setSlImportText('')
+                    type="text"
+                    value={settings.defaultModel || ''}
+                    onChange={e => settingsStore.setDefaultModel(e.target.value)}
+                    placeholder={t('settings.defaultModelPlaceholder')}
+                  />
+                  <p className="settings-hint">{t('settings.defaultModelHint')}</p>
+                </div>
+                <div className="settings-group">
+                  <label>{t('settings.defaultEffort')}</label>
+                  <select
+                    value={settings.defaultEffort || 'high'}
+                    onChange={e => settingsStore.setDefaultEffort(e.target.value as EffortLevel)}
+                  >
+                    {EFFORT_LEVELS.map(level => (
+                      <option key={level} value={level}>
+                        {level.charAt(0).toUpperCase() + level.slice(1)}{level === 'max' ? ' (Opus only)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="settings-hint">{t('settings.defaultEffortHint')}</p>
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <h3>{t('settings.agentBehavior')}</h3>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.allowBypassPermissions === true} onChange={e => settingsStore.setAllowBypassPermissions(e.target.checked)} />
+                    {t('settings.allowBypassPermissions')}
+                  </label>
+                  <p className="settings-hint">{t('settings.allowBypassPermissionsHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.collapseToolOutputs === true} onChange={e => settingsStore.setCollapseToolOutputs(e.target.checked)} />
+                    {t('settings.collapseToolOutputs')}
+                  </label>
+                  <p className="settings-hint">{t('settings.collapseToolOutputsHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.cacheExpiryWarning === true} onChange={e => settingsStore.setCacheExpiryWarning(e.target.checked)} />
+                    {t('settings.cacheExpiryWarning')}
+                  </label>
+                  <p className="settings-hint">{t('settings.cacheExpiryWarningHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input type="checkbox" checked={settings.cacheAlarmTimer === true} onChange={e => settingsStore.setCacheAlarmTimer(e.target.checked)} />
+                    {t('settings.cacheAlarmTimer')}
+                  </label>
+                  <p className="settings-hint">{t('settings.cacheAlarmTimerHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!!settings.autoCompactWindow}
+                      onChange={e => settingsStore.setAutoCompactWindow(e.target.checked ? 400000 : undefined)}
+                    />
+                    {t('settings.autoCompactWindow')}
+                  </label>
+                  {!!settings.autoCompactWindow && (
+                    <input
+                      type="number"
+                      value={settings.autoCompactWindow}
+                      onChange={e => {
+                        const val = parseInt(e.target.value, 10)
+                        settingsStore.setAutoCompactWindow(val >= 200000 ? val : 200000)
+                      }}
+                      placeholder="400000"
+                      min={200000}
+                      step={10000}
+                      style={{ marginTop: 4, width: 140 }}
+                    />
+                  )}
+                  <p className="settings-hint">{t('settings.autoCompactWindowHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!!settings.perTerminalHistory}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          if (confirm(t('settings.perTerminalHistorySecurityWarning'))) {
+                            settingsStore.setPerTerminalHistory(true)
+                          }
+                        } else {
+                          settingsStore.setPerTerminalHistory(false)
+                        }
+                      }}
+                    />
+                    {t('settings.perTerminalHistory')}
+                  </label>
+                  <p className="settings-hint">{t('settings.perTerminalHistoryHint')}</p>
+                  <button
+                    className="settings-btn settings-btn-danger"
+                    style={{ marginTop: 6 }}
+                    onClick={async () => {
+                      if (confirm(t('settings.clearTerminalHistoryConfirm'))) {
+                        await window.electronAPI.settings.clearTerminalHistory()
+                        alert(t('settings.clearTerminalHistoryDone'))
                       }
                     }}
-                    autoFocus
-                    style={{ flex: 1, fontSize: '11px', padding: '3px 6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '3px', color: 'var(--text-primary)' }}
-                  />
-                  <button className="statusline-template-btn" onClick={() => {
-                    if (!slImportText.trim()) return
-                    const parsed = parseStatuslineTemplate(slImportText.trim())
-                    setSlItems(parsed); settingsStore.setStatuslineItems(parsed)
-                    setSlImporting(false); setSlImportText('')
-                  }}>{t('common.apply')}</button>
-                  <button className="statusline-template-btn" onClick={() => { setSlImporting(false); setSlImportText('') }}>{t('common.cancel')}</button>
-                </>
-              ) : (
-                <>
-                  <input
-                    readOnly
-                    value={exportStatuslineTemplate(slItems)}
-                    style={{ flex: 1, fontSize: '11px', padding: '3px 6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '3px', color: 'var(--text-secondary)' }}
-                    title={t('settings.statuslineCurrentTemplate')}
-                  />
-                  <button className="statusline-template-btn" onClick={() => navigator.clipboard.writeText(exportStatuslineTemplate(slItems))}>{t('common.copy')}</button>
-                  <button className="statusline-template-btn" onClick={() => setSlImporting(true)}>{t('common.import')}</button>
-                  <button className="statusline-template-btn" onClick={() => {
-                    settingsStore.setStatuslineItems(undefined as unknown as StatuslineItemConfig[])
-                    setSlItems(settingsStore.getStatuslineItems())
-                  }}>{t('common.reset')}</button>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="settings-section">
-            <h3>{t('settings.accountSwitching')}</h3>
-            <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-              {t('settings.accountSwitchingHint')}
-            </p>
-            <label className="settings-checkbox" style={{ marginBottom: '10px' }}>
-              <input
-                type="checkbox"
-                checked={settings.accountSwitching !== false}
-                onChange={(e) => settingsStore.setAccountSwitching(e.target.checked)}
-              />
-              {t('settings.accountSwitchingEnabled')}
-            </label>
-            {settings.accountSwitching !== false && (
-              <div style={{ marginTop: '8px' }}>
-                {accountsLoading ? (
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('settings.accountSwitchingImporting')}</p>
-                ) : accounts.length === 0 ? (
-                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('settings.accountSwitchingNoAccounts')}</p>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {accounts.map(account => (
-                      <div key={account.id} style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        padding: '6px 10px', borderRadius: '4px',
-                        background: account.id === activeAccountId ? 'var(--bg-tertiary)' : 'transparent',
-                        border: account.id === activeAccountId ? '1px solid var(--border-color)' : '1px solid transparent',
-                      }}>
-                        <span style={{
-                          width: '8px', height: '8px', borderRadius: '50%',
-                          background: account.id === activeAccountId ? '#3fb950' : 'var(--text-secondary)',
-                          flexShrink: 0,
-                        }} />
-                        <span style={{ fontSize: '13px', flex: 1 }}>
-                          {account.email}
-                          {account.subscriptionType && (
-                            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', marginLeft: '6px' }}>
-                              ({account.subscriptionType})
-                            </span>
-                          )}
-                        </span>
-                        {account.id === activeAccountId ? (
-                          <span style={{ fontSize: '11px', color: '#3fb950', fontWeight: 500 }}>
-                            {t('settings.accountSwitchingActive')}
-                          </span>
-                        ) : (
-                          <>
-                            <button
-                              className="statusline-template-btn"
-                              style={{ fontSize: '11px' }}
-                              onClick={() => handleAccountSwitch(account.id)}
-                            >{t('settings.accountSwitchingSwitch')}</button>
-                            {!account.isDefault && (
-                              <button
-                                className="statusline-template-btn"
-                                style={{ fontSize: '11px', color: '#f85149' }}
-                                onClick={() => handleAccountRemove(account.id)}
-                              >{t('settings.accountSwitchingRemove')}</button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button
-                  className="statusline-template-btn"
-                  style={{ marginTop: '10px', fontSize: '12px' }}
-                  onClick={handleAccountLoginNew}
-                  disabled={accountLoginLoading}
-                >
-                  {accountLoginLoading ? 'Opening login...' : t('settings.accountSwitchingAddAccount')}
-                </button>
-                {accountStatusMsg && (
-                  <p style={{ fontSize: '11px', color: accountStatusMsg.startsWith('Error') || accountStatusMsg.startsWith('Login failed') ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
-                    {accountStatusMsg}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="settings-section">
-            <h3>{t('settings.environmentVariables')}</h3>
-            <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-              {t('settings.globalEnvVarsHint')}
-            </p>
-            <EnvVarEditor
-              envVars={settings.globalEnvVars || []}
-              onAdd={(envVar) => settingsStore.addGlobalEnvVar(envVar)}
-              onRemove={(key) => settingsStore.removeGlobalEnvVar(key)}
-              onUpdate={(key, updates) => settingsStore.updateGlobalEnvVar(key, updates)}
-            />
-          </div>
-          <div className="settings-section">
-            <h3>{t('settings.remoteAccess')}</h3>
-            <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-              {t('settings.remoteAccessHint')}{' '}
-              <a href="https://github.com/tony1223/better-agent-terminal#remote-access--mobile-connect"
-                style={{ color: '#58a6ff' }}
-                onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>
-                {t('settings.remoteAccessReadme')}
-              </a>。
-            </p>
-
-            {serverStatus.running ? (
-              <>
-                <div className="settings-group" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ color: '#3fb950', fontSize: 12 }}>
-                    {t('settings.serverRunningOnPort', { port: serverStatus.port })}
-                    {serverStatus.bindInterface && ` [${serverStatus.bindInterface}]`}
-                  </span>
-                  <button className="profile-action-btn danger" onClick={handleStopServer} style={{ marginLeft: 'auto' }}>
-                    {t('settings.stopServer')}
-                  </button>
-                </div>
-                {connectionUrl && (
-                  <div className="settings-group">
-                    <label>{t('settings.connectionUrl', 'Connection URL')}</label>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <input
-                        type="text"
-                        readOnly
-                        value={connectionUrl}
-                        style={{ fontFamily: 'monospace', fontSize: 11, flex: 1 }}
-                        onClick={e => (e.target as HTMLInputElement).select()}
-                      />
-                      <button
-                        className="profile-action-btn"
-                        onClick={() => navigator.clipboard.writeText(connectionUrl)}
-                        title="Copy connection URL"
-                      >
-                        {t('common.copy')}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: 11, color: '#8b949e', marginTop: 4, lineHeight: 1.4 }}>
-                      {t('settings.connectionUrlHint', 'Paste this into a remote profile to auto-fill host, port, token and fingerprint.')}
-                    </p>
-                  </div>
-                )}
-                {serverToken && (
-                  <div className="settings-group">
-                    <label>{t('settings.connectionToken')}</label>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <input
-                        type="text"
-                        readOnly
-                        value={serverToken}
-                        style={{ fontFamily: 'monospace', fontSize: 12, flex: 1 }}
-                        onClick={e => (e.target as HTMLInputElement).select()}
-                      />
-                      <button
-                        className="profile-action-btn"
-                        onClick={() => navigator.clipboard.writeText(serverToken)}
-                        title="Copy token"
-                      >
-                        {t('common.copy')}
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {serverStatus.fingerprint && (
-                  <div className="settings-group">
-                    <label>{t('settings.certFingerprint', 'Certificate fingerprint (SHA-256)')}</label>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <input
-                        type="text"
-                        readOnly
-                        value={serverStatus.fingerprint}
-                        style={{ fontFamily: 'monospace', fontSize: 11, flex: 1 }}
-                        onClick={e => (e.target as HTMLInputElement).select()}
-                      />
-                      <button
-                        className="profile-action-btn"
-                        onClick={() => navigator.clipboard.writeText(serverStatus.fingerprint || '')}
-                        title="Copy fingerprint"
-                      >
-                        {t('common.copy')}
-                      </button>
-                    </div>
-                    <p style={{ fontSize: 11, color: '#8b949e', marginTop: 4, lineHeight: 1.4 }}>
-                      {t('settings.certFingerprintHint', 'Clients must pin this fingerprint on first connect (TOFU).')}
-                    </p>
-                  </div>
-                )}
-                {serverStatus.clients.length > 0 && (
-                  <div className="settings-group">
-                    <label>{t('settings.connectedClients', { count: serverStatus.clients.length })}</label>
-                    {serverStatus.clients.map((c, i) => (
-                      <div key={i} style={{ fontSize: 12, color: '#aaa', padding: '2px 0' }}>
-                        {c.label} — {t('settings.connectedAt', { time: new Date(c.connectedAt).toLocaleTimeString() })}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="settings-group">
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <input
-                    type="number"
-                    value={serverPort}
-                    onChange={e => setServerPort(e.target.value)}
-                    placeholder={t('settings.port')}
-                    style={{ width: 80 }}
-                  />
-                  <select
-                    value={bindInterface}
-                    onChange={e => setBindInterface(e.target.value as BindInterface)}
-                    style={{ fontSize: 12 }}
-                    title={t('settings.bindInterfaceHint', 'Network interface to listen on')}
                   >
-                    <option value="localhost">{t('settings.bindLocalhost', 'localhost (this machine only)')}</option>
-                    <option value="tailscale">{t('settings.bindTailscale', 'Tailscale (tailnet only)')}</option>
-                    <option value="all">{t('settings.bindAll', 'All interfaces (LAN / public)')}</option>
-                  </select>
-                  <button className="profile-action-btn primary" onClick={handleStartServer}>
-                    {t('settings.startServer')}
+                    {t('settings.clearTerminalHistory')}
                   </button>
                 </div>
-                <p style={{ fontSize: 11, color: '#d29922', marginTop: 6, lineHeight: 1.4 }}>
-                  {t('settings.serverWarning')}
-                </p>
               </div>
-            )}
+            </>
+          )}
 
-            {clientStatus.connected && clientStatus.info && (
-              <div className="settings-group" style={{ marginTop: 8 }}>
-                <span style={{ color: '#58a6ff', fontSize: 12 }}>
-                  {t('settings.connectedToRemote', { host: clientStatus.info.host, port: clientStatus.info.port })}
-                </span>
-              </div>
-            )}
-
-            <div className="settings-group" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-              <label>{t('settings.mobileConnect')} <span style={{ fontSize: 10, color: '#d29922', fontWeight: 'normal' }}>{t('settings.mobileConnectExperimental')}</span></label>
-              <p style={{ fontSize: 11, color: '#8b949e', marginTop: 2, marginBottom: 6, lineHeight: 1.4 }}>
-                {t('settings.mobileConnectHint')}{' '}
-                <a href="https://tailscale.com/" style={{ color: '#58a6ff' }}
-                  onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>
-                  Tailscale
-                </a>{' '}
-                {t('settings.mobileConnectSeeReadme')}{' '}
+          {/* ── REMOTE TAB ── */}
+          {activeTab === 'remote' && (
+            <div className="settings-section">
+              <h3>{t('settings.remoteAccess')}</h3>
+              <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                {t('settings.remoteAccessHint')}{' '}
                 <a href="https://github.com/tony1223/better-agent-terminal#remote-access--mobile-connect"
                   style={{ color: '#58a6ff' }}
                   onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>
                   {t('settings.remoteAccessReadme')}
                 </a>。
               </p>
-              {!qrDataUrl ? (
+
+              {serverStatus.running ? (
                 <>
-                  <button
-                    className="profile-action-btn primary"
-                    onClick={handleGenerateQR}
-                    disabled={qrLoading}
-                    style={{ marginTop: 4 }}
-                  >
-                    {qrLoading ? t('settings.generating') : t('settings.generateQrCode')}
-                  </button>
-                  <p style={{ fontSize: 11, color: '#d29922', marginTop: 6, lineHeight: 1.4 }}>
-                    {t('settings.qrWarning')}
-                  </p>
-                  {qrError && (
-                    <p style={{ fontSize: 11, color: '#f85149', marginTop: 4 }}>{qrError}</p>
+                  <div className="settings-group" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#3fb950', fontSize: 12 }}>
+                      {t('settings.serverRunningOnPort', { port: serverStatus.port })}
+                      {serverStatus.bindInterface && ` [${serverStatus.bindInterface}]`}
+                    </span>
+                    <button className="profile-action-btn danger" onClick={handleStopServer} style={{ marginLeft: 'auto' }}>
+                      {t('settings.stopServer')}
+                    </button>
+                  </div>
+                  {connectionUrl && (
+                    <div className="settings-group">
+                      <label>{t('settings.connectionUrl', 'Connection URL')}</label>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="text" readOnly value={connectionUrl} style={{ fontFamily: 'monospace', fontSize: 11, flex: 1 }} onClick={e => (e.target as HTMLInputElement).select()} />
+                        <button className="profile-action-btn" onClick={() => navigator.clipboard.writeText(connectionUrl)} title="Copy connection URL">{t('common.copy')}</button>
+                      </div>
+                      <p style={{ fontSize: 11, color: '#8b949e', marginTop: 4, lineHeight: 1.4 }}>
+                        {t('settings.connectionUrlHint', 'Paste this into a remote profile to auto-fill host, port, token and fingerprint.')}
+                      </p>
+                    </div>
+                  )}
+                  {serverToken && (
+                    <div className="settings-group">
+                      <label>{t('settings.connectionToken')}</label>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="text" readOnly value={serverToken} style={{ fontFamily: 'monospace', fontSize: 12, flex: 1 }} onClick={e => (e.target as HTMLInputElement).select()} />
+                        <button className="profile-action-btn" onClick={() => navigator.clipboard.writeText(serverToken)} title="Copy token">{t('common.copy')}</button>
+                      </div>
+                    </div>
+                  )}
+                  {serverStatus.fingerprint && (
+                    <div className="settings-group">
+                      <label>{t('settings.certFingerprint', 'Certificate fingerprint (SHA-256)')}</label>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="text" readOnly value={serverStatus.fingerprint} style={{ fontFamily: 'monospace', fontSize: 11, flex: 1 }} onClick={e => (e.target as HTMLInputElement).select()} />
+                        <button className="profile-action-btn" onClick={() => navigator.clipboard.writeText(serverStatus.fingerprint || '')} title="Copy fingerprint">{t('common.copy')}</button>
+                      </div>
+                      <p style={{ fontSize: 11, color: '#8b949e', marginTop: 4, lineHeight: 1.4 }}>
+                        {t('settings.certFingerprintHint', 'Clients must pin this fingerprint on first connect (TOFU).')}
+                      </p>
+                    </div>
+                  )}
+                  {serverStatus.clients.length > 0 && (
+                    <div className="settings-group">
+                      <label>{t('settings.connectedClients', { count: serverStatus.clients.length })}</label>
+                      {serverStatus.clients.map((c, i) => (
+                        <div key={i} style={{ fontSize: 12, color: '#aaa', padding: '2px 0' }}>
+                          {c.label} — {t('settings.connectedAt', { time: new Date(c.connectedAt).toLocaleTimeString() })}
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </>
               ) : (
-                <div style={{ textAlign: 'center', marginTop: 8 }}>
-                  {qrAddresses.length > 1 && (
-                    <select
-                      style={{ width: '100%', marginBottom: 8, fontSize: 12, padding: '4px 6px' }}
-                      value={qrInfo?.url?.split('//')[1]?.split(':')[0] || ''}
-                      onChange={async (e) => {
-                        const addr = qrAddresses.find(a => a.ip === e.target.value)
-                        if (addr && qrToken && qrFingerprint) {
-                          await generateQrForIp(addr.ip, addr.mode, qrToken, qrFingerprint, qrPort)
-                        }
-                      }}
-                    >
-                      {qrAddresses.map(addr => (
-                        <option key={addr.ip} value={addr.ip}>{addr.label}</option>
-                      ))}
+                <div className="settings-group">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <input type="number" value={serverPort} onChange={e => setServerPort(e.target.value)} placeholder={t('settings.port')} style={{ width: 80 }} />
+                    <select value={bindInterface} onChange={e => setBindInterface(e.target.value as BindInterface)} style={{ fontSize: 12 }} title={t('settings.bindInterfaceHint', 'Network interface to listen on')}>
+                      <option value="localhost">{t('settings.bindLocalhost', 'localhost (this machine only)')}</option>
+                      <option value="tailscale">{t('settings.bindTailscale', 'Tailscale (tailnet only)')}</option>
+                      <option value="all">{t('settings.bindAll', 'All interfaces (LAN / public)')}</option>
                     </select>
-                  )}
-                  <img
-                    src={qrDataUrl}
-                    alt="QR Code"
-                    style={{ width: 200, height: 200, imageRendering: 'pixelated', borderRadius: 4, background: '#fff', padding: 4 }}
-                  />
-                  <p style={{ fontSize: 11, color: '#8b949e', marginTop: 6, wordBreak: 'break-all', fontFamily: 'monospace' }}>
-                    {qrInfo?.url}
-                  </p>
-                  <p style={{ fontSize: 11, color: qrInfo?.mode === 'tailscale' ? '#3fb950' : '#d29922', marginTop: 2 }}>
-                    {qrInfo?.mode === 'tailscale' ? t('settings.viaTailscale') : t('settings.lanOnly')}
-                  </p>
-                  <button
-                    className="profile-action-btn"
-                    onClick={() => { setQrDataUrl(null); setQrInfo(null); setQrAddresses([]) }}
-                    style={{ marginTop: 8 }}
-                  >
-                    {t('common.close')}
-                  </button>
+                    <button className="profile-action-btn primary" onClick={handleStartServer}>{t('settings.startServer')}</button>
+                  </div>
+                  <p style={{ fontSize: 11, color: '#d29922', marginTop: 6, lineHeight: 1.4 }}>{t('settings.serverWarning')}</p>
                 </div>
               )}
+
+              {clientStatus.connected && clientStatus.info && (
+                <div className="settings-group" style={{ marginTop: 8 }}>
+                  <span style={{ color: '#58a6ff', fontSize: 12 }}>
+                    {t('settings.connectedToRemote', { host: clientStatus.info.host, port: clientStatus.info.port })}
+                  </span>
+                </div>
+              )}
+
+              <div className="settings-group" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                <label>{t('settings.mobileConnect')} <span style={{ fontSize: 10, color: '#d29922', fontWeight: 'normal' }}>{t('settings.mobileConnectExperimental')}</span></label>
+                <p style={{ fontSize: 11, color: '#8b949e', marginTop: 2, marginBottom: 6, lineHeight: 1.4 }}>
+                  {t('settings.mobileConnectHint')}{' '}
+                  <a href="https://tailscale.com/" style={{ color: '#58a6ff' }} onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>Tailscale</a>{' '}
+                  {t('settings.mobileConnectSeeReadme')}{' '}
+                  <a href="https://github.com/tony1223/better-agent-terminal#remote-access--mobile-connect" style={{ color: '#58a6ff' }} onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>{t('settings.remoteAccessReadme')}</a>。
+                </p>
+                {!qrDataUrl ? (
+                  <>
+                    <button className="profile-action-btn primary" onClick={handleGenerateQR} disabled={qrLoading} style={{ marginTop: 4 }}>
+                      {qrLoading ? t('settings.generating') : t('settings.generateQrCode')}
+                    </button>
+                    <p style={{ fontSize: 11, color: '#d29922', marginTop: 6, lineHeight: 1.4 }}>{t('settings.qrWarning')}</p>
+                    {qrError && <p style={{ fontSize: 11, color: '#f85149', marginTop: 4 }}>{qrError}</p>}
+                  </>
+                ) : (
+                  <div style={{ textAlign: 'center', marginTop: 8 }}>
+                    {qrAddresses.length > 1 && (
+                      <select
+                        style={{ width: '100%', marginBottom: 8, fontSize: 12, padding: '4px 6px' }}
+                        value={qrInfo?.url?.split('//')[1]?.split(':')[0] || ''}
+                        onChange={async (e) => {
+                          const addr = qrAddresses.find(a => a.ip === e.target.value)
+                          if (addr && qrToken && qrFingerprint) await generateQrForIp(addr.ip, addr.mode, qrToken, qrFingerprint, qrPort)
+                        }}
+                      >
+                        {qrAddresses.map(addr => <option key={addr.ip} value={addr.ip}>{addr.label}</option>)}
+                      </select>
+                    )}
+                    <img src={qrDataUrl} alt="QR Code" style={{ width: 200, height: 200, imageRendering: 'pixelated', borderRadius: 4, background: '#fff', padding: 4 }} />
+                    <p style={{ fontSize: 11, color: '#8b949e', marginTop: 6, wordBreak: 'break-all', fontFamily: 'monospace' }}>{qrInfo?.url}</p>
+                    <p style={{ fontSize: 11, color: qrInfo?.mode === 'tailscale' ? '#3fb950' : '#d29922', marginTop: 2 }}>
+                      {qrInfo?.mode === 'tailscale' ? t('settings.viaTailscale') : t('settings.lanOnly')}
+                    </p>
+                    <button className="profile-action-btn" onClick={() => { setQrDataUrl(null); setQrInfo(null); setQrAddresses([]) }} style={{ marginTop: 8 }}>{t('common.close')}</button>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* ── ADVANCED TAB ── */}
+          {activeTab === 'advanced' && (
+            <>
+              <div className="settings-section">
+                <h3>{t('settings.statusline')}</h3>
+                <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  {t('settings.statuslineHint')}
+                </p>
+                <div className="statusline-config-list">
+                  {slItems.map(item => {
+                    const def = STATUSLINE_ITEMS.find(d => d.id === item.id)
+                    if (!def) return null
+                    return (
+                      <div key={item.id}
+                        className={`statusline-config-item${slDragId === item.id ? ' dragging' : ''}${slDropId === item.id ? ` drop-${slDropPos}` : ''}`}
+                        draggable
+                        onDragStart={() => setSlDragId(item.id)}
+                        onDragEnd={() => { setSlDragId(null); setSlDropId(null) }}
+                        onDragOver={(e) => {
+                          e.preventDefault()
+                          const rect = e.currentTarget.getBoundingClientRect()
+                          setSlDropPos(e.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
+                          setSlDropId(item.id)
+                        }}
+                        onDragLeave={() => setSlDropId(null)}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          if (!slDragId || slDragId === item.id) return
+                          const items = [...slItems]
+                          const dragIdx = items.findIndex(i => i.id === slDragId)
+                          const targetIdx = items.findIndex(i => i.id === item.id)
+                          if (dragIdx === -1 || targetIdx === -1) return
+                          const [dragged] = items.splice(dragIdx, 1)
+                          const insertIdx = slDropPos === 'after' ? targetIdx + (dragIdx < targetIdx ? 0 : 1) : targetIdx + (dragIdx < targetIdx ? -1 : 0)
+                          items.splice(Math.max(0, insertIdx), 0, dragged)
+                          setSlItems(items)
+                          settingsStore.setStatuslineItems(items)
+                          setSlDragId(null); setSlDropId(null)
+                        }}
+                        title={def.description}
+                      >
+                        <span className="statusline-config-drag">&#x2630;</span>
+                        <span className="statusline-config-label">{def.label}</span>
+                        <span className="statusline-config-align">
+                          {(['left', 'center', 'right'] as const).map(a => (
+                            <button key={a}
+                              className={`statusline-align-btn${(item.align || 'left') === a ? ' active' : ''}`}
+                              onClick={() => {
+                                const updated = slItems.map(i => i.id === item.id ? { ...i, align: a } : i)
+                                setSlItems(updated); settingsStore.setStatuslineItems(updated)
+                              }}
+                              title={a}
+                            >{a === 'left' ? 'L' : a === 'center' ? 'C' : 'R'}</button>
+                          ))}
+                        </span>
+                        <button
+                          className={`statusline-sep-btn${item.separatorAfter ? ' active' : ''}`}
+                          onClick={() => {
+                            const updated = slItems.map(i => i.id === item.id ? { ...i, separatorAfter: !i.separatorAfter } : i)
+                            setSlItems(updated); settingsStore.setStatuslineItems(updated)
+                          }}
+                          title={t('settings.statuslineToggleSeparator')}
+                        >&gt;</button>
+                        <span className="statusline-color-swatches">
+                          {['', '#e06c75', '#e5c07b', '#98c379', '#56b6c2', '#61afef', '#c678dd', '#d19a66', '#abb2bf'].map(c => (
+                            <button
+                              key={c || 'default'}
+                              className={`statusline-color-swatch${(item.color || '') === c ? ' active' : ''}`}
+                              style={{ background: c || 'var(--text-secondary)' }}
+                              onClick={() => {
+                                const updated = slItems.map(i => i.id === item.id ? { ...i, color: c || undefined } : i)
+                                setSlItems(updated); settingsStore.setStatuslineItems(updated)
+                              }}
+                              title={c || 'Default'}
+                            />
+                          ))}
+                          <input
+                            type="color"
+                            className="statusline-color-custom"
+                            value={item.color || '#999999'}
+                            onChange={e => {
+                              const updated = slItems.map(i => i.id === item.id ? { ...i, color: e.target.value } : i)
+                              setSlItems(updated); settingsStore.setStatuslineItems(updated)
+                            }}
+                            title={t('settings.statuslineCustomColor')}
+                          />
+                        </span>
+                        <label className="statusline-config-toggle">
+                          <input type="checkbox" checked={item.visible} onChange={() => {
+                            const updated = slItems.map(i => i.id === item.id ? { ...i, visible: !i.visible } : i)
+                            setSlItems(updated); settingsStore.setStatuslineItems(updated)
+                          }} />
+                        </label>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="statusline-template-bar" style={{ marginTop: '8px', display: 'flex', gap: '4px', alignItems: 'center' }}>
+                  {slImporting ? (
+                    <>
+                      <input
+                        value={slImportText}
+                        onChange={e => setSlImportText(e.target.value)}
+                        placeholder="sessionId,tokens > cost | prompts"
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && slImportText.trim()) {
+                            const parsed = parseStatuslineTemplate(slImportText.trim())
+                            setSlItems(parsed); settingsStore.setStatuslineItems(parsed)
+                            setSlImporting(false); setSlImportText('')
+                          }
+                        }}
+                        autoFocus
+                        style={{ flex: 1, fontSize: '11px', padding: '3px 6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '3px', color: 'var(--text-primary)' }}
+                      />
+                      <button className="statusline-template-btn" onClick={() => {
+                        if (!slImportText.trim()) return
+                        const parsed = parseStatuslineTemplate(slImportText.trim())
+                        setSlItems(parsed); settingsStore.setStatuslineItems(parsed)
+                        setSlImporting(false); setSlImportText('')
+                      }}>{t('common.apply')}</button>
+                      <button className="statusline-template-btn" onClick={() => { setSlImporting(false); setSlImportText('') }}>{t('common.cancel')}</button>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        readOnly
+                        value={exportStatuslineTemplate(slItems)}
+                        style={{ flex: 1, fontSize: '11px', padding: '3px 6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderRadius: '3px', color: 'var(--text-secondary)' }}
+                        title={t('settings.statuslineCurrentTemplate')}
+                      />
+                      <button className="statusline-template-btn" onClick={() => navigator.clipboard.writeText(exportStatuslineTemplate(slItems))}>{t('common.copy')}</button>
+                      <button className="statusline-template-btn" onClick={() => setSlImporting(true)}>{t('common.import')}</button>
+                      <button className="statusline-template-btn" onClick={() => {
+                        settingsStore.setStatuslineItems(undefined as unknown as StatuslineItemConfig[])
+                        setSlItems(settingsStore.getStatuslineItems())
+                      }}>{t('common.reset')}</button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="settings-section">
+                <h3>{t('settings.accountSwitching')}</h3>
+                <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  {t('settings.accountSwitchingHint')}
+                </p>
+                <label className="settings-checkbox" style={{ marginBottom: '10px' }}>
+                  <input type="checkbox" checked={settings.accountSwitching !== false} onChange={(e) => settingsStore.setAccountSwitching(e.target.checked)} />
+                  {t('settings.accountSwitchingEnabled')}
+                </label>
+                {settings.accountSwitching !== false && (
+                  <div style={{ marginTop: '8px' }}>
+                    {accountsLoading ? (
+                      <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('settings.accountSwitchingImporting')}</p>
+                    ) : accounts.length === 0 ? (
+                      <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{t('settings.accountSwitchingNoAccounts')}</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {accounts.map(account => (
+                          <div key={account.id} style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '6px 10px', borderRadius: '4px',
+                            background: account.id === activeAccountId ? 'var(--bg-tertiary)' : 'transparent',
+                            border: account.id === activeAccountId ? '1px solid var(--border-color)' : '1px solid transparent',
+                          }}>
+                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: account.id === activeAccountId ? '#3fb950' : 'var(--text-secondary)', flexShrink: 0 }} />
+                            <span style={{ fontSize: '13px', flex: 1 }}>
+                              {account.email}
+                              {account.subscriptionType && <span style={{ fontSize: '11px', color: 'var(--text-secondary)', marginLeft: '6px' }}>({account.subscriptionType})</span>}
+                            </span>
+                            {account.id === activeAccountId ? (
+                              <span style={{ fontSize: '11px', color: '#3fb950', fontWeight: 500 }}>{t('settings.accountSwitchingActive')}</span>
+                            ) : (
+                              <>
+                                <button className="statusline-template-btn" style={{ fontSize: '11px' }} onClick={() => handleAccountSwitch(account.id)}>{t('settings.accountSwitchingSwitch')}</button>
+                                {!account.isDefault && (
+                                  <button className="statusline-template-btn" style={{ fontSize: '11px', color: '#f85149' }} onClick={() => handleAccountRemove(account.id)}>{t('settings.accountSwitchingRemove')}</button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button className="statusline-template-btn" style={{ marginTop: '10px', fontSize: '12px' }} onClick={handleAccountLoginNew} disabled={accountLoginLoading}>
+                      {accountLoginLoading ? 'Opening login...' : t('settings.accountSwitchingAddAccount')}
+                    </button>
+                    {accountStatusMsg && (
+                      <p style={{ fontSize: '11px', color: accountStatusMsg.startsWith('Error') || accountStatusMsg.startsWith('Login failed') ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
+                        {accountStatusMsg}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="settings-section">
+                <h3>{t('settings.environmentVariables')}</h3>
+                <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                  {t('settings.globalEnvVarsHint')}
+                </p>
+                <EnvVarEditor
+                  envVars={settings.globalEnvVars || []}
+                  onAdd={(envVar) => settingsStore.addGlobalEnvVar(envVar)}
+                  onRemove={(key) => settingsStore.removeGlobalEnvVar(key)}
+                  onUpdate={(key, updates) => settingsStore.updateGlobalEnvVar(key, updates)}
+                />
+              </div>
+            </>
+          )}
+
         </div>
 
         <div className="settings-footer">

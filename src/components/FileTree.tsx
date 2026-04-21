@@ -346,6 +346,8 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
   const [searching, setSearching] = useState(false)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const listRef = useRef<HTMLDivElement>(null)
+  const scrollSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const loadRoot = useCallback(async () => {
     setLoading(true)
@@ -366,6 +368,13 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
   useEffect(() => {
     loadRoot()
   }, [loadRoot])
+
+  // Restore scroll position after entries load
+  useEffect(() => {
+    if (loading || !listRef.current) return
+    const saved = localStorage.getItem(`file-tree-scroll:${rootPath}`)
+    if (saved) listRef.current.scrollTop = Number(saved)
+  }, [loading, rootPath])
 
   // Watch for file system changes and auto-refresh
   useEffect(() => {
@@ -500,7 +509,17 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
           />
           <button className="file-tree-refresh-btn" onClick={handleRefresh} title="Refresh">↻</button>
         </div>
-        <div className="file-tree-list">
+        <div
+          className="file-tree-list"
+          ref={listRef}
+          onScroll={(e) => {
+            const top = (e.currentTarget as HTMLDivElement).scrollTop
+            if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current)
+            scrollSaveTimerRef.current = setTimeout(() => {
+              localStorage.setItem(`file-tree-scroll:${rootPath}`, String(top))
+            }, 200)
+          }}
+        >
           {searching && <div className="file-tree-item file-tree-loading-row">Searching...</div>}
           {searchResults !== null ? (
             // Search results: flat list with relative paths

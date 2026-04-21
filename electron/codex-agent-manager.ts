@@ -5,6 +5,7 @@ import { existsSync, promises as fs } from 'fs'
 import os from 'os'
 import * as pathModule from 'path'
 import type { ClaudeMessage, ClaudeToolCall, ClaudeSessionState } from '../src/types/claude-agent'
+import type { SessionSummary } from './claude-agent-manager'
 import type { CodexEffortLevel } from '../src/types'
 import { logger } from './logger'
 import { broadcastHub } from './remote/broadcast-hub'
@@ -1206,9 +1207,52 @@ export class CodexAgentManager {
   resolvePermission(_sessionId: string, _toolUseId: string, _result: unknown): boolean { return false }
   resolveAskUser(_sessionId: string, _toolUseId: string, _answers: unknown): boolean { return false }
 
-  async listSessions(_cwd: string): Promise<[]> {
-    // TODO: Read from ~/.codex/sessions if available
-    return []
+  async listSessions(_cwd: string): Promise<SessionSummary[]> {
+    const root = getCodexSessionsRoot()
+    const results: SessionSummary[] = []
+
+    const yearDirs = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+    for (const yearDir of yearDirs.filter(e => e.isDirectory())) {
+      const yearPath = pathModule.join(root, yearDir.name)
+      const monthDirs = await fs.readdir(yearPath, { withFileTypes: true }).catch(() => [])
+      for (const monthDir of monthDirs.filter(e => e.isDirectory())) {
+        const monthPath = pathModule.join(yearPath, monthDir.name)
+        const dayDirs = await fs.readdir(monthPath, { withFileTypes: true }).catch(() => [])
+        for (const dayDir of dayDirs.filter(e => e.isDirectory())) {
+          const dayPath = pathModule.join(monthPath, dayDir.name)
+          const files = await fs.readdir(dayPath, { withFileTypes: true }).catch(() => [])
+          for (const file of files.filter(e => e.isFile() && e.name.endsWith('.jsonl'))) {
+            const filePath = pathModule.join(dayPath, file.name)
+            const threadId = file.name.replace(/\.jsonl$/, '')
+            try {
+              const stat = await fs.stat(filePath)
+              const content = await fs.readFile(filePath, 'utf8').catch(() => '')
+              let preview = ''
+              for (const line of content.split('\n')) {
+                if (!line.trim()) continue
+                try {
+                  const entry = JSON.parse(line) as { type?: string; payload?: { input?: string; op?: { type?: string; content?: { type?: string; text?: string }[] } } }
+                  // Look for user input in the session log
+                  const input = entry.payload?.input || entry.payload?.op?.content?.find?.(c => c.type === 'input_text')?.text
+                  if (input && typeof input === 'string') {
+                    preview = input.split('\n')[0].slice(0, 120)
+                    break
+                  }
+                } catch { /* skip malformed lines */ }
+              }
+              results.push({
+                sdkSessionId: threadId,
+                timestamp: stat.mtimeMs,
+                preview: preview || `(${threadId.slice(0, 8)}...)`,
+                messageCount: 0,
+              })
+            } catch { /* skip unreadable files */ }
+          }
+        }
+      }
+    }
+
+    return results.sort((a, b) => b.timestamp - a.timestamp).slice(0, 50)
   }
 
   killAll(): void {

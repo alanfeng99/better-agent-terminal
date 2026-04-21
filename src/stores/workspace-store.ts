@@ -79,13 +79,29 @@ class WorkspaceStore {
   setActiveWorkspace(id: string): void {
     if (this.state.activeWorkspaceId === id) return
 
+    // Persist current focus into the current workspace before switching
+    const currentWsId = this.state.activeWorkspaceId
+    const currentFocus = this.state.focusedTerminalId
+    const updatedWorkspaces = this.state.workspaces.map(w =>
+      w.id === currentWsId ? { ...w, focusedTerminalId: currentFocus ?? undefined } : w
+    )
+
+    // Restore focus for the target workspace (verify terminal still exists)
+    const targetWs = updatedWorkspaces.find(w => w.id === id)
+    const savedFocus = targetWs?.focusedTerminalId
+    const restoredFocus = savedFocus && this.state.terminals.find(t => t.id === savedFocus && t.workspaceId === id)
+      ? savedFocus
+      : null
+
     this.state = {
       ...this.state,
+      workspaces: updatedWorkspaces,
       activeWorkspaceId: id,
-      focusedTerminalId: null
+      focusedTerminalId: restoredFocus
     }
 
     this.notify()
+    this.save()
   }
 
   renameWorkspace(id: string, alias: string): void {
@@ -564,8 +580,14 @@ class WorkspaceStore {
         sessionMeta: t.sessionMeta,
         procfilePath: t.procfilePath,
       }))
+      // Persist current focus into the active workspace at save time
+      const wsWithFocus = this.state.workspaces.map(w =>
+        w.id === this.state.activeWorkspaceId && this.state.focusedTerminalId
+          ? { ...w, focusedTerminalId: this.state.focusedTerminalId }
+          : w
+      )
       const data = JSON.stringify({
-        workspaces: this.state.workspaces,
+        workspaces: wsWithFocus,
         activeWorkspaceId: this.state.activeWorkspaceId,
         activeGroup: this.activeGroup,
         terminals: savedTerminals,
@@ -615,12 +637,20 @@ class WorkspaceStore {
             pid: undefined,
           }
         }).filter((t: TerminalInstance | null): t is TerminalInstance => t !== null)
+        // Restore last focused terminal for the active workspace
+        const activeWs = workspaces.find((w: Workspace) => w.id === parsed.activeWorkspaceId)
+        const savedFocusId = activeWs?.focusedTerminalId
+        const restoredFocus = savedFocusId && terminals.find(
+          (t: TerminalInstance) => t.id === savedFocusId && t.workspaceId === parsed.activeWorkspaceId
+        ) ? savedFocusId : null
+
         this.state = {
           ...this.state,
           workspaces,
           activeWorkspaceId: parsed.activeWorkspaceId || null,
           terminals,
           activeTerminalId: parsed.activeTerminalId || null,
+          focusedTerminalId: restoredFocus,
         }
         this.activeGroup = parsed.activeGroup || null
         this.notify()

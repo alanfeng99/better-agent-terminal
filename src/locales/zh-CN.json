@@ -24,6 +24,13 @@
   },
   "settings": {
     "title": "设置",
+    "tabGeneral": "常规",
+    "tabAgent": "代理",
+    "tabRemote": "远程",
+    "tabAdvanced": "高级",
+    "agentDefaults": "代理默认值",
+    "modelAndEffort": "模型与效能",
+    "agentBehavior": "行为设置",
     "shell": "Shell",
     "defaultShell": "默认 Shell",
     "customShellPath": "自定义 Shell 路径",
