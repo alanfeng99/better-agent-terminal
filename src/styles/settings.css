@@ -49,6 +49,35 @@
   color: var(--text-primary);
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.settings-tab-btn {
+  padding: 8px 14px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  margin-bottom: -1px;
+}
+
+.settings-tab-btn.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-color);
+}
+
+.settings-tab-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
 .settings-content {
   flex: 1;
   overflow-y: auto;
