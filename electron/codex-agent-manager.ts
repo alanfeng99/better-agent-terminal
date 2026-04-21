@@ -602,11 +602,24 @@ export class CodexAgentManager {
         session.messageQueue = []
         this.send('claude:error', sessionId, 'Previous turn stalled; recovered.')
       } else {
-        session.messageQueue.push({ prompt, images })
+        // Interrupt the running turn and immediately queue the new prompt.
+        // The running turn's finally block will drain the queue once its abort
+        // unwinds, so the new message starts without waiting for completion.
+        // Prepend the aborted prompt as context so the model knows what got cut off.
+        logger.log(`${stag} Interrupting running turn to process new message`)
+        const abortedPrompt = session.currentPrompt
+        session.abortController.abort()
+        session.messageQueue.length = 0
+        const contextualPrompt = abortedPrompt && abortedPrompt !== prompt
+          ? `[使用者先前的訊息（已中斷）: "${abortedPrompt}"]\n\n${prompt}`
+          : prompt
+        session.messageQueue.push({ prompt: contextualPrompt, images })
         return true
       }
     }
 
+    // Fresh controller for every turn so a prior abort() doesn't poison this one.
+    session.abortController = new AbortController()
     session.isRunning = true
     session.currentPrompt = prompt
     session.state.isStreaming = true
