@@ -16,7 +16,7 @@ export interface AgentParamDefinition {
 }
 
 function getCodexAgentParamDefinitions(): AgentParamDefinition[] {
-  const dangerousMode = settingsStore.getSettings().codexCliDangerousMode !== false
+  const dangerousMode = settingsStore.getSettings().allowBypassPermissions === true
 
   return [
     {

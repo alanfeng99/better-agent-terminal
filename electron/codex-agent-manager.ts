@@ -273,6 +273,7 @@ export class CodexAgentManager {
       sandboxMode: session.sandboxMode,
       approvalPolicy: session.approvalPolicy,
       modelReasoningEffort: session.effort,
+      skipGitRepoCheck: true,
     }
     if (session.model) threadOpts.model = session.model
     const codex = session.codexInstance as Record<string, (id: string, opts: Record<string, unknown>) => unknown>
@@ -546,6 +547,7 @@ export class CodexAgentManager {
         sandboxMode,
         approvalPolicy,
         modelReasoningEffort: session.effort,
+        skipGitRepoCheck: true,
       }
       if (options.model) threadOpts.model = options.model
 
@@ -1052,6 +1054,7 @@ export class CodexAgentManager {
         sandboxMode: session.sandboxMode,
         approvalPolicy: session.approvalPolicy,
         modelReasoningEffort: session.effort,
+        skipGitRepoCheck: true,
       }
       if (session.model) threadOpts.model = session.model
       session.thread = codex.startThread(threadOpts)

@@ -26,7 +26,6 @@ const defaultSettings: AppSettings = {
   defaultTerminalCount: 1,
   createDefaultAgentTerminal: true,
   allowBypassPermissions: true,
-  codexCliDangerousMode: true,
   defaultModel: 'claude-opus-4-6',
 }
 
@@ -187,13 +186,6 @@ class SettingsStore {
     this.save()
   }
 
-  setCodexCliDangerousMode(enabled: boolean): void {
-    this.settings = { ...this.settings, codexCliDangerousMode: enabled }
-    this.notify()
-    this.save()
-  }
-
-
   setCollapseToolOutputs(collapse: boolean): void {
     this.settings = { ...this.settings, collapseToolOutputs: collapse }
     this.notify()
@@ -278,7 +270,7 @@ class SettingsStore {
       return this.settings.agentCustomCommand || null
     }
     if (this.settings.agentCommandType === 'codex') {
-      return this.settings.codexCliDangerousMode !== false
+      return this.settings.allowBypassPermissions
         ? 'codex --sandbox danger-full-access'
         : 'codex'
     }

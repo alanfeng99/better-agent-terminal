@@ -94,7 +94,7 @@ function mergeEnvVars(global: EnvVariable[] = [], workspace: EnvVariable[] = [])
 
 function buildAgentAutoCommand(presetId: string, settings: ReturnType<typeof settingsStore.getSettings>): string | null {
   if (presetId === 'codex-cli') {
-    return settings.codexCliDangerousMode !== false
+    return settings.allowBypassPermissions
       ? 'codex --sandbox danger-full-access'
       : 'codex'
   }
