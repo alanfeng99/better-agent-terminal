@@ -26,6 +26,9 @@ export async function loadOpenAIKey(): Promise<string | null> {
   } catch {
     cachedKey = null
   }
+  if (!cachedKey && process.env.OPENAI_API_KEY) {
+    cachedKey = process.env.OPENAI_API_KEY
+  }
   loaded = true
   return cachedKey
 }
