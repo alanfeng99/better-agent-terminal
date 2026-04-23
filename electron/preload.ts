@@ -63,6 +63,9 @@ const electronAPI = {
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
     openPath: (folderPath: string) => ipcRenderer.invoke('shell:open-path', folderPath),
+    // Electron 32+ removed File.path; use webUtils.getPathForFile() to resolve
+    // a dropped/picked File's absolute path. Returns '' if the file has no path.
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
   app: {
     openNewInstance: (profileId: string) => ipcRenderer.invoke('app:open-new-instance', profileId),
@@ -409,11 +412,6 @@ const electronAPI = {
     append: (panelId: string, lines: string) => ipcRenderer.invoke('worker-buffer:append', panelId, lines),
     readAll: (panelId: string) => ipcRenderer.invoke('worker-buffer:readAll', panelId) as Promise<string>,
     clear: (panelId: string) => ipcRenderer.invoke('worker-buffer:clear', panelId),
-  },
-  shell: {
-    // Electron 32+ removed File.path; use webUtils.getPathForFile() to resolve
-    // a dropped/picked File's absolute path. Returns '' if the file has no path.
-    getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
 }
 

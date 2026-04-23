@@ -225,12 +225,12 @@ export class OpenAIAgentManager {
       const assistantContent: unknown[] = []
       if (lastAssistantText) assistantContent.push({ type: 'text', text: lastAssistantText })
       for (const tc of pendingToolCalls) {
-        assistantContent.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.toolName, input: tc.input })
+        assistantContent.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.toolName, args: tc.input })
       }
       msgs.push({ role: 'assistant', content: assistantContent })
       const toolContent: unknown[] = []
       for (const tc of pendingToolCalls) {
-        toolContent.push({ type: 'tool-result', toolCallId: tc.id, toolName: tc.toolName, output: tc.result ?? '' })
+        toolContent.push({ type: 'tool-result', toolCallId: tc.id, toolName: tc.toolName, result: tc.result ?? '' })
       }
       msgs.push({ role: 'tool', content: toolContent })
       pendingToolCalls = []
@@ -276,7 +276,7 @@ export class OpenAIAgentManager {
         apiKey,
         ...(isCodexOAuth ? { baseURL: CODEX_CHATGPT_BASE_URL } : {}),
       })
-      const compactModel = provider(session.model)
+      const compactModel = isCodexOAuth ? provider.chat(session.model) : provider(session.model)
       const truncated = truncateToolOutputs(head)
       const prompt = buildCompactionPrompt(truncated)
       const compactSystem = 'You are a summarizer. Produce only the requested Markdown summary; no preamble.'
@@ -506,7 +506,9 @@ export class OpenAIAgentManager {
         apiKey,
         ...(isCodexOAuth ? { baseURL: CODEX_CHATGPT_BASE_URL } : {}),
       })
-      const languageModel = provider(session.model)
+      const languageModel = isCodexOAuth
+        ? provider.chat(session.model)
+        : provider(session.model)
 
       const tools = buildBuiltinTools({ skills: session.skills.size > 0 })
 
@@ -528,6 +530,16 @@ export class OpenAIAgentManager {
 
       const modelInfo = findModel(session.model)
       const supportsReasoning = modelInfo?.supportsReasoning === true
+
+      const providerOpts: Record<string, unknown> = {}
+      if (supportsReasoning) providerOpts.reasoningEffort = session.effort
+      if (isCodexOAuth) {
+        providerOpts.store = false
+        providerOpts.instructions = session.systemPrompt
+      }
+
+      logger.log(`${stag} streamText: model=${session.model} supportsReasoning=${supportsReasoning} effort=${session.effort} api=${isCodexOAuth ? 'codex-oauth(chat)' : 'responses'} providerOpts=${JSON.stringify(Object.keys(providerOpts))} msgCount=${session.modelMessages.length - 1}`)
+
       const streamArgs = {
         model: languageModel,
         system: session.systemPrompt,
@@ -536,18 +548,8 @@ export class OpenAIAgentManager {
         stopWhen: stepCountIs(25),
         abortSignal: ctrl.signal,
         experimental_context,
-        ...(supportsReasoning ? {
-          providerOptions: {
-            openai: {
-              reasoningEffort: session.effort,
-              ...(isCodexOAuth ? { store: false, instructions: session.systemPrompt } : {}),
-            },
-          },
-        } : {}),
-        ...(!supportsReasoning && isCodexOAuth ? {
-          providerOptions: {
-            openai: { store: false, instructions: session.systemPrompt },
-          },
+        ...(Object.keys(providerOpts).length > 0 ? {
+          providerOptions: { openai: providerOpts },
         } : {}),
       } as unknown as Parameters<typeof streamText>[0]
       const result = streamText(streamArgs)
@@ -688,7 +690,8 @@ export class OpenAIAgentManager {
       }
     } catch (err) {
       if (!ctrl.signal.aborted) {
-        logger.error(`${stag} Turn failed:`, err)
+        const roles = session.modelMessages.slice(1).map((m: ModelMessage) => m.role)
+        logger.error(`${stag} Turn failed (model=${session.model} msgs=[${roles.join(',')}]):`, err)
         const msg = stringifyError(err)
         this.send('claude:error', sessionId, `OpenAI error: ${msg}`)
         this.send('claude:turn-end', sessionId, { reason: 'error', error: msg })
