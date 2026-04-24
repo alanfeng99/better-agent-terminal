@@ -142,7 +142,13 @@ function findCodexBinary(): string | undefined {
   }
 }
 
+// gpt-5.5 currently requires ChatGPT login (not available via API key auth).
+export const DEFAULT_CODEX_MODEL = 'gpt-5.5'
+
 const CODEX_MODELS: Array<{ value: string; displayName: string; description: string }> = [
+  { value: 'gpt-5.5', displayName: 'GPT-5.5', description: 'Newest frontier · recommended (ChatGPT login)' },
+  { value: 'gpt-5.4', displayName: 'GPT-5.4', description: 'Flagship GPT-5.4' },
+  { value: 'gpt-5.4-mini', displayName: 'GPT-5.4 Mini', description: 'Fast GPT-5.4' },
   { value: 'gpt-5.3-codex', displayName: 'GPT-5.3 Codex', description: 'GPT-5.3 · codex variant' },
   { value: 'gpt-5.3-codex-spark', displayName: 'GPT-5.3 Codex Spark', description: 'GPT-5.3 · lightweight codex' },
   { value: 'codex-mini-latest', displayName: 'Codex Mini', description: 'codex-mini · optimized for code' },
@@ -502,7 +508,8 @@ export class CodexAgentManager {
     }
 
     const stag = `[codex:${sessionId.slice(0, 8)}]`
-    logger.log(`${stag} Starting session cwd=${options.cwd} model=${options.model || 'default'}`)
+    const effectiveModel = options.model || DEFAULT_CODEX_MODEL
+    logger.log(`${stag} Starting session cwd=${options.cwd} model=${effectiveModel}`)
 
     const sandboxMode = options.codexSandboxMode || 'workspace-write'
     const approvalPolicy = options.codexApprovalPolicy || 'on-request'
@@ -513,12 +520,12 @@ export class CodexAgentManager {
       cwd: options.cwd,
       metadata: {
         ...this.makeMetadata(),
-        model: options.model,
+        model: effectiveModel,
         cwd: options.cwd,
       },
       sandboxMode,
       approvalPolicy,
-      model: options.model,
+      model: effectiveModel,
       effort: normalizeCodexEffort(options.effort),
       messageQueue: [],
       startTime: Date.now(),
@@ -550,7 +557,7 @@ export class CodexAgentManager {
         modelReasoningEffort: session.effort,
         skipGitRepoCheck: true,
       }
-      if (options.model) threadOpts.model = options.model
+      threadOpts.model = effectiveModel
 
       const savedThreadId = sdkThreadIds.get(sessionId)
       let thread: unknown
