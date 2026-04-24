@@ -631,30 +631,23 @@ export class CodexAgentManager {
     const stag = `[codex:${sessionId.slice(0, 8)}]`
 
     if (session.isRunning) {
-      const sinceLast = session.lastEventAt ? Date.now() - session.lastEventAt : 0
-      const stuck = session.lastEventAt && sinceLast > 30_000
-      if (stuck) {
-        logger.warn(`${stag} No events for ${Math.round(sinceLast / 1000)}s; forcing recovery to accept new message`)
-        session.abortController.abort()
-        session.abortController = new AbortController()
-        session.isRunning = false
-        session.state.isStreaming = false
-        session.currentPrompt = undefined
-        session.messageQueue = []
-        this.send('claude:error', sessionId, 'Previous turn stalled; recovered.')
-      } else {
-        // Interrupt the running turn and immediately queue the new prompt.
-        // The running turn's finally block will drain the queue once its abort
-        // unwinds, so the new message starts without waiting for completion.
-        // Prepend the aborted prompt as context so the model knows what got cut off.
-        logger.log(`${stag} Interrupting running turn to process new message`)
-        const abortedPrompt = session.currentPrompt
-        session.abortController.abort()
-        session.messageQueue.length = 0
-        const contextualPrompt = abortedPrompt ? wrapInterruptedPrompt(abortedPrompt, prompt) : prompt
-        session.messageQueue.push({ prompt: contextualPrompt, images })
-        return true
-      }
+      // Interrupt the running turn and proceed to start a fresh turn below.
+      // We don't wait for the old turn to unwind because the Codex SDK's async
+      // iterator doesn't reliably respond to AbortSignal — the for-await can
+      // block forever waiting for the next event, so the old turn's finally
+      // block never runs and any queued message is never drained.
+      //
+      // Instead we abort the old controller and replace session.abortController
+      // with a fresh one below. The old turn's finally block checks
+      // `session.abortController === ctrl` and will skip cleanup (including
+      // queue drain) when it eventually unblocks. Its orphaned codex subprocess
+      // exits on its own once its abort signal propagates.
+      logger.log(`${stag} Interrupting running turn to start new message immediately`)
+      const abortedPrompt = session.currentPrompt
+      session.abortController.abort()
+      session.messageQueue = []
+      prompt = abortedPrompt ? wrapInterruptedPrompt(abortedPrompt, prompt) : prompt
+      // Fall through to fresh-turn setup.
     }
 
     // Fresh controller for every turn so a prior abort() doesn't poison this one.
