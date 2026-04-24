@@ -1,8 +1,10 @@
 import path from 'path'
 import * as fs from 'fs/promises'
+import * as fsSync from 'fs'
 import type { WindowRegistry } from './window-registry'
 import { logger } from './logger'
 import { getDataDir } from './server-core/data-dir'
+import { readEncryptedJson, writeEncryptedJson } from './remote/secrets'
 
 export interface ProfileEntry {
   id: string
@@ -65,6 +67,14 @@ function getProfilePath(id: string): string {
   return path.join(getProfilesDir(), `${id}.json`)
 }
 
+function getRemoteTokensPath(): string {
+  return path.join(getProfilesDir(), 'remote-tokens.enc.json')
+}
+
+interface RemoteTokenStore {
+  tokens: Record<string, string>
+}
+
 function toSlug(name: string): string {
   return name
     .toLowerCase()
@@ -74,6 +84,50 @@ function toSlug(name: string): string {
 
 async function ensureDir(): Promise<void> {
   await fs.mkdir(getProfilesDir(), { recursive: true })
+}
+
+function readRemoteTokenStore(): RemoteTokenStore {
+  const store = readEncryptedJson<RemoteTokenStore>(getRemoteTokensPath())
+  if (store && typeof store === 'object' && store.tokens && typeof store.tokens === 'object') {
+    return { tokens: { ...store.tokens } }
+  }
+  return { tokens: {} }
+}
+
+function writeRemoteTokenStore(store: RemoteTokenStore): void {
+  fsSync.mkdirSync(getProfilesDir(), { recursive: true })
+  writeEncryptedJson(getRemoteTokensPath(), store)
+}
+
+function hydrateRemoteTokens(index: ProfileIndex): ProfileIndex {
+  const store = readRemoteTokenStore()
+  for (const profile of index.profiles) {
+    const token = store.tokens[profile.id]
+    if (profile.type === 'remote' && token && !profile.remoteToken) {
+      profile.remoteToken = token
+    }
+  }
+  return index
+}
+
+function stripAndPersistRemoteTokens(index: ProfileIndex): ProfileIndex {
+  const store = readRemoteTokenStore()
+  const profileIds = new Set(index.profiles.map(profile => profile.id))
+  const profiles = index.profiles.map(profile => {
+    const { remoteToken, ...rest } = profile
+    if (profile.type === 'remote' && remoteToken) {
+      store.tokens[profile.id] = remoteToken
+    } else if (remoteToken !== undefined || profile.type !== 'remote') {
+      delete store.tokens[profile.id]
+    }
+    return rest as ProfileEntry
+  })
+
+  for (const id of Object.keys(store.tokens)) {
+    if (!profileIds.has(id)) delete store.tokens[id]
+  }
+  writeRemoteTokenStore(store)
+  return { ...index, profiles }
 }
 
 function normalizeIndex(raw: Record<string, unknown>): ProfileIndex {
@@ -100,7 +154,7 @@ async function readIndexFile(filePath: string): Promise<ProfileIndex | null> {
     if (e.code === 'ENOENT') return null
     throw new Error(`Failed to read profile index at ${filePath}: ${e.message}`)
   }
-  return normalizeIndex(JSON.parse(data))
+  return hydrateRemoteTokens(normalizeIndex(JSON.parse(data)))
 }
 
 /**
@@ -149,7 +203,8 @@ async function writeIndex(index: ProfileIndex): Promise<void> {
   } catch { /* no existing file, or unreadable — skip backup */ }
 
   // Atomic write: write to temp, then rename. Crash mid-write leaves old file intact.
-  await fs.writeFile(tmpPath, JSON.stringify(index, null, 2), 'utf-8')
+  const sanitized = stripAndPersistRemoteTokens(index)
+  await fs.writeFile(tmpPath, JSON.stringify(sanitized, null, 2), 'utf-8')
   await fs.rename(tmpPath, indexPath)
 }
 

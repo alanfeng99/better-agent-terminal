@@ -8,7 +8,7 @@ import type { AddressInfo } from 'net'
 import { invokeHandler } from './handler-registry'
 import { logger } from '../logger'
 import { broadcastHub } from './broadcast-hub'
-import { PROXIED_EVENTS, type RemoteFrame } from './protocol'
+import { PROXIED_CHANNELS, PROXIED_EVENTS, type RemoteFrame } from './protocol'
 import { ensureCertificate, type ServerCertificate } from './certificate'
 import { readEncryptedString, writeEncryptedString } from './secrets'
 
@@ -270,11 +270,14 @@ export class RemoteServer {
 
         if (frame.type === 'invoke' && frame.channel) {
           try {
+            if (!PROXIED_CHANNELS.has(frame.channel)) {
+              throw new Error(`Channel is not exposed remotely: ${frame.channel}`)
+            }
             let args = frame.args || []
             while (args.length > 0 && args[args.length - 1] == null) {
               args = args.slice(0, -1)
             }
-            const result = await invokeHandler(frame.channel, args)
+            const result = await invokeHandler(frame.channel, args, null, true)
             this.sendFrame(ws, { type: 'invoke-result', id: frame.id, result })
           } catch (err: unknown) {
             const message = err instanceof Error ? err.message : String(err)

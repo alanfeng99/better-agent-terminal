@@ -19,12 +19,10 @@
     "build:release": "node scripts/build-version.js",
     "postinstall": "node -e \"if(process.platform==='darwin'){const p=require('path').join('node_modules/electron/dist/Electron.app/Contents/Info.plist');try{require('child_process').execSync('plutil -replace CFBundleName -string BetterAgentTerminal '+p+' && plutil -replace CFBundleDisplayName -string BetterAgentTerminal '+p)}catch(e){}}\" && echo 'postinstall done'",
     "test:console": "node tests/console-test.js",
-    "test:claude-ctrl-o": "node tests/test-claude-ctrl-o.js",
     "diagnose:ctrl-o": "npx electron tests/diagnose-ctrl-o.js",
     "diagnose:ctrl-o:quick": "npx electron tests/diagnose-ctrl-o.js --quick",
     "diagnose:ctrl-o:verbose": "npx electron tests/diagnose-ctrl-o.js --verbose",
-    "test:node-resolver": "npx tsx tests/node-resolver.test.ts",
-    "test:file-drag": "npx tsx tests/file-drag-to-chat.test.ts"
+    "test:node-resolver": "npx tsx tests/node-resolver.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.53",
@@ -35,7 +33,7 @@
     "ai": "^6.0.168",
     "better-sqlite3": "^12.5.0",
     "selfsigned": "^5.5.0",
-    "uuid": "^9.0.0",
+    "uuid": "^14.0.0",
     "ws": "^8.19.0",
     "zod": "^4.3.6"
   },
@@ -52,7 +50,6 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "@types/uuid": "^9.0.0",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.0",
     "@xterm/addon-fit": "^0.10.0",

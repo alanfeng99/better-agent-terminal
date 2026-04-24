@@ -1335,24 +1335,30 @@ function registerLocalHandlers() {
 
   // ── Worker buffer file operations ──
   const wbDir = path.join(app.getPath('userData'), 'worker-buffers')
+  const workerBufferPath = (panelId: string) => {
+    if (!/^[a-zA-Z0-9_-]+$/.test(panelId)) {
+      throw new Error('Invalid worker buffer id')
+    }
+    return path.join(wbDir, `${panelId}.jsonl`)
+  }
 
   ipcMain.handle('worker-buffer:init', async (_event, panelId: string) => {
     await fs.mkdir(wbDir, { recursive: true })
-    await fs.writeFile(path.join(wbDir, `${panelId}.jsonl`), '', 'utf-8')
+    await fs.writeFile(workerBufferPath(panelId), '', 'utf-8')
   })
 
   ipcMain.handle('worker-buffer:append', async (_event, panelId: string, lines: string) => {
-    await fs.appendFile(path.join(wbDir, `${panelId}.jsonl`), lines, 'utf-8')
+    await fs.appendFile(workerBufferPath(panelId), lines, 'utf-8')
   })
 
   ipcMain.handle('worker-buffer:readAll', async (_event, panelId: string) => {
     try {
-      return await fs.readFile(path.join(wbDir, `${panelId}.jsonl`), 'utf-8')
+      return await fs.readFile(workerBufferPath(panelId), 'utf-8')
     } catch { return '' }
   })
 
   ipcMain.handle('worker-buffer:clear', async (_event, panelId: string) => {
-    try { await fs.unlink(path.join(wbDir, `${panelId}.jsonl`)) } catch { /* ignore */ }
+    try { await fs.unlink(workerBufferPath(panelId)) } catch { /* ignore */ }
   })
 }
 

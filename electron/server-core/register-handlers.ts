@@ -770,7 +770,14 @@ export function registerProxiedHandlers(deps: ProxiedHandlersDeps): void {
   registerHandler('snippet:getByWorkspace', (_ctx, workspaceId?: string) => snippetDb.getByWorkspace(workspaceId))
 
   // Profile (subset exposed to remote clients)
-  registerHandler('profile:list', (_ctx) => profileManager.list())
+  registerHandler('profile:list', async (ctx) => {
+    const result = await profileManager.list()
+    if (!ctx.isRemote) return result
+    return {
+      ...result,
+      profiles: result.profiles.map(({ remoteToken: _remoteToken, ...profile }) => profile),
+    }
+  })
   registerHandler('profile:load', (_ctx, profileId: string) => profileManager.load(profileId))
   registerHandler('profile:load-snapshot', (_ctx, profileId: string) => profileManager.loadSnapshot(profileId))
   registerHandler('profile:get-active-ids', (_ctx) => profileManager.getActiveProfileIds())

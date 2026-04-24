@@ -17,6 +17,9 @@ export function readEncryptedJson<T>(filePath: string): T | null {
       const decrypted = safeStorage.decryptString(Buffer.from(raw.data, 'base64'))
       return JSON.parse(decrypted) as T
     }
+    if (raw && raw.enc === false && typeof raw.data === 'string') {
+      return JSON.parse(raw.data) as T
+    }
     // Legacy plaintext — return as-is; caller should rewrite through writeEncryptedJson to upgrade.
     return raw as unknown as T
   } catch (e) {
