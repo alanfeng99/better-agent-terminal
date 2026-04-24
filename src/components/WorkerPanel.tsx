@@ -50,6 +50,43 @@ function ansiColor(hex: string, text: string): string {
   return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`
 }
 
+function prefixWorkerChunk(data: string, prefix: string, wasMidLine: boolean): { output: string; midLine: boolean } {
+  let output = ''
+  let atLineStart = !wasMidLine
+
+  for (let index = 0; index < data.length; index++) {
+    const char = data[index]
+    const next = data[index + 1]
+
+    if (char === '\r' && next === '\n') {
+      output += '\r\n'
+      index++
+      atLineStart = true
+      continue
+    }
+
+    if (char === '\n') {
+      output += '\n'
+      atLineStart = true
+      continue
+    }
+
+    if (char === '\r') {
+      output += '\r' + prefix
+      atLineStart = false
+      continue
+    }
+
+    if (atLineStart) {
+      output += prefix
+      atLineStart = false
+    }
+    output += char
+  }
+
+  return { output, midLine: !atLineStart }
+}
+
 // Build the line written to the PTY to launch a Procfile command so that the
 // PTY exits with the command's status. The wrapper differs per shell because
 // `exec` is a POSIX shell builtin and PowerShell has no direct equivalent.
@@ -89,6 +126,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   const midLineRef = useRef<Map<string, boolean>>(new Map())
   const processesRef = useRef<WorkerProcess[]>([])
   const shellRef = useRef<string | undefined>()
+  const ptyIdsRef = useRef<Set<string>>(new Set())
   const logVisibleRef = useRef<Map<string, boolean>>(new Map())
   const pendingBatchRef = useRef<Array<{ name: string; color: string; data: string }>>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -146,19 +184,10 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       const maxLen = Math.max(...processesRef.current.map(p => p.name.length))
       const paddedName = entry.name.padEnd(maxLen)
       const prefix = ansiColor(entry.color, paddedName) + '\x1b[90m | \x1b[0m'
+      const formatted = prefixWorkerChunk(entry.data, prefix, !!midLineRef.current.get(entry.name))
+      midLineRef.current.set(entry.name, formatted.midLine)
 
-      const atLineStart = !midLineRef.current.get(entry.name)
-      let output = entry.data.replace(/\n/g, '\n' + prefix)
-      if (atLineStart) output = prefix + output
-
-      if (entry.data.endsWith('\n')) {
-        output = output.slice(0, -prefix.length)
-        midLineRef.current.set(entry.name, false)
-      } else {
-        midLineRef.current.set(entry.name, true)
-      }
-
-      terminal.write(output)
+      terminal.write(formatted.output)
     }
   }, [])
 
@@ -245,19 +274,10 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const maxLen = Math.max(...processesRef.current.map(p => p.name.length))
     const paddedName = name.padEnd(maxLen)
     const prefix = ansiColor(color, paddedName) + '\x1b[90m | \x1b[0m'
+    const formatted = prefixWorkerChunk(data, prefix, !!midLineRef.current.get(name))
+    midLineRef.current.set(name, formatted.midLine)
 
-    const atLineStart = !midLineRef.current.get(name)
-    let output = data.replace(/\n/g, '\n' + prefix)
-    if (atLineStart) output = prefix + output
-
-    if (data.endsWith('\n')) {
-      output = output.slice(0, -prefix.length)
-      midLineRef.current.set(name, false)
-    } else {
-      midLineRef.current.set(name, true)
-    }
-
-    terminal.write(output)
+    terminal.write(formatted.output)
   }, [scheduleFlush])
 
   // Start a single process PTY
@@ -268,6 +288,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       p.ptyId === proc.ptyId ? { ...p, status: 'starting' as const, exitCode: undefined } : p
     ))
 
+    ptyIdsRef.current.add(proc.ptyId)
     await window.electronAPI.pty.create({
       id: proc.ptyId,
       cwd: processCwd,
@@ -302,6 +323,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       if (!newNames.has(proc.name)) {
         if (proc.status === 'running' || proc.status === 'starting') {
           window.electronAPI.pty.kill(proc.ptyId)
+          ptyIdsRef.current.delete(proc.ptyId)
         }
         writeOutput(proc.name, proc.color, `\n\x1b[90mRemoved from Procfile\x1b[0m\n`)
       }
@@ -342,6 +364,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (!fresh) return
     dlog(`[worker] stopping process: ${fresh.name}`)
     window.electronAPI.pty.kill(fresh.ptyId)
+    ptyIdsRef.current.delete(fresh.ptyId)
   }, [reloadProcfile])
 
   // Restart a single process (reload Procfile first to pick up command changes)
@@ -352,6 +375,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
 
     dlog(`[worker] restarting process: ${fresh.name}`)
     await window.electronAPI.pty.kill(fresh.ptyId)
+    ptyIdsRef.current.delete(fresh.ptyId)
 
     midLineRef.current.set(fresh.name, false)
     writeOutput(fresh.name, fresh.color, `\n\x1b[33mRestarting...\x1b[0m\n`)
@@ -372,6 +396,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       if (p.status === 'running' || p.status === 'starting') {
         dlog(`[worker] stopping process: ${p.name}`)
         window.electronAPI.pty.kill(p.ptyId)
+        ptyIdsRef.current.delete(p.ptyId)
       }
     }
   }, [reloadProcfile])
@@ -383,6 +408,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       dlog(`[worker] restarting process: ${p.name}`)
       if (p.status === 'running' || p.status === 'starting') {
         await window.electronAPI.pty.kill(p.ptyId)
+        ptyIdsRef.current.delete(p.ptyId)
       }
       midLineRef.current.set(p.name, false)
       writeOutput(p.name, p.color, `\n\x1b[33mRestarting...\x1b[0m\n`)
@@ -395,8 +421,6 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (!containerRef.current) return
 
     let disposed = false
-    const ptyIds: string[] = []
-
     // --- Create combined xterm.js (synchronous) ---
     const settings = settingsStore.getSettings()
     const colors = settingsStore.getTerminalColors()
@@ -446,7 +470,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       if (cols !== lastCols || rows !== lastRows) {
         lastCols = cols
         lastRows = rows
-        for (const id of ptyIds) {
+        for (const id of ptyIdsRef.current) {
           window.electronAPI.pty.resize(id, cols, rows)
         }
       }
@@ -474,6 +498,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const unsubExit = window.electronAPI.pty.onExit((id, exitCode) => {
       const proc = processesRef.current.find(p => p.ptyId === id)
       if (!proc) return
+      ptyIdsRef.current.delete(id)
       midLineRef.current.set(proc.name, false)
       const colorCode = exitCode === 0 ? '32' : '31'
       const exitMsg = `\x1b[${colorCode}mProcess exited with code ${exitCode}\x1b[0m`
@@ -534,7 +559,6 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
         autoStart: autoStartPrefs[entry.name] !== false, // default true
         status: (autoStartPrefs[entry.name] !== false ? 'starting' : 'stopped') as ProcessStatus,
       }))
-      ptyIds.push(...procs.map(p => p.ptyId))
       processesRef.current = procs
       setProcesses(procs)
 
@@ -548,9 +572,10 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       for (const proc of procs) {
         if (disposed) break
         if (!proc.autoStart) continue
+        ptyIdsRef.current.add(proc.ptyId)
         await window.electronAPI.pty.create({
           id: proc.ptyId,
-          cwd,
+          cwd: processCwd,
           type: 'terminal',
           shell: shellRef.current,
         })
@@ -578,11 +603,16 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       terminalRef.current = null
       fitAddonRef.current = null
       window.electronAPI.workerBuffer.clear(terminalId)
-      for (const id of ptyIds) {
+      const idsToKill = new Set([
+        ...ptyIdsRef.current,
+        ...processesRef.current.map(proc => proc.ptyId),
+      ])
+      ptyIdsRef.current.clear()
+      for (const id of idsToKill) {
         window.electronAPI.pty.kill(id)
       }
     }
-  }, [terminalId, procfilePath, cwd, writeOutput])
+  }, [terminalId, procfilePath, processCwd, writeOutput])
 
   // Handle resize/refresh when becoming active
   useEffect(() => {

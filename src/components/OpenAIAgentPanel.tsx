@@ -2331,6 +2331,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   // Extract main content string for the IN block display
   const toolInputContent = (input: Record<string, unknown>): string => {
     if (input.command) return String(input.command)
+    if (input.path) return String(input.path)
     if (input.file_path) return String(input.file_path)
     if (input.pattern) return String(input.pattern)
     if (input.query) return String(input.query)
@@ -2380,6 +2381,62 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     } catch {
       return text
     }
+  }
+
+  const parseJsonRecord = (text: string): Record<string, unknown> | null => {
+    const trimmed = text.trim()
+    if (!trimmed.startsWith('{')) return null
+    try {
+      const parsed = JSON.parse(trimmed)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  const formatToolDuration = (durationMs: unknown): string | null => {
+    if (typeof durationMs !== 'number' || !Number.isFinite(durationMs)) return null
+    return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${Math.round(durationMs)}ms`
+  }
+
+  const structuredToolOutput = (toolName: string, raw: string): { text: string; reminders: string[]; errors: string[]; meta: string[] } => {
+    const { content, reminders, errors } = splitSystemReminders(raw)
+    const parsed = parseJsonRecord(content)
+    if (!parsed) {
+      return { text: parseContentBlocks(content), reminders, errors, meta: [] }
+    }
+
+    const meta: string[] = []
+    const resultErrors = [...errors]
+    if (typeof parsed.error === 'string' && parsed.error.trim()) resultErrors.push(parsed.error)
+    if (parsed.denied === true) resultErrors.push('Tool call was denied.')
+
+    if (toolName === 'Bash' && typeof parsed.stdout === 'string') {
+      if (parsed.exitCode !== undefined && parsed.exitCode !== null) meta.push(`exit ${String(parsed.exitCode)}`)
+      const duration = formatToolDuration(parsed.durationMs)
+      if (duration) meta.push(duration)
+      return { text: parsed.stdout, reminders, errors: resultErrors, meta }
+    }
+
+    if (toolName === 'Read' && typeof parsed.content === 'string') {
+      if (typeof parsed.path === 'string') meta.push(parsed.path)
+      const fromLine = typeof parsed.fromLine === 'number' ? parsed.fromLine : null
+      const toLine = typeof parsed.toLine === 'number' ? parsed.toLine : null
+      const totalLines = typeof parsed.totalLines === 'number' ? parsed.totalLines : null
+      if (fromLine !== null && toLine !== null) {
+        meta.push(totalLines !== null ? `lines ${fromLine}-${toLine} / ${totalLines}` : `lines ${fromLine}-${toLine}`)
+      }
+      return { text: parsed.content, reminders, errors: resultErrors, meta }
+    }
+
+    if (typeof parsed.content === 'string') return { text: parsed.content, reminders, errors: resultErrors, meta }
+    if (typeof parsed.stdout === 'string') return { text: parsed.stdout, reminders, errors: resultErrors, meta }
+    if (typeof parsed.output === 'string') return { text: parsed.output, reminders, errors: resultErrors, meta }
+    if (typeof parsed.message === 'string') return { text: parsed.message, reminders, errors: resultErrors, meta }
+
+    return { text: JSON.stringify(parsed, null, 2), reminders, errors: resultErrors, meta }
   }
 
   const renderTodoChecklist = (input: Record<string, unknown>) => {
@@ -2866,11 +2923,13 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               </div>
               {item.result && (() => {
                 const raw = typeof item.result === 'string' ? item.result : String(item.result)
-                const { content: outText, reminders, errors } = splitSystemReminders(raw)
+                const { text: outText, reminders, errors, meta } = structuredToolOutput(item.toolName, raw)
                 // Collapse by default for read-only tools; collapse all if setting enabled
                 const isReadOnlyTool = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'].includes(item.toolName)
                 const shouldCollapse = isReadOnlyTool || settingsStore.getSettings().collapseToolOutputs
                 const isOutExpanded = expandedTools.has(outBlockId)
+                const lineCount = outText ? outText.split('\n').length : 0
+                const metaText = meta.length > 0 ? meta.join(' · ') : ''
                 return (
                   <>
                     {errors.length > 0 && errors.map((err, i) => (
@@ -2887,8 +2946,13 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                         <span className="claude-tool-row-label">{t('claude.out')}</span>
                         <span className="claude-tool-row-content">
                           {isOutExpanded
-                            ? <LinkedText text={outText} />
-                            : <span className="claude-tool-collapsed-hint">{outText.split('\n').length} lines</span>
+                            ? (
+                                <>
+                                  {metaText && <span className="claude-tool-collapsed-hint">{metaText}{'\n'}</span>}
+                                  <LinkedText text={outText} />
+                                </>
+                              )
+                            : <span className="claude-tool-collapsed-hint">{lineCount} lines{metaText ? ` · ${metaText}` : ''}</span>
                           }
                         </span>
                         <span className={`claude-tool-chevron ${isOutExpanded ? 'expanded' : ''}`}>&#9654;</span>
@@ -2901,7 +2965,10 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                         title={t('claude.clickToCopy')}
                       >
                         <span className="claude-tool-row-label">{t('claude.out')}</span>
-                        <span className="claude-tool-row-content"><LinkedText text={outText} /></span>
+                        <span className="claude-tool-row-content">
+                          {metaText && <span className="claude-tool-collapsed-hint">{metaText}{'\n'}</span>}
+                          <LinkedText text={outText} />
+                        </span>
                         <span className={`claude-tool-row-copy ${copiedId === outBlockId ? 'copied' : ''}`}>
                           {copiedId === outBlockId ? '✓' : '⧉'}
                         </span>

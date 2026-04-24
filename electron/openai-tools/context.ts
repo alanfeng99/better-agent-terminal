@@ -9,10 +9,18 @@ export interface OpenAIToolContext {
   permissionMode: OpenAIPermissionMode
   abortSignal: AbortSignal
   requestPermission: (toolName: string, input: Record<string, unknown>, toolCallId: string) => Promise<boolean>
+  askUser: (questions: OpenAIAskUserQuestion[], toolCallId: string) => Promise<Record<string, string>>
   setPermissionMode: (mode: OpenAIPermissionMode) => void
   addToolCall: (tool: ClaudeToolCall) => void
   updateToolCall: (id: string, updates: Partial<ClaudeToolCall>) => void
   skills: Map<string, SkillMeta>
+}
+
+export interface OpenAIAskUserQuestion {
+  question: string
+  header: string
+  options: Array<{ label: string; description: string; markdown?: string }>
+  multiSelect: boolean
 }
 
 export const TOOL_CONTEXT_KEY = Symbol.for('bat.openai.toolContext')

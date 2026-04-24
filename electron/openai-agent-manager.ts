@@ -6,7 +6,7 @@ import { logger } from './logger'
 import { broadcastHub } from './remote/broadcast-hub'
 import { wrapInterruptedPrompt } from './agent-prompt-utils'
 import { buildBuiltinTools } from './openai-tools/registry'
-import { TOOL_CONTEXT_KEY, type OpenAIPermissionMode, type OpenAIToolContext } from './openai-tools/context'
+import { TOOL_CONTEXT_KEY, type OpenAIAskUserQuestion, type OpenAIPermissionMode, type OpenAIToolContext } from './openai-tools/context'
 import { hasCodexOAuthCredential, loadOpenAIAuthCredential } from './openai-agent/api-key'
 import { DEFAULT_OPENAI_MODEL, findModel, OPENAI_MODELS, CODEX_CHATGPT_SUPPORTED_MODELS } from './openai-agent/models'
 import { scanSkills, buildSkillsSystemPromptSection, type SkillMeta } from './openai-agent/skills-scanner'
@@ -55,6 +55,11 @@ interface PendingPermission {
   input: Record<string, unknown>
 }
 
+interface PendingAskUser {
+  resolve: (answers: Record<string, string>) => void
+  questions: OpenAIAskUserQuestion[]
+}
+
 interface OpenAISessionInstance {
   abortController: AbortController
   state: ClaudeSessionState
@@ -71,6 +76,7 @@ interface OpenAISessionInstance {
   sdkSessionId: string
   jsonlFile: string
   pendingPermissions: Map<string, PendingPermission>
+  pendingAskUsers: Map<string, PendingAskUser>
   modelMessages: ModelMessage[]
   systemPrompt: string
   toolApprovedOnce: Set<string>
@@ -97,12 +103,17 @@ You have access to the following tools for working with the user's codebase:
 - Grep: regex-search file contents
 - Glob: find files by pattern
 - TodoWrite: maintain a structured checklist for multi-step work
+- AskUserQuestion: ask the user concrete blocking questions with explicit options
 
 Rules:
 - Keep responses concise. Prefer direct action over commentary.
 - When editing, prefer Edit over Write for targeted changes.
 - Always read a file before editing it.
 - Don't make assumptions about the codebase — inspect it.
+- Treat the user's requested deliverable as already requested. Do not end with vague offers such as "if you want, I can..." when the next useful action is within the requested scope.
+- If the user asks to create, write, draft, organize, or document something, produce the artifact directly using Write/Edit when allowed. If plan mode blocks writing, use ExitPlanMode with a concrete plan to request execution approval.
+- If a decision is genuinely blocking, call AskUserQuestion with 2-4 concrete options and a recommended default. If the decision is not blocking, choose a reasonable default, state the assumption briefly, and continue.
+- Prefer creating durable files for long plans, checklists, release notes, specs, and docs instead of only streaming a long prose answer. Summarize the file path and key contents after writing.
 
 Plan mode:
 - Treat plan mode as read-only investigation. Read files, search, and run safe inspection commands as needed, but do not edit project files.
@@ -370,6 +381,16 @@ export class OpenAIAgentManager {
     }
   }
 
+  private makeAskUserRequester(session: OpenAISessionInstance): OpenAIToolContext['askUser'] {
+    return (questions, toolCallId) => new Promise<Record<string, string>>((resolve) => {
+      session.pendingAskUsers.set(toolCallId, { resolve, questions })
+      this.send('claude:ask-user', session.state.sessionId, {
+        toolUseId: toolCallId,
+        questions,
+      })
+    })
+  }
+
   async startSession(sessionId: string, options: {
     cwd: string
     prompt?: string
@@ -408,6 +429,7 @@ export class OpenAIAgentManager {
       sdkSessionId,
       jsonlFile,
       pendingPermissions: new Map(),
+      pendingAskUsers: new Map(),
       modelMessages: [],
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       toolApprovedOnce: new Set(),
@@ -562,6 +584,7 @@ export class OpenAIAgentManager {
         permissionMode: session.permissionMode,
         abortSignal: ctrl.signal,
         requestPermission: this.makePermissionRequester(session),
+        askUser: this.makeAskUserRequester(session),
         setPermissionMode: (mode) => {
           session.permissionMode = mode
           this.send('claude:modeChange', sessionId, mode)
@@ -762,6 +785,11 @@ export class OpenAIAgentManager {
           pending.resolve(false)
         }
         session.pendingPermissions.clear()
+        for (const [toolUseId, pending] of session.pendingAskUsers) {
+          pending.resolve({})
+          this.send('claude:ask-user-resolved', sessionId, toolUseId)
+        }
+        session.pendingAskUsers.clear()
 
         const info = findModel(session.model)
         const totalTokens = session.metadata.inputTokens + session.metadata.outputTokens
@@ -818,6 +846,8 @@ export class OpenAIAgentManager {
     session.isRunning = false
     session.modelMessages = []
     session.toolApprovedOnce.clear()
+    session.pendingPermissions.clear()
+    session.pendingAskUsers.clear()
     session.abortController = new AbortController()
     this.send('claude:session-reset', sessionId)
     this.addMessage(sessionId, {
@@ -924,7 +954,22 @@ export class OpenAIAgentManager {
     return true
   }
 
-  resolveAskUser(_sessionId: string, _toolUseId: string, _answers: unknown): boolean { return false }
+  resolveAskUser(sessionId: string, toolUseId: string, answers: unknown): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session) return false
+    const pending = session.pendingAskUsers.get(toolUseId)
+    if (!pending) return false
+    session.pendingAskUsers.delete(toolUseId)
+    const normalized = answers && typeof answers === 'object'
+      ? Object.fromEntries(
+        Object.entries(answers as Record<string, unknown>)
+          .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      )
+      : {}
+    pending.resolve(normalized)
+    this.send('claude:ask-user-resolved', sessionId, toolUseId)
+    return true
+  }
 
   async stopTask(_sessionId: string, _taskId: string): Promise<boolean> { return false }
   async getAccountInfo(_sessionId: string): Promise<null> { return null }

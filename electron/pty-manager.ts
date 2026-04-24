@@ -129,6 +129,35 @@ export class PtyManager {
     this.outputBuffers.delete(id)
   }
 
+  private killProcessTree(pid: number): void {
+    if (process.platform === 'win32') {
+      try {
+        const { execFileSync } = require('child_process')
+        execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', timeout: 5000 })
+      } catch { /* process may already be gone */ }
+      return
+    }
+
+    try {
+      process.kill(-pid, 'SIGTERM')
+    } catch {
+      try { process.kill(pid, 'SIGTERM') } catch { /* process may already be gone */ }
+    }
+  }
+
+  private forceKillProcessTree(pid: number): void {
+    if (process.platform === 'win32') {
+      this.killProcessTree(pid)
+      return
+    }
+
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      try { process.kill(pid, 'SIGKILL') } catch { /* process may already be gone */ }
+    }
+  }
+
   private getDefaultShell(): string {
     if (process.platform === 'win32') {
       // Prefer PowerShell 7 (pwsh) over Windows PowerShell
@@ -161,6 +190,9 @@ export class PtyManager {
 
   create(options: CreatePtyOptions): boolean {
     const { id, cwd, type, shell: shellOverride, customEnv = {}, perTerminalHistory, historyKey } = options
+    if (this.instances.has(id)) {
+      this.kill(id)
+    }
 
     const shell = shellOverride || this.getDefaultShell()
     let args: string[] = []
@@ -300,7 +332,8 @@ export class PtyManager {
           cwd,
           env: envWithUtf8 as NodeJS.ProcessEnv,
           stdio: ['pipe', 'pipe', 'pipe'],
-          shell: false
+          shell: false,
+          detached: process.platform !== 'win32'
         })
 
         childProcess.stdout?.on('data', (data: Buffer) => {
@@ -366,18 +399,15 @@ export class PtyManager {
     const instance = this.instances.get(id)
     if (instance) {
       const pid: number | undefined = instance.process.pid
-      if (instance.usePty) {
-        instance.process.kill()
+      if (pid) {
+        this.killProcessTree(pid)
+        setTimeout(() => this.forceKillProcessTree(pid), 1500)
       } else {
-        (instance.process as ChildProcess).kill()
-      }
-      // On Windows, kill() only terminates the direct shell process.
-      // Use taskkill /T to forcefully terminate the entire process tree.
-      if (process.platform === 'win32' && pid) {
-        try {
-          const { execFileSync } = require('child_process')
-          execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', timeout: 3000 })
-        } catch { /* process may already be gone */ }
+        if (instance.usePty) {
+          instance.process.kill()
+        } else {
+          (instance.process as ChildProcess).kill()
+        }
       }
       this.clearOutputBuffer(id)
       this.instances.delete(id)
@@ -405,7 +435,7 @@ export class PtyManager {
   }
 
   dispose(): void {
-    for (const [id] of this.instances) {
+    for (const id of [...this.instances.keys()]) {
       this.kill(id)
     }
   }
