@@ -3638,13 +3638,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
               </span>
             )}
 
-            {currentModel && (
+            {(currentModel || isCodexSession) && (
               <span
                 className="claude-status-btn"
                 onClick={() => setShowModelList(true)}
-                title={`Model: ${currentModel} (click to select)`}
+                title={`Model: ${currentModel || '(default)'} (click to select)`}
               >
-                {'</>'} {currentModel}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModel || '(default)'}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
               </span>
             )}
             {(isCodexSession || !isV2Session) && (
