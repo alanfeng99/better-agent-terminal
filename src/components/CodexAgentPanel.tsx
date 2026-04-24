@@ -144,7 +144,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [permissionMode, setPermissionMode] = useState<string>('bypassPermissions')
   const [currentModel, setCurrentModel] = useState<string>(() => {
     const t = workspaceStore.getState().terminals.find(t => t.id === sessionId)
-    if (isCodexSession) return t?.model || ''
+    // Codex default mirrors DEFAULT_CODEX_MODEL in electron/codex-agent-manager.ts.
+    if (isCodexSession) return t?.model || 'gpt-5.5'
     return t?.model || settingsStore.getSettings().defaultModel || ''
   })
   const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
