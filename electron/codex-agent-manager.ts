@@ -384,6 +384,121 @@ export class CodexAgentManager {
     return session.state.messages.some(m => 'toolName' in m && m.id === toolId)
   }
 
+  private parseJsonRecord(value: unknown): Record<string, unknown> | undefined {
+    if (!value) return undefined
+    if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+    if (typeof value !== 'string') return undefined
+    const trimmed = value.trim()
+    if (!trimmed.startsWith('{')) return undefined
+    try {
+      const parsed = JSON.parse(trimmed)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private parseFunctionArguments(payload: Record<string, unknown>): Record<string, unknown> {
+    const parsed = this.parseJsonRecord(payload.arguments ?? payload.input)
+    if (parsed) return parsed
+    if (typeof payload.input === 'string') return { input: payload.input }
+    if (typeof payload.arguments === 'string') return { input: payload.arguments }
+    return {}
+  }
+
+  private toolNameForResponseItem(name: string): string {
+    if (name === 'shell_command') return 'Bash'
+    if (name === 'apply_patch') return 'ApplyPatch'
+    if (name === 'update_plan') return 'TodoWrite'
+    if (name === 'view_image') return 'ViewImage'
+    return name || 'Tool'
+  }
+
+  private toolInputForResponseItem(name: string, args: Record<string, unknown>): Record<string, unknown> {
+    if (name === 'shell_command') {
+      return {
+        command: typeof args.command === 'string' ? args.command : String(args.input ?? ''),
+        ...(typeof args.workdir === 'string' ? { workdir: args.workdir } : {}),
+        ...(typeof args.timeout_ms === 'number' ? { timeoutMs: args.timeout_ms } : {}),
+      }
+    }
+    if (name === 'apply_patch') {
+      return { patch: typeof args.input === 'string' ? args.input : JSON.stringify(args, null, 2) }
+    }
+    if (name === 'update_plan') {
+      const plan = Array.isArray(args.plan) ? args.plan : []
+      return {
+        todos: plan.map(item => {
+          const record = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+          return {
+            content: String(record.step ?? ''),
+            status: String(record.status ?? 'pending'),
+          }
+        }),
+      }
+    }
+    return args
+  }
+
+  private buildToolCallFromResponseItem(sessionId: string, payload: Record<string, unknown>, timestamp: number): ClaudeToolCall | null {
+    const callId = String(payload.call_id || payload.id || '')
+    const name = String(payload.name || '')
+    if (!callId || !name) return null
+    const args = this.parseFunctionArguments(payload)
+    return {
+      id: callId,
+      sessionId,
+      toolName: this.toolNameForResponseItem(name),
+      input: this.toolInputForResponseItem(name, args),
+      status: 'running',
+      timestamp,
+    }
+  }
+
+  private resultFromResponseItemOutput(payload: Record<string, unknown>): { result: string; status: 'completed' | 'error' } {
+    const rawOutput = typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output ?? '')
+    const parsed = this.parseJsonRecord(rawOutput)
+    const outputText = typeof parsed?.output === 'string' ? parsed.output : rawOutput
+    const metadata = parsed?.metadata && typeof parsed.metadata === 'object' ? parsed.metadata as Record<string, unknown> : undefined
+    const exitCode = typeof metadata?.exit_code === 'number'
+      ? metadata.exit_code
+      : /^Exit code:\s*(-?\d+)/m.exec(outputText)?.[1]
+    const status = exitCode !== undefined && Number(exitCode) !== 0 ? 'error' : 'completed'
+    return { result: outputText.slice(0, 8000), status }
+  }
+
+  private handleResponseItemToolEvent(sessionId: string, payload: Record<string, unknown>, timestamp: number): void {
+    const payloadType = payload.type
+    if (payloadType === 'function_call' || payloadType === 'custom_tool_call') {
+      const toolCall = this.buildToolCallFromResponseItem(sessionId, payload, timestamp)
+      if (!toolCall) return
+      if (this.hasToolCall(sessionId, toolCall.id)) {
+        this.updateToolCall(sessionId, toolCall.id, { input: toolCall.input })
+      } else {
+        this.addToolCall(sessionId, toolCall)
+      }
+      return
+    }
+
+    if (payloadType === 'function_call_output' || payloadType === 'custom_tool_call_output') {
+      const callId = String(payload.call_id || payload.id || '')
+      if (!callId) return
+      if (!this.hasToolCall(sessionId, callId)) {
+        this.addToolCall(sessionId, {
+          id: callId,
+          sessionId,
+          toolName: 'Tool',
+          input: {},
+          status: 'running',
+          timestamp,
+        })
+      }
+      this.updateToolCall(sessionId, callId, this.resultFromResponseItemOutput(payload))
+    }
+  }
+
   private replaceHistory(sessionId: string, items: HistoryItem[]) {
     const session = this.sessions.get(sessionId)
     if (session) {
@@ -407,6 +522,7 @@ export class CodexAgentManager {
     }
 
     const items: HistoryItem[] = []
+    const toolIndexById = new Map<string, number>()
 
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
@@ -417,6 +533,44 @@ export class CodexAgentManager {
           type?: string
           payload?: Record<string, unknown>
         }
+        if (entry.type === 'response_item' && entry.payload) {
+          const ts = parseTimestamp(entry.timestamp)
+          const payloadType = entry.payload.type
+          if (payloadType === 'function_call' || payloadType === 'custom_tool_call') {
+            const toolCall = this.buildToolCallFromResponseItem(sessionId, entry.payload, ts)
+            if (toolCall) {
+              const existingIndex = toolIndexById.get(toolCall.id)
+              if (existingIndex !== undefined) {
+                items[existingIndex] = { ...(items[existingIndex] as ClaudeToolCall), ...toolCall }
+              } else {
+                toolIndexById.set(toolCall.id, items.length)
+                items.push(toolCall)
+              }
+            }
+          } else if (payloadType === 'function_call_output' || payloadType === 'custom_tool_call_output') {
+            const callId = String(entry.payload.call_id || entry.payload.id || '')
+            if (callId) {
+              const result = this.resultFromResponseItemOutput(entry.payload)
+              const existingIndex = toolIndexById.get(callId)
+              if (existingIndex !== undefined) {
+                items[existingIndex] = { ...(items[existingIndex] as ClaudeToolCall), ...result }
+              } else {
+                toolIndexById.set(callId, items.length)
+                items.push({
+                  id: callId,
+                  sessionId,
+                  toolName: 'Tool',
+                  input: {},
+                  status: result.status,
+                  result: result.result,
+                  timestamp: ts,
+                })
+              }
+            }
+          }
+          continue
+        }
+
         if (entry.type !== 'event_msg' || !entry.payload) continue
 
         const ts = parseTimestamp(entry.timestamp)
@@ -452,6 +606,7 @@ export class CodexAgentManager {
         }
 
         if (eventType === 'exec_command_end') {
+          const toolId = String(entry.payload.call_id || `hist-bash-${items.length}`)
           const cmd = Array.isArray(entry.payload.command)
             ? entry.payload.command.map(part => String(part)).join(' ')
             : ''
@@ -462,7 +617,7 @@ export class CodexAgentManager {
           const stdout = typeof entry.payload.stdout === 'string' ? entry.payload.stdout : ''
           const result = aggregatedOutput || stdout || stderr
           items.push({
-            id: String(entry.payload.call_id || `hist-bash-${items.length}`),
+            id: toolId,
             sessionId,
             toolName: 'Bash',
             input: { command: cmd },
@@ -470,10 +625,12 @@ export class CodexAgentManager {
             ...(result ? { result: result.slice(0, 4000) } : {}),
             timestamp: ts,
           })
+          toolIndexById.set(toolId, items.length - 1)
           continue
         }
 
         if (eventType === 'patch_apply_end') {
+          const toolId = String(entry.payload.call_id || `hist-edit-${items.length}`)
           const changes = entry.payload.changes
           const changedFiles = changes && typeof changes === 'object'
             ? Object.keys(changes as Record<string, unknown>)
@@ -482,7 +639,7 @@ export class CodexAgentManager {
           const stderr = typeof entry.payload.stderr === 'string' ? entry.payload.stderr : ''
           const summary = stdout || stderr || (changedFiles.length > 0 ? changedFiles.join('\n') : 'Patch applied')
           items.push({
-            id: String(entry.payload.call_id || `hist-edit-${items.length}`),
+            id: toolId,
             sessionId,
             toolName: 'Edit',
             input: { files: changedFiles },
@@ -490,6 +647,7 @@ export class CodexAgentManager {
             result: summary.slice(0, 4000),
             timestamp: ts,
           })
+          toolIndexById.set(toolId, items.length - 1)
         }
       } catch {
         // Ignore malformed log lines and keep scanning.
@@ -738,6 +896,12 @@ export class CodexAgentManager {
         }
 
         switch (type) {
+          case 'response_item': {
+            const payload = (event.payload || event.item || event) as Record<string, unknown> | undefined
+            if (payload) this.handleResponseItemToolEvent(sessionId, payload, Date.now())
+            break
+          }
+
           case 'thread.started': {
             const threadId = (event.thread_id as string | undefined) || (event.threadId as string | undefined)
             if (threadId && !session.threadId) {
