@@ -286,6 +286,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const permissionCardRef = useRef<HTMLDivElement>(null)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
   const isNearBottomRef = useRef(true)
+  const followOutputRef = useRef(true)
+  const lastScrollTopRef = useRef(0)
+  const userScrollIntentUntilRef = useRef(0)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [aboveViewportUserMsgIds, setAboveViewportUserMsgIds] = useState<Set<string>>(new Set())
   const [claudeFontSize, setClaudeFontSize] = useState(settingsStore.getSettings().fontSize)
@@ -296,22 +299,71 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const checkIfNearBottom = useCallback(() => {
     const el = messagesContainerRef.current
     if (!el) return true
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 96
   }, [])
 
   // Auto-scroll to bottom — use instant scroll to avoid layout thrashing with rapid updates
   const scrollToBottom = useCallback(() => {
+    const el = messagesContainerRef.current
+    if (el) {
+      el.scrollTop = el.scrollHeight
+      lastScrollTopRef.current = el.scrollTop
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior })
     setUserScrolledUp(false)
     isNearBottomRef.current = true
+    followOutputRef.current = true
   }, [])
+
+  const scrollToBottomAfterRender = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToBottom()
+      })
+    })
+  }, [scrollToBottom])
 
   // Handle user scroll events on messages container
   const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current
+    if (!el) return
     const nearBottom = checkIfNearBottom()
+    const delta = el.scrollTop - lastScrollTopRef.current
+    lastScrollTopRef.current = el.scrollTop
     isNearBottomRef.current = nearBottom
-    setUserScrolledUp(!nearBottom)
+    if (nearBottom) {
+      followOutputRef.current = true
+      setUserScrolledUp(false)
+      return
+    }
+    if (performance.now() < userScrollIntentUntilRef.current && delta < -1) {
+      followOutputRef.current = false
+      setUserScrolledUp(true)
+      return
+    }
+    if (!followOutputRef.current) setUserScrolledUp(true)
   }, [checkIfNearBottom])
+
+  const markUserScrollIntent = useCallback(() => {
+    userScrollIntentUntilRef.current = performance.now() + 1500
+  }, [])
+
+  const handleMessagesWheel = useCallback((e: { deltaY: number }) => {
+    markUserScrollIntent()
+    if (e.deltaY < 0) {
+      followOutputRef.current = false
+      isNearBottomRef.current = false
+      setUserScrolledUp(true)
+    }
+  }, [markUserScrollIntent])
+
+  const handleMessagesMouseDown = useCallback((e: { button: number }) => {
+    if (e.button === 0 || e.button === 1) markUserScrollIntent()
+  }, [markUserScrollIntent])
+
+  const handleMessagesMouseUp = useCallback(() => {
+    userScrollIntentUntilRef.current = performance.now() + 300
+  }, [])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -332,10 +384,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   // Only auto-scroll if user hasn't scrolled up
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior })
+    if (followOutputRef.current) {
+      scrollToBottomAfterRender()
     }
-  }, [messages, streamingText, streamingThinking])
+  }, [messages, scrollToBottomAfterRender, streamingText, streamingThinking])
 
   // Auto-scroll streaming thinking <pre> to bottom so latest content is visible
   useEffect(() => {
@@ -2988,6 +3040,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         className="claude-messages claude-timeline"
         ref={messagesContainerRef}
         onScroll={handleMessagesScroll}
+        onWheel={handleMessagesWheel}
+        onMouseDown={handleMessagesMouseDown}
+        onMouseUp={handleMessagesMouseUp}
         onContextMenu={(e) => {
           e.preventDefault()
           setContextMenu({ x: e.clientX, y: e.clientY })
