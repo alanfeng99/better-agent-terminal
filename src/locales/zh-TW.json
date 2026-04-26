@@ -54,7 +54,7 @@
     "cacheAlarmTimerHint": "在右上角顯示浮動倒數計時，顯示距離上次 API 回應的 5 分鐘和 1 小時 cache TTL 剩餘時間。",
     "cacheAlarmExpired": "expired",
     "defaultModel": "預設模型",
-    "defaultModelPlaceholder": "例如 claude-sonnet-4-5-20250514",
+    "defaultModelPlaceholder": "例如 claude-opus-4-7:1m",
     "defaultModelHint": "新 Agent 對話使用的模型 ID。留空則使用 SDK 預設。",
     "defaultEffort": "預設 Effort 等級",
     "defaultEffortHint": "新 Agent 對話使用的 effort 等級。越高越仔細但越慢。",

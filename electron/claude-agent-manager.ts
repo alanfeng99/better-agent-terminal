@@ -11,6 +11,16 @@ import { wrapInterruptedPrompt } from './agent-prompt-utils'
 import { getNodeExecutable, isElectronFallback } from './node-resolver'
 import { worktreeManager } from './worktree-manager'
 import type { WorktreeInfo } from './worktree-manager'
+import {
+  CLAUDE_OPUS_47_1M_PRESET,
+  CLAUDE_OPUS_47_200K_PRESET,
+  CLAUDE_OPUS_47_400K_PRESET,
+  autoCompactWindowForClaudeSelection,
+  contextWindowForClaudeSelection,
+  isClaudeModelPreset,
+  normalizeClaudeModelSelection,
+  sdkModelForClaudeSelection,
+} from '../src/utils/claude-model-presets'
 
 // App-level permission mode extends SDK's PermissionMode with bypassPlan
 // bypassPlan = plan mode (read-only exploration) + auto-approve all tool permissions
@@ -21,14 +31,30 @@ import { getNotifier } from './server-core/notifier'
 
 // BAT built-in curated model list (always available, shown first)
 const BAT_BUILTIN_MODELS: Array<{ value: string; displayName: string; description: string }> = [
-  { value: 'claude-opus-4-7',     displayName: 'Opus 4.7 (200k)',  description: 'claude-opus-4-7 · 200k context' },
-  { value: 'claude-opus-4-7[1m]', displayName: 'Opus 4.7 (1M)',   description: 'claude-opus-4-7 · 1M context · CLI recommended for better cache efficiency' },
-  { value: 'claude-opus-4-6',     displayName: 'Opus 4.6 (200k)',  description: 'claude-opus-4-6 · 200k context' },
-  { value: 'claude-opus-4-6[1m]', displayName: 'Opus 4.6 (1M)',   description: 'claude-opus-4-6 · 1M context · CLI recommended for better cache efficiency' },
-  { value: 'claude-sonnet-4-6',     displayName: 'Sonnet 4.6 (200k)',  description: 'claude-sonnet-4-6 · 200k context' },
-  { value: 'claude-sonnet-4-6[1m]', displayName: 'Sonnet 4.6 (1M)',   description: 'claude-sonnet-4-6 · 1M context · CLI recommended for better cache efficiency' },
+  { value: CLAUDE_OPUS_47_200K_PRESET, displayName: 'Opus 4.7 · 200K Auto-Compact', description: 'claude-opus-4-7 · compact at 200K tokens' },
+  { value: CLAUDE_OPUS_47_400K_PRESET, displayName: 'Opus 4.7 · 400K Auto-Compact', description: 'claude-opus-4-7 · compact at 400K tokens' },
+  { value: CLAUDE_OPUS_47_1M_PRESET,   displayName: 'Opus 4.7 · 1M',                description: 'claude-opus-4-7 · no early auto-compact' },
+  { value: 'claude-opus-4-6',     displayName: 'Opus 4.6 (1M)',    description: 'claude-opus-4-6 · 1M context' },
+  { value: 'claude-sonnet-4-6',   displayName: 'Sonnet 4.6 (1M)',  description: 'claude-sonnet-4-6 · 1M context' },
   { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'claude-haiku-4-5 · fast & lightweight' },
 ]
+
+const BAT_BUILTIN_MODEL_CONTEXT_WINDOWS = new Map<string, number>([
+  ['claude-opus-4-7', 1000000],
+  ['claude-opus-4-7[1m]', 1000000],
+  ['claude-opus-4-6', 1000000],
+  ['claude-opus-4-6[1m]', 1000000],
+  ['claude-sonnet-4-6', 1000000],
+  ['claude-sonnet-4-6[1m]', 1000000],
+  ['claude-haiku-4-5-20251001', 200000],
+])
+
+function expectedContextWindowForModel(model?: string): number | undefined {
+  if (!model) return undefined
+  const presetContextWindow = contextWindowForClaudeSelection(model)
+  if (presetContextWindow) return presetContextWindow
+  return BAT_BUILTIN_MODEL_CONTEXT_WINDOWS.get(model)
+}
 
 
 // Lazy import the SDK (it's an ES module)
@@ -155,6 +181,7 @@ interface SessionMetadata {
   durationMs: number
   numTurns: number
   contextWindow: number
+  autoCompactWindow?: number
   maxOutputTokens: number
   contextTokens: number
   cacheReadTokens: number
@@ -208,6 +235,7 @@ interface SessionInstance {
   apiVersion: 'v1' | 'v2'
   v2Session?: SDKSession  // V2 persistent session object
   v2SessionModel?: string // Model the V2 session was created with (to detect changes)
+  v2SessionAutoCompactWindow?: number
   worktreeInfo?: WorktreeInfo  // Set when running in worktree isolation
   originalCwd?: string         // Original workspace cwd before worktree redirect
   cachedContextUsage?: unknown  // Cached getContextUsage() result for after process exits
@@ -408,6 +436,9 @@ export class ClaudeAgentManager {
       if (previousSdkSessionId) {
         sdkSessionIds.set(sessionId, previousSdkSessionId)
       }
+      const selectedModel = normalizeClaudeModelSelection(options.model)
+      const resolvedAutoCompactWindow = autoCompactWindowForClaudeSelection(selectedModel, options.autoCompactWindow)
+      const sessionAutoCompactWindow = resolvedAutoCompactWindow || undefined
 
       this.sessions.set(sessionId, {
         abortController,
@@ -415,12 +446,14 @@ export class ClaudeAgentManager {
         sdkSessionId: previousSdkSessionId,
         cwd: effectiveCwd,
         metadata: {
+          model: selectedModel,
           totalCost: 0,
           inputTokens: 0,
           outputTokens: 0,
           durationMs: 0,
           numTurns: 0,
-          contextWindow: 0,
+          contextWindow: expectedContextWindowForModel(selectedModel) || 0,
+          autoCompactWindow: sessionAutoCompactWindow,
           maxOutputTokens: 0,
           contextTokens: 0,
           cacheReadTokens: 0,
@@ -433,8 +466,8 @@ export class ClaudeAgentManager {
         pendingAskUser: new Map(),
         permissionMode: options.permissionMode || 'default',
         effort: options.effort || 'high',
-        autoCompactWindow: options.autoCompactWindow,
-        model: options.model,
+        autoCompactWindow: sessionAutoCompactWindow,
+        model: selectedModel,
         messageQueue: [],
         activeTasks: new Map(),
         apiVersion: options.apiVersion || 'v1',
@@ -495,11 +528,16 @@ export class ClaudeAgentManager {
     }
   }
 
-  async sendMessage(sessionId: string, prompt: string, images?: string[]): Promise<boolean> {
+  async sendMessage(sessionId: string, prompt: string, images?: string[], autoCompactWindow?: number | null): Promise<boolean> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       this.send('claude:error', sessionId, 'Session not found')
       return false
+    }
+    if (isClaudeModelPreset(session.model) || autoCompactWindow !== undefined) {
+      const resolvedAutoCompactWindow = autoCompactWindowForClaudeSelection(session.model, autoCompactWindow)
+      session.autoCompactWindow = resolvedAutoCompactWindow || undefined
+      session.metadata.autoCompactWindow = session.autoCompactWindow
     }
     // Manual user send refreshes the auto-continue budget for the new chain.
     if (session.autoContinue) session.autoContinue.used = 0
@@ -731,6 +769,7 @@ export class ClaudeAgentManager {
       const currentMode = session.permissionMode
       // Map app-level bypassPlan to SDK's plan mode
       const sdkMode: PermissionMode = currentMode === 'bypassPlan' ? 'plan' : currentMode
+      const sdkModel = sdkModelForClaudeSelection(session.model)
       const queryOptions: Record<string, unknown> = {
         abortController: session.abortController,
         cwd: session.cwd,
@@ -746,7 +785,7 @@ export class ClaudeAgentManager {
         ...(session.autoCompactWindow ? { autoCompactWindow: session.autoCompactWindow } : {}),
         toolConfig: { askUserQuestion: { previewFormat: 'html' } },
         agentProgressSummaries: true,
-        ...(session.model ? { model: session.model } : {}),
+        ...(sdkModel ? { model: sdkModel } : {}),
         ...(installedPlugins.length > 0 ? { plugins: installedPlugins } : {}),
         canUseTool,
         ...(claudeCodePath ? { pathToClaudeCodeExecutable: claudeCodePath } : {}),
@@ -929,7 +968,11 @@ export class ClaudeAgentManager {
       const initMsg = message as { session_id: string; model?: string; cwd?: string; permissionMode?: string }
       session.sdkSessionId = initMsg.session_id
       sdkSessionIds.set(sessionId, initMsg.session_id)
-      session.metadata.model = initMsg.model
+      session.metadata.model = session.model || initMsg.model
+      const selectedContextWindow = expectedContextWindowForModel(session.model)
+      if (selectedContextWindow) {
+        session.metadata.contextWindow = selectedContextWindow
+      }
       session.metadata.sdkSessionId = initMsg.session_id
       session.metadata.cwd = initMsg.cwd || session.cwd
       const reportedMode = (initMsg.permissionMode === 'plan' && session.permissionMode === 'bypassPlan')
@@ -1159,6 +1202,46 @@ export class ClaudeAgentManager {
     if (message.type === 'system') {
       const subtype = (message as { subtype?: string }).subtype
       logger.log(`[claude:system] subtype=${subtype} keys=${Object.keys(message).join(',')}`)
+      if (subtype === 'status') {
+        const statusMsg = message as { status?: string | null; compact_result?: 'success' | 'failed'; compact_error?: string }
+        if (statusMsg.status === 'compacting') {
+          logger.log(`[claude:compact] status=compacting session=${sessionId.slice(0, 8)}`)
+        }
+        if (statusMsg.compact_result === 'failed') {
+          const reason = statusMsg.compact_error ? `: ${statusMsg.compact_error}` : ''
+          logger.warn(`[claude:compact] failed${reason}`)
+          this.addMessage(sessionId, {
+            id: `sys-compact-failed-${Date.now()}`,
+            sessionId,
+            role: 'system',
+            content: `Context compaction failed${reason}`,
+            timestamp: Date.now(),
+          })
+        }
+      }
+      if (subtype === 'compact_boundary') {
+        const compactMsg = message as {
+          compact_metadata?: { trigger?: 'manual' | 'auto'; pre_tokens?: number; post_tokens?: number; duration_ms?: number }
+          compactMetadata?: { trigger?: 'manual' | 'auto'; preTokens?: number; postTokens?: number; durationMs?: number }
+        }
+        const metadata = compactMsg.compact_metadata || compactMsg.compactMetadata
+        const trigger = metadata?.trigger || 'auto'
+        const preTokens = 'pre_tokens' in (metadata || {}) ? compactMsg.compact_metadata?.pre_tokens : compactMsg.compactMetadata?.preTokens
+        const postTokens = 'post_tokens' in (metadata || {}) ? compactMsg.compact_metadata?.post_tokens : compactMsg.compactMetadata?.postTokens
+        const durationMs = 'duration_ms' in (metadata || {}) ? compactMsg.compact_metadata?.duration_ms : compactMsg.compactMetadata?.durationMs
+        const tokenText = typeof preTokens === 'number'
+          ? ` from ${preTokens.toLocaleString()}${typeof postTokens === 'number' ? ` to ${postTokens.toLocaleString()}` : ''} tokens`
+          : ''
+        const durationText = typeof durationMs === 'number' ? ` in ${durationMs}ms` : ''
+        logger.log(`[claude:compact] boundary trigger=${trigger}, pre=${preTokens ?? 'unknown'}, post=${postTokens ?? 'unknown'}, durationMs=${durationMs ?? 'unknown'}`)
+        this.addMessage(sessionId, {
+          id: `sys-compact-boundary-${Date.now()}`,
+          sessionId,
+          role: 'system',
+          content: `Context compacted (${trigger})${tokenText}${durationText}.`,
+          timestamp: Date.now(),
+        })
+      }
       if (subtype === 'task_updated') {
         const updMsg = message as {
           task_id: string
@@ -1294,7 +1377,8 @@ export class ClaudeAgentManager {
         let totalInput = 0
         let totalOutput = 0
         // Track primary model's cache stats separately (sub-agent tokens pollute cache efficiency)
-        const primaryModel = session.metadata.model || ''
+        const primaryModel = sdkModelForClaudeSelection(session.model || session.metadata.model) || ''
+        const selectedContextWindow = expectedContextWindowForModel(session.model || session.metadata.model)
         let primaryCacheRead = 0
         let primaryCacheCreate = 0
         let primaryInput = 0
@@ -1312,9 +1396,11 @@ export class ClaudeAgentManager {
             primaryCacheRead = cacheRead
             primaryCacheCreate = cacheCreate
             primaryInput = input
-          }
-          if (stats.contextWindow) {
-            session.metadata.contextWindow = stats.contextWindow
+            if (selectedContextWindow) {
+              session.metadata.contextWindow = selectedContextWindow
+            } else if (stats.contextWindow) {
+              session.metadata.contextWindow = stats.contextWindow
+            }
           }
           if ((modelStats as { maxOutputTokens?: number }).maxOutputTokens) {
             session.metadata.maxOutputTokens = (modelStats as { maxOutputTokens?: number }).maxOutputTokens!
@@ -1496,10 +1582,13 @@ export class ClaudeAgentManager {
       const currentMode = session.permissionMode
       const sdkMode: PermissionMode = currentMode === 'bypassPlan' ? 'plan' : currentMode as PermissionMode
 
-      // Create or reuse V2 session; recreate if model changed
-      const effectiveModel = session.model || 'sonnet'
-      if (session.v2Session && session.v2SessionModel !== effectiveModel) {
-        logger.log(`[Claude V2] Model changed: ${session.v2SessionModel} → ${effectiveModel}, recreating session`)
+      // Create or reuse V2 session; recreate if model or compact target changed
+      const effectiveModel = sdkModelForClaudeSelection(session.model) || 'sonnet'
+      if (
+        session.v2Session
+        && (session.v2SessionModel !== effectiveModel || session.v2SessionAutoCompactWindow !== session.autoCompactWindow)
+      ) {
+        logger.log(`[Claude V2] Model/compact changed: ${session.v2SessionModel} → ${effectiveModel}, ${session.v2SessionAutoCompactWindow || 'none'} → ${session.autoCompactWindow || 'none'}, recreating session`)
         try { session.v2Session.close() } catch { /* ignore */ }
         session.v2Session = undefined
       }
@@ -1533,6 +1622,7 @@ export class ClaudeAgentManager {
           process.chdir(previousCwd)
         }
         session.v2SessionModel = effectiveModel
+        session.v2SessionAutoCompactWindow = session.autoCompactWindow
       }
 
       // Send message — if images are attached, construct a multi-content SDKUserMessage
@@ -1769,39 +1859,42 @@ export class ClaudeAgentManager {
   async setModel(sessionId: string, model: string, autoCompactWindow?: number): Promise<boolean> {
     const session = this.sessions.get(sessionId)
     if (!session || !model) return false
+    const selectedModel = normalizeClaudeModelSelection(model) || model
 
     // Persist the full model value (including [1m] suffix) — SDK handles it natively
-    session.model = model
-    session.metadata.model = model
+    session.model = selectedModel
+    session.metadata.model = selectedModel
 
     // Sync contextWindow / maxOutputTokens to match the new model so the UI label
     // ("(1M)" vs "(200k)") updates immediately, not on next query response.
-    const isOneMil = model.includes('[1m]')
-    session.metadata.contextWindow = isOneMil ? 1000000 : 200000
-    session.metadata.maxOutputTokens = model.includes('haiku') ? 8192 : 64000
+    session.metadata.contextWindow = expectedContextWindowForModel(selectedModel) || 200000
+    session.metadata.maxOutputTokens = selectedModel.includes('haiku') ? 8192 : 64000
 
-    // Update autoCompactWindow from latest settings
-    session.autoCompactWindow = autoCompactWindow
-    logger.log(`[setModel] autoCompactWindow=${autoCompactWindow || 'none'}`)
+    // Model presets own their auto-compact target; global settings only apply to raw models.
+    const resolvedAutoCompactWindow = autoCompactWindowForClaudeSelection(selectedModel, autoCompactWindow)
+    session.autoCompactWindow = resolvedAutoCompactWindow || undefined
+    session.metadata.autoCompactWindow = session.autoCompactWindow
+    logger.log(`[setModel] autoCompactWindow=${session.autoCompactWindow || 'none'}`)
 
     if (session.apiVersion === 'v2') {
       // V2: model change takes effect on next send (session will be recreated in runQueryV2)
-      logger.log(`[setModel] V2 stored model ${model} for session ${sessionId.slice(0, 8)} (takes effect on next message)`)
+      logger.log(`[setModel] V2 stored model ${selectedModel} for session ${sessionId.slice(0, 8)} (takes effect on next message)`)
       this.send('claude:status', sessionId, { ...session.metadata })
       return true
     }
 
     if (!session.queryInstance) {
-      logger.log(`[setModel] stored model ${model} for session ${sessionId.slice(0, 8)} (no active query)`)
+      logger.log(`[setModel] stored model ${selectedModel} for session ${sessionId.slice(0, 8)} (no active query)`)
       this.send('claude:status', sessionId, { ...session.metadata })
       return true
     }
 
     try {
-      logger.log(`[setModel] setting model to ${model} for session ${sessionId.slice(0, 8)}`)
-      await session.queryInstance.setModel(model)
+      const sdkModel = sdkModelForClaudeSelection(selectedModel) || selectedModel
+      logger.log(`[setModel] setting model to ${sdkModel} (${selectedModel}) for session ${sessionId.slice(0, 8)}`)
+      await session.queryInstance.setModel(sdkModel)
       this.send('claude:status', sessionId, { ...session.metadata })
-      logger.log(`[setModel] success: ${model}`)
+      logger.log(`[setModel] success: ${sdkModel}`)
       return true
     } catch (e) {
       logger.warn(`[setModel] SDK call failed (model stored for next query):`, e)
@@ -1818,7 +1911,7 @@ export class ClaudeAgentManager {
   }
 
   async getSupportedModels(_sessionId: string): Promise<Array<{ value: string; displayName: string; description: string; source: 'builtin' | 'sdk' }>> {
-    const builtinValues = new Set(BAT_BUILTIN_MODELS.map(m => m.value))
+    const builtinValues = new Set(BAT_BUILTIN_MODEL_CONTEXT_WINDOWS.keys())
     const builtins = BAT_BUILTIN_MODELS.map(m => ({ ...m, source: 'builtin' as const }))
     try {
       const query = await getQuery()
@@ -2262,6 +2355,7 @@ export class ClaudeAgentManager {
     const permissionMode = session.permissionMode
     const effort = session.effort
     const model = session.model
+    const autoCompactWindow = session.autoCompactWindow
     const apiVersion = session.apiVersion
     // Preserve worktree — never auto-delete. Reuse it on the fresh session.
     const existingWorktreeInfo = session.worktreeInfo
@@ -2281,12 +2375,15 @@ export class ClaudeAgentManager {
       useWorktree: !!existingWorktreeInfo,
       worktreePath: existingWorktreeInfo?.worktreePath,
       worktreeBranch: existingWorktreeInfo?.branchName,
+      autoCompactWindow,
     })
     if (ok) {
       const newSession = this.sessions.get(sessionId)
       if (newSession) {
         newSession.effort = effort
         newSession.model = model
+        newSession.metadata.model = model
+        newSession.metadata.contextWindow = expectedContextWindowForModel(model) || newSession.metadata.contextWindow
       }
     }
     // Notify all windows to clear UI for this session

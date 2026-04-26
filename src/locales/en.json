@@ -54,7 +54,7 @@
     "cacheAlarmTimerHint": "Show a floating countdown in the top-right corner displaying time remaining for 5-minute and 1-hour cache TTLs since the last API response.",
     "cacheAlarmExpired": "expired",
     "defaultModel": "Default Model",
-    "defaultModelPlaceholder": "e.g., claude-sonnet-4-5-20250514",
+    "defaultModelPlaceholder": "e.g., claude-opus-4-7:1m",
     "defaultModelHint": "Model ID used for new Agent sessions. Leave empty to use SDK default.",
     "defaultEffort": "Default Effort Level",
     "defaultEffortHint": "Effort level used for new Agent sessions. Higher effort = more thorough but slower.",

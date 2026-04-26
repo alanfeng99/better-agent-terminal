@@ -31,6 +31,9 @@ function textFromContentBlocks(value: unknown): string | undefined {
       .map(item => {
         const record = item && typeof item === 'object' ? item as Record<string, unknown> : undefined
         if (record?.type === 'text' && typeof record.text === 'string') return record.text
+        if (record?.type === 'summary_text' && typeof record.text === 'string') return record.text
+        if (record?.content !== undefined) return textFromContentBlocks(record.content)
+        if (record?.summary !== undefined) return textFromContentBlocks(record.summary)
         if (typeof item === 'string') return item
         return undefined
       })
@@ -43,6 +46,16 @@ function textFromContentBlocks(value: unknown): string | undefined {
     if (typeof record.text === 'string') return record.text
   }
   return undefined
+}
+
+export function extractReasoningTextFromResponseItem(payload: Record<string, unknown>): string {
+  if (payload.type !== 'reasoning' && payload.type !== 'agent_reasoning' && payload.type !== 'reasoning_summary' && payload.type !== 'thinking') {
+    return ''
+  }
+  const text = textFromContentBlocks(payload.text)
+    ?? textFromContentBlocks(payload.content)
+    ?? textFromContentBlocks(payload.summary)
+  return text?.trim() || ''
 }
 
 function formatObjectTextMap(value: unknown): string | undefined {

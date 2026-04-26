@@ -1,10 +1,11 @@
 import type { ClaudeMessage, ClaudeToolCall } from '../../src/types/claude-agent'
 import { stringifyCodexError } from './errors'
-import { normalizeToolResult } from './response-items'
+import { extractReasoningTextFromResponseItem, normalizeToolResult } from './response-items'
 
 export interface CodexStreamItemState {
   currentAssistantText: string
   currentThinkingText: string
+  currentThinkingByItemId: Record<string, string>
   currentItemId: string
 }
 
@@ -43,6 +44,36 @@ function normalizeWebSearchInput(item: Record<string, unknown>): Record<string, 
   return input
 }
 
+function isThinkingItemType(itemType: string | undefined): boolean {
+  return itemType === 'reasoning'
+    || itemType === 'agent_reasoning'
+    || itemType === 'reasoning_summary'
+    || itemType === 'thinking'
+}
+
+export function appendThinkingFromItem(item: Record<string, unknown>, state: CodexStreamItemState, sink: CodexStreamItemSink): void {
+  const itemId = String(item.id || state.currentItemId || `thinking-${Date.now()}`)
+  const text = extractReasoningTextFromResponseItem(item)
+  if (!text) return
+
+  const previous = state.currentThinkingByItemId[itemId] || ''
+  let delta = ''
+  let nextItemText = text
+  if (!previous) {
+    delta = state.currentThinkingText ? `\n\n${text}` : text
+  } else if (text.startsWith(previous)) {
+    delta = text.slice(previous.length)
+  } else if (text !== previous) {
+    delta = `\n\n${text}`
+    nextItemText = `${previous}\n\n${text}`
+  }
+  if (!delta) return
+
+  state.currentThinkingByItemId[itemId] = nextItemText
+  state.currentThinkingText += delta
+  sink.sendStream({ thinking: delta })
+}
+
 export function handleItemStarted(sessionId: string, item: Record<string, unknown>, state: CodexStreamItemState, sink: CodexStreamItemSink): void {
   const itemType = item?.type as string
   state.currentItemId = (item?.id as string) || `item-${Date.now()}`
@@ -50,8 +81,9 @@ export function handleItemStarted(sessionId: string, item: Record<string, unknow
   if (itemType === 'agent_message') {
     state.currentAssistantText = ''
     state.currentThinkingText = ''
-  } else if (itemType === 'reasoning') {
-    // Reasoning/thinking block.
+    state.currentThinkingByItemId = {}
+  } else if (isThinkingItemType(itemType)) {
+    appendThinkingFromItem(item, state, sink)
   } else if (itemType === 'command_execution') {
     const command = (item?.command as string) || (item?.input as string) || ''
     sink.addToolCall({
@@ -117,13 +149,8 @@ export function handleItemUpdated(sessionId: string, item: Record<string, unknow
       state.currentAssistantText = text
       sink.sendStream({ text: delta })
     }
-  } else if (itemType === 'reasoning') {
-    const text = (item?.text as string) || (item?.content as string) || ''
-    if (text && text.length > state.currentThinkingText.length) {
-      const delta = text.slice(state.currentThinkingText.length)
-      state.currentThinkingText = text
-      sink.sendStream({ thinking: delta })
-    }
+  } else if (isThinkingItemType(itemType)) {
+    appendThinkingFromItem(item, state, sink)
   } else if (itemType === 'command_execution') {
     const command = (item?.command as string) || (item?.input as string) || ''
     if (!sink.hasToolCall(itemId)) {
@@ -233,6 +260,9 @@ export function handleItemCompleted(sessionId: string, item: Record<string, unkn
     })
     state.currentAssistantText = ''
     state.currentThinkingText = ''
+    state.currentThinkingByItemId = {}
+  } else if (isThinkingItemType(itemType)) {
+    appendThinkingFromItem(item, state, sink)
   } else if (itemType === 'command_execution') {
     const output = (item?.aggregated_output as string) || (item?.output as string) || (item?.result as string) || ''
     const status = (item?.status as string) === 'failed' ? 'error' : 'completed'

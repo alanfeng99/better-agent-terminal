@@ -382,6 +382,7 @@
 .claude-markdown {
   word-wrap: break-word;
   line-height: 1.6;
+  white-space: normal;
 }
 
 .claude-markdown h1 { font-size: 1.4em; margin: 0.5em 0 0.3em; border-bottom: 1px solid var(--border-color); padding-bottom: 0.2em; }

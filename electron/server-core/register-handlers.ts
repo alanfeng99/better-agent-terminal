@@ -231,7 +231,11 @@ export function registerProxiedHandlers(deps: ProxiedHandlersDeps): void {
     sessionManagerMap.set(sessionId, 'claude')
     return getClaudeManager()?.startSession(sessionId, options)
   })
-  registerHandler('claude:send-message', (_ctx, sessionId: string, prompt: string, images?: string[]) => getManager(sessionId)?.sendMessage(sessionId, prompt, images))
+  registerHandler('claude:send-message', (_ctx, sessionId: string, prompt: string, images?: string[], autoCompactWindow?: number | null) => {
+    const mgr = getManager(sessionId)
+    if (mgr instanceof ClaudeAgentManager) return mgr.sendMessage(sessionId, prompt, images, autoCompactWindow)
+    return mgr?.sendMessage(sessionId, prompt, images)
+  })
   registerHandler('claude:stop-session', (_ctx, sessionId: string) => getManager(sessionId)?.stopSession(sessionId))
   registerHandler('claude:abort-session', (_ctx, sessionId: string) => getManager(sessionId)?.abortSession(sessionId))
   registerHandler('claude:set-permission-mode', (_ctx, sessionId: string, mode: string) => getManager(sessionId)?.setPermissionMode(sessionId, mode as import('@anthropic-ai/claude-agent-sdk').PermissionMode))

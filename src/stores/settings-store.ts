@@ -1,10 +1,14 @@
 import type { AppSettings, ShellType, FontType, ColorPresetId, EnvVariable, AgentCommandType, StatuslineItemConfig, StatuslineItemId, LanguageCode, EffortLevel } from '../types'
 import type { AgentPresetId } from '../types/agent-presets'
 import { FONT_OPTIONS, COLOR_PRESETS, AGENT_COMMAND_OPTIONS, STATUSLINE_ITEMS } from '../types'
+import { CLAUDE_OPUS_47_1M_PRESET, normalizeClaudeModelSelection } from '../utils/claude-model-presets'
 
 type Listener = () => void
 
 const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+const LEGACY_DEFAULT_MODEL = 'claude-opus-4-6'
+const LEGACY_OPUS_47_MODEL = 'claude-opus-4-7'
+const CURRENT_DEFAULT_MODEL = CLAUDE_OPUS_47_1M_PRESET
 
 const defaultSettings: AppSettings = {
   language: 'en',
@@ -26,7 +30,7 @@ const defaultSettings: AppSettings = {
   defaultTerminalCount: 1,
   createDefaultAgentTerminal: true,
   allowBypassPermissions: true,
-  defaultModel: 'claude-opus-4-6',
+  defaultModel: CURRENT_DEFAULT_MODEL,
 }
 
 class SettingsStore {
@@ -336,6 +340,11 @@ class SettingsStore {
         const parsed = JSON.parse(data)
         // Strip persisted defaultAgent so it always falls through to code default
         delete parsed.defaultAgent
+        if (parsed.defaultModel === LEGACY_DEFAULT_MODEL || parsed.defaultModel === LEGACY_OPUS_47_MODEL) {
+          parsed.defaultModel = CURRENT_DEFAULT_MODEL
+        } else {
+          parsed.defaultModel = normalizeClaudeModelSelection(parsed.defaultModel)
+        }
         this.settings = { ...defaultSettings, ...parsed }
         this.notify()
       } catch (e) {

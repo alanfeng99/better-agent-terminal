@@ -13,6 +13,7 @@ import { LinkedText, FilePreviewModal } from './PathLinker'
 import { renderChatMarkdown, openChatMarkdownLink } from '../utils/chat-markdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
+import { autoCompactWindowForClaudeSelection, displayNameForClaudeSelection, normalizeClaudeModelSelection, sdkModelForClaudeSelection } from '../utils/claude-model-presets'
 
 interface SessionMeta {
   model?: string
@@ -24,6 +25,7 @@ interface SessionMeta {
   durationMs: number
   numTurns: number
   contextWindow: number
+  autoCompactWindow?: number
   maxOutputTokens: number
   contextTokens: number
   cacheReadTokens: number
@@ -43,6 +45,9 @@ interface ModelInfo {
   description: string
   source?: 'builtin' | 'sdk'
 }
+
+const getAutoCompactWindowForModel = (model: string | undefined, fallback?: number | null): number | null =>
+  autoCompactWindowForClaudeSelection(model, fallback)
 
 interface PendingPermission {
   toolUseId: string
@@ -148,7 +153,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [permissionMode, setPermissionMode] = useState<string>('bypassPermissions')
   const [currentModel, setCurrentModel] = useState<string>(() => {
     const t = workspaceStore.getState().terminals.find(t => t.id === sessionId)
-    return t?.model || settingsStore.getSettings().defaultModel || ''
+    return normalizeClaudeModelSelection(t?.model || settingsStore.getSettings().defaultModel) || ''
   })
   const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
     const value = normalizedAgentParams?.sandboxMode
@@ -185,6 +190,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [resumeLoading, setResumeLoading] = useState(false)
   const [showModelList, setShowModelList] = useState(false)
   const [contentModal, setContentModal] = useState<{ title: string; content: string; markdown?: boolean } | null>(null)
+  const currentModelLabel = useMemo(() => {
+    return availableModels.find(model => model.value === currentModel)?.displayName || displayNameForClaudeSelection(currentModel)
+  }, [availableModels, currentModel])
+  const currentSdkModel = useMemo(() => sdkModelForClaudeSelection(currentModel) || currentModel, [currentModel])
   // Subagent message storage (keyed by parent Task tool_use_id)
   const subagentMessagesRef = useRef<Map<string, MessageItem[]>>(new Map())
   const [subagentStreamingText, setSubagentStreamingText] = useState<Map<string, string>>(new Map())
@@ -1009,7 +1018,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             timestamp: Date.now(),
           }])
           setIsStreaming(true)
-          window.electronAPI.claude.sendMessage(sessionId, prompt, images)
+          window.electronAPI.claude.sendMessage(sessionId, prompt, images, getAutoCompactWindowForModel(currentModel, globalSettings.autoCompactWindow))
         } else {
           dlog2(`${tag} onHistory setting messages (history only, no pending prompt)`)
           setMessages(historyItems)
@@ -1057,14 +1066,14 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
       const savedSdkSessionId = terminal?.sdkSessionId
-      const savedModel = terminal?.model
+      const savedModel = normalizeClaudeModelSelection(terminal?.model)
       const apiVersion = terminal?.agentPreset === 'claude-code-v2' ? 'v2' as const : 'v1' as const
       const useWorktree = terminal?.agentPreset === 'claude-code-worktree' || !!terminal?.worktreePath
       const globalSettings = settingsStore.getSettings()
       dlog(`${stag} sdkSessionId=${savedSdkSessionId?.slice(0, 8)} pendingPrompt="${terminal?.pendingPrompt || ''}" apiVersion=${apiVersion}`)
 
       // Restore saved model to UI, or use global default
-      const effectiveModel = savedModel || globalSettings.defaultModel
+      const effectiveModel = normalizeClaudeModelSelection(savedModel || globalSettings.defaultModel)
       if (effectiveModel) setCurrentModel(effectiveModel)
 
       // Use global default effort
@@ -1084,7 +1093,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           agentPreset: terminal?.agentPreset,
           ...(isCodexSession ? { codexSandboxMode, codexApprovalPolicy } : {}),
           ...(useWorktree ? { useWorktree: true, worktreePath: terminal?.worktreePath, worktreeBranch: terminal?.worktreeBranch } : {}),
-          ...(globalSettings.autoCompactWindow ? { autoCompactWindow: globalSettings.autoCompactWindow } : {}),
+          ...(getAutoCompactWindowForModel(effectiveModel, globalSettings.autoCompactWindow) ? { autoCompactWindow: getAutoCompactWindowForModel(effectiveModel, globalSettings.autoCompactWindow)! } : {}),
         })
       }
     }
@@ -1243,26 +1252,27 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [isActive])
 
   const handleModelSelect = useCallback(async (modelValue: string) => {
-    if (isCodexSession && modelValue !== currentModel) {
+    const selectedModel = normalizeClaudeModelSelection(modelValue) || modelValue
+    if (isCodexSession && selectedModel !== currentModel) {
       const ok = await window.electronAPI.dialog.confirm(t('claude.codexModelChangeWarning'))
       if (!ok) return
     }
     // V2: warn that model change will recreate session and re-apply context
-    if (!isCodexSession && isV2Session && modelValue !== currentModel) {
+    if (!isCodexSession && isV2Session && selectedModel !== currentModel) {
       const ok = await window.electronAPI.dialog.confirm(t('claude.v2ModelChangeWarning'))
       if (!ok) return
     }
     // V1: warn about 1M model cache inefficiency
-    if (!isCodexSession && !isV2Session && modelValue.includes('[1m]') && modelValue !== currentModel) {
+    if (!isCodexSession && !isV2Session && selectedModel.includes('[1m]') && selectedModel !== currentModel) {
       const ok = await window.electronAPI.dialog.confirm(t('claude.v1Model1mWarning'))
       if (!ok) return
     }
     setShowModelList(false)
-    setCurrentModel(modelValue)
+    setCurrentModel(selectedModel)
     setTimeout(() => textareaRef.current?.focus(), 0)
-    await window.electronAPI.claude.setModel(sessionId, modelValue, settingsStore.getSettings().autoCompactWindow)
-    workspaceStore.updateTerminalModel(sessionId, modelValue)
-    if (isCodexSession && modelValue !== currentModel) {
+    await window.electronAPI.claude.setModel(sessionId, selectedModel, getAutoCompactWindowForModel(selectedModel, settingsStore.getSettings().autoCompactWindow) || undefined)
+    workspaceStore.updateTerminalModel(sessionId, selectedModel)
+    if (isCodexSession && selectedModel !== currentModel) {
       setMessages([])
       setLoadedArchive([])
       archivedCountRef.current = 0
@@ -1695,7 +1705,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         setIsInterrupted(false)
         setStreamingText('')
         setStreamingThinking('')
-        await window.electronAPI.claude.sendMessage(sessionId, contextPrompt)
+        await window.electronAPI.claude.sendMessage(sessionId, contextPrompt, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
       } catch {
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
@@ -1765,7 +1775,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }])
     }
 
-    await window.electronAPI.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined)
+    await window.electronAPI.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
   }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput])
 
   const handleInterrupt = useCallback(() => {
@@ -1984,9 +1994,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     if (availableModels.length === 0) return
     const idx = availableModels.findIndex(m => m.value === currentModel)
     const next = availableModels[(idx + 1) % availableModels.length]
-    setCurrentModel(next.value)
-    await window.electronAPI.claude.setModel(sessionId, next.value, settingsStore.getSettings().autoCompactWindow)
-    workspaceStore.updateTerminalModel(sessionId, next.value)
+    const selectedModel = normalizeClaudeModelSelection(next.value) || next.value
+    setCurrentModel(selectedModel)
+    await window.electronAPI.claude.setModel(sessionId, selectedModel, getAutoCompactWindowForModel(selectedModel, settingsStore.getSettings().autoCompactWindow) || undefined)
+    workspaceStore.updateTerminalModel(sessionId, selectedModel)
   }, [sessionId, currentModel, availableModels])
 
   const handleEffortChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -3592,7 +3603,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               onClick={async () => {
                 if (!await window.electronAPI.dialog.confirm(`Merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}?`)) return
                 const cmd = `Commit all current changes with a descriptive message, then use host folder (${worktreeInfo.gitRoot}) to merge worktree folder (${worktreeInfo.worktreePath}). Steps:\n1. Stage and commit all changes in the worktree folder with a meaningful commit message\n2. Switch to host folder (${worktreeInfo.gitRoot}) and merge the worktree branch (${worktreeInfo.branchName}) into ${worktreeInfo.sourceBranch}\nDo not push to remote. Do not create a PR.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd)
+                await window.electronAPI.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
               }}
               title={`Commit and merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}`}
             >Merge to Host</button>
@@ -3601,7 +3612,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               onClick={async () => {
                 if (!await window.electronAPI.dialog.confirm(`Push ${worktreeInfo.branchName} directly to origin/main?`)) return
                 const cmd = `Commit all current changes with a descriptive message, then push directly to origin/main. Steps:\n1. Stage and commit all changes with a meaningful commit message\n2. Pull origin/main and resolve any conflicts if needed\n3. Push to origin/main\nDo not create a PR. Do not ask for confirmation.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd)
+                await window.electronAPI.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
               }}
               title="Commit, pull, resolve conflicts, and push to origin/main"
             >Push to Main</button>
@@ -3609,7 +3620,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               className="claude-worktree-btn"
               onClick={async () => {
                 const cmd = `Commit all current changes and create or update a pull request to origin/main. Steps:\n1. Stage and commit all changes with a meaningful commit message\n2. Push this branch to origin\n3. Check if a PR from this branch to main already exists (gh pr list --head ${worktreeInfo.branchName})\n4. If a PR exists: update it with the latest changes summary (gh pr edit)\n5. If no PR exists: create one with gh pr create, include a summary of all changes in the description\nDo not merge the PR.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd)
+                await window.electronAPI.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
               }}
               title="Commit, push branch, and create or update PR to main"
             >Create PR</button>
@@ -3749,9 +3760,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               <span
                 className="claude-status-btn"
                 onClick={() => setShowModelList(true)}
-                title={`Model: ${currentModel} (click to select)`}
+                title={`Model: ${currentModelLabel}${currentSdkModel !== currentModel ? ` (${currentSdkModel})` : ''} (click to select)`}
               >
-                {'</>'} {currentModel}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModelLabel}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
               </span>
             )}
             {!isCodexSession && !isV2Session && (
@@ -4344,10 +4355,17 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           contextPct: () => {
             if (!sessionMeta || sessionMeta.contextWindow <= 0) return null
             const ctxTokens = sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)
-            const pct = Math.round((ctxTokens / sessionMeta.contextWindow) * 100)
+            const compactWindow = sessionMeta.autoCompactWindow && sessionMeta.autoCompactWindow > 0
+              ? Math.min(sessionMeta.autoCompactWindow, sessionMeta.contextWindow)
+              : undefined
+            const effectiveWindow = compactWindow || sessionMeta.contextWindow
+            const pct = Math.round((ctxTokens / effectiveWindow) * 100)
             const ctxColor = pct >= 80 ? '#e05252' : pct >= 50 ? '#e6a700' : '#89ca78'
+            const denominatorLabel = compactWindow
+              ? `auto-compact threshold: ${compactWindow.toLocaleString()} tokens\nmodel context window: ${sessionMeta.contextWindow.toLocaleString()} tokens\npercentage uses the auto-compact threshold`
+              : `model context window: ${sessionMeta.contextWindow.toLocaleString()} tokens`
             return (
-              <span key="contextPct" className="claude-statusline-item claude-statusline-clickable" style={{ color: ctxColor }} title={`context: ${ctxTokens.toLocaleString()} / ${sessionMeta.contextWindow.toLocaleString()} tokens\ntotal: ${(sessionMeta.inputTokens + sessionMeta.outputTokens).toLocaleString()} tok\nclick to show context breakdown`}
+              <span key="contextPct" className="claude-statusline-item claude-statusline-clickable" style={{ color: ctxColor }} title={`context: ${ctxTokens.toLocaleString()} / ${effectiveWindow.toLocaleString()} tokens\n${denominatorLabel}\ntotal: ${(sessionMeta.inputTokens + sessionMeta.outputTokens).toLocaleString()} tok\nclick to show context breakdown`}
                 onClick={() => { window.electronAPI.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
                 ctx {pct}%
               </span>

@@ -15,7 +15,7 @@ import { CODEX_MODELS, DEFAULT_CODEX_MODEL, normalizeCodexEffort } from './codex
 import { buildToolCallFromResponseItem, resultFromResponseItemOutput } from './codex-agent/response-items'
 import { getCodexClass } from './codex-agent/sdk'
 import { listCodexSessionSummaries, loadSessionHistoryItems, readModelFromSessionLog } from './codex-agent/session-log'
-import { handleItemCompleted, handleItemStarted, handleItemUpdated, type CodexStreamItemSink, type CodexStreamItemState } from './codex-agent/stream-items'
+import { appendThinkingFromItem, handleItemCompleted, handleItemStarted, handleItemUpdated, type CodexStreamItemSink, type CodexStreamItemState } from './codex-agent/stream-items'
 import type { CodexApprovalPolicy, CodexSandboxMode, CodexSessionInstance, HistoryItem, SessionMetadata } from './codex-agent/types'
 
 const sdkThreadIds = new Map<string, string>()
@@ -336,6 +336,9 @@ export class CodexAgentManager {
       const Codex = await getCodexClass() as new (opts: Record<string, unknown>) => unknown
       const codex = new Codex({
         codexPathOverride: codexPath,
+        config: {
+          show_raw_agent_reasoning: true,
+        },
       })
       session.codexInstance = codex
 
@@ -451,6 +454,7 @@ export class CodexAgentManager {
     const itemState: CodexStreamItemState = {
       currentAssistantText: '',
       currentThinkingText: '',
+      currentThinkingByItemId: {},
       currentItemId: '',
     }
     const itemSink: CodexStreamItemSink = {
@@ -523,7 +527,10 @@ export class CodexAgentManager {
         switch (type) {
           case 'response_item': {
             const payload = (event.payload || event.item || event) as Record<string, unknown> | undefined
-            if (payload) this.handleResponseItemToolEvent(sessionId, payload, Date.now())
+            if (payload) {
+              appendThinkingFromItem(payload, itemState, itemSink)
+              this.handleResponseItemToolEvent(sessionId, payload, Date.now())
+            }
             break
           }
 

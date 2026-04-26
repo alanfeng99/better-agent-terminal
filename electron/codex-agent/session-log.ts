@@ -6,7 +6,7 @@ import type { ClaudeToolCall } from '../../src/types/claude-agent'
 import type { SessionSummary } from '../claude-agent-manager'
 import { logger } from '../logger'
 import { getCachedDateHint, getCachedLogPath, setCachedLogPath } from './log-cache'
-import { buildToolCallFromResponseItem, resultFromResponseItemOutput } from './response-items'
+import { buildToolCallFromResponseItem, extractReasoningTextFromResponseItem, resultFromResponseItemOutput } from './response-items'
 import type { HistoryItem } from './types'
 
 export function getCodexSessionsRoot(): string {
@@ -141,6 +141,7 @@ export async function loadSessionHistoryItems(sessionId: string, threadId: strin
 
   const items: HistoryItem[] = []
   const toolIndexById = new Map<string, number>()
+  let pendingThinkingText = ''
 
   try {
     for await (const line of iterateJsonlLines(sessionLogPath)) {
@@ -153,7 +154,10 @@ export async function loadSessionHistoryItems(sessionId: string, threadId: strin
         if (entry.type === 'response_item' && entry.payload) {
           const ts = parseTimestamp(entry.timestamp)
           const payloadType = entry.payload.type
-          if (payloadType === 'function_call' || payloadType === 'custom_tool_call') {
+          if (payloadType === 'reasoning' || payloadType === 'agent_reasoning' || payloadType === 'reasoning_summary' || payloadType === 'thinking') {
+            const thinkingText = extractReasoningTextFromResponseItem(entry.payload)
+            if (thinkingText) pendingThinkingText += pendingThinkingText ? `\n\n${thinkingText}` : thinkingText
+          } else if (payloadType === 'function_call' || payloadType === 'custom_tool_call') {
             const toolCall = buildToolCallFromResponseItem(sessionId, entry.payload, ts)
             if (toolCall) {
               const existingIndex = toolIndexById.get(toolCall.id)
@@ -211,13 +215,24 @@ export async function loadSessionHistoryItems(sessionId: string, threadId: strin
         if (eventType === 'agent_message') {
           const message = entry.payload.message
           if (typeof message === 'string' && message.trim()) {
-            items.push({
+            const last = items[items.length - 1]
+            if (last && !('toolName' in last) && last.role === 'assistant') {
+              last.content = `${last.content.trimEnd()}\n\n${message.trimStart()}`
+              if (pendingThinkingText) {
+                last.thinking = [last.thinking, pendingThinkingText].filter(Boolean).join('\n\n')
+              }
+              last.timestamp = ts
+            } else {
+              items.push({
               id: `hist-assistant-${items.length}`,
               sessionId,
               role: 'assistant',
               content: message,
+              ...(pendingThinkingText ? { thinking: pendingThinkingText } : {}),
               timestamp: ts,
-            })
+              })
+            }
+            pendingThinkingText = ''
           }
           continue
         }

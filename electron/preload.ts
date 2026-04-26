@@ -87,8 +87,8 @@ const electronAPI = {
   claude: {
     startSession: (sessionId: string, options: { cwd: string; prompt?: string; permissionMode?: string; model?: string; effort?: string; apiVersion?: 'v1' | 'v2'; useWorktree?: boolean; worktreePath?: string; worktreeBranch?: string; autoCompactWindow?: number; agentPreset?: string; codexSandboxMode?: string; codexApprovalPolicy?: string }) =>
       ipcRenderer.invoke('claude:start-session', sessionId, options),
-    sendMessage: (sessionId: string, prompt: string, images?: string[]) =>
-      ipcRenderer.invoke('claude:send-message', sessionId, prompt, images),
+    sendMessage: (sessionId: string, prompt: string, images?: string[], autoCompactWindow?: number | null) =>
+      ipcRenderer.invoke('claude:send-message', sessionId, prompt, images, autoCompactWindow),
     stopSession: (sessionId: string) =>
       ipcRenderer.invoke('claude:stop-session', sessionId),
     abortSession: (sessionId: string) =>

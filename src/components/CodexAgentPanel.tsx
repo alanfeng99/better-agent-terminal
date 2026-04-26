@@ -614,6 +614,19 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
               (m as ClaudeMessage).content === finalMsg.content &&
               Math.abs((m as ClaudeMessage).timestamp - finalMsg.timestamp) < 5000
             )) return nextPrev
+            if (finalMsg.role === 'assistant' && finalMsg.content.trim()) {
+              const last = nextPrev[nextPrev.length - 1]
+              if (last && !isToolCall(last) && (last as ClaudeMessage).role === 'assistant') {
+                const lastMsg = last as ClaudeMessage
+                const merged: ClaudeMessage = {
+                  ...lastMsg,
+                  content: `${lastMsg.content.trimEnd()}\n\n${finalMsg.content.trimStart()}`,
+                  thinking: [lastMsg.thinking, finalMsg.thinking].filter(Boolean).join('\n\n') || undefined,
+                  timestamp: finalMsg.timestamp,
+                }
+                return [...nextPrev.slice(0, -1), merged]
+              }
+            }
             return [...nextPrev, finalMsg]
           })
           return ''
