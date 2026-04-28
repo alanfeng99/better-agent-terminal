@@ -1304,8 +1304,12 @@
   transition: border-color 0.15s;
 }
 
+.claude-input-area {
+  border-color: var(--agent-color, var(--border-color));
+}
+
 .claude-input-area:focus-within {
-  border-color: var(--claude-accent);
+  border-color: var(--agent-color, var(--claude-accent));
 }
 
 .claude-input {

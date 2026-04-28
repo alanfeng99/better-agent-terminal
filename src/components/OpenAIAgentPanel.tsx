@@ -8,7 +8,7 @@ import { CODEX_EFFORT_LEVELS, EFFORT_LEVELS } from '../types'
 import { normalizeAgentParams } from '../types/agent-profiles'
 import { settingsStore } from '../stores/settings-store'
 import { workspaceStore } from '../stores/workspace-store'
-import type { AgentPresetId } from '../types/agent-presets'
+import { getAgentPreset, type AgentPresetId } from '../types/agent-presets'
 import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
@@ -3301,7 +3301,10 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   return (
     <div
       className="claude-agent-panel"
-      style={{ '--claude-font-size': `${claudeFontSize}px` } as React.CSSProperties}
+      style={{
+        '--claude-font-size': `${claudeFontSize}px`,
+        ...(getAgentPreset(terminal?.agentPreset ?? '')?.color ? { '--agent-color': getAgentPreset(terminal?.agentPreset ?? '')!.color } : {}),
+      } as React.CSSProperties}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
