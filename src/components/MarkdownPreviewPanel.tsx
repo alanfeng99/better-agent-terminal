@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { MarkdownPreview } from './FileTree'
+import { MarkdownPreview } from './MarkdownPreview'
 
 interface MarkdownPreviewPanelProps {
   filePath: string
