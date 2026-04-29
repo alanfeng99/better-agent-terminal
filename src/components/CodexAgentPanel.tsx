@@ -113,6 +113,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     }
     return null
   })
+  const markdownCwd = worktreeInfo?.worktreePath || terminal?.worktreePath || cwd
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null)
   const [isResumingHistory, setIsResumingHistory] = useState(false)
   const [activePlanFile, setActivePlanFile] = useState<string | null>(null)
@@ -3017,7 +3018,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             )
           })()}
           {msg.content && (
-            <ChatMarkdown text={msg.content} cwd={cwd} />
+            <ChatMarkdown text={msg.content} cwd={markdownCwd} />
           )}
           {msg.timestamp > 0 && (
             <span className="claude-msg-time" title={formatFullTimestamp(msg.timestamp)}>{formatTimestamp(msg.timestamp)}</span>
@@ -3759,7 +3760,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             {contentModal.markdown ? (
               <ChatMarkdown
                 text={contentModal.content}
-                cwd={cwd}
+                cwd={markdownCwd}
                 className="claude-plan-modal-body claude-plan-modal-markdown claude-markdown"
               />
             ) : (

@@ -210,6 +210,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     }
     return null
   })
+  const markdownCwd = worktreeInfo?.worktreePath || terminal?.worktreePath || cwd
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null)
   const [isResumingHistory, setIsResumingHistory] = useState(false)
   const [activePlanFile, setActivePlanFile] = useState<string | null>(null)
@@ -3288,7 +3289,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             )
           })()}
           {msg.content && (
-            <ChatMarkdown text={msg.content} cwd={cwd} />
+            <ChatMarkdown text={msg.content} cwd={markdownCwd} />
           )}
           {msg.timestamp > 0 && (
             <span className="claude-msg-time" title={formatFullTimestamp(msg.timestamp)}>{formatTimestamp(msg.timestamp)}</span>
@@ -4047,7 +4048,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             {contentModal.markdown ? (
               <ChatMarkdown
                 text={contentModal.content}
-                cwd={cwd}
+                cwd={markdownCwd}
                 className="claude-plan-modal-body claude-plan-modal-markdown claude-markdown"
               />
             ) : (
