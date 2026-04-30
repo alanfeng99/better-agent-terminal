@@ -7,6 +7,7 @@ import type { CreatePtyOptions } from '../src/types'
 import { broadcastHub } from './remote/broadcast-hub'
 import { logger } from './logger'
 import { getDataDir } from './server-core/data-dir'
+import { normalizeInputForPipeShell } from './pty-input'
 
 // Per-terminal shell history directory — resolved lazily so getDataDir() runs
 // after the app initializes its data directory.
@@ -384,12 +385,8 @@ export class PtyManager {
       if (instance.usePty) {
         instance.process.write(data)
       } else {
-        // For the child_process fallback stdin is a pipe, not a real PTY.
-        // xterm sends Enter as CR; shells reading from a pipe expect LF.
-        // Normalize line endings so commands written programmatically by
-        // WorkerPanel run the same way they do under node-pty.
         const cp = instance.process as ChildProcess
-        cp.stdin?.write(data.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
+        cp.stdin?.write(normalizeInputForPipeShell(data))
       }
     }
   }

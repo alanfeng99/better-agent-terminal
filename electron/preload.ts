@@ -3,6 +3,7 @@ import type { CreatePtyOptions } from '../src/types'
 
 const electronAPI = {
   platform: process.platform as 'win32' | 'darwin' | 'linux',
+  systemVersion: typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '',
   pty: {
     create: (options: CreatePtyOptions) => ipcRenderer.invoke('pty:create', options),
     write: (id: string, data: string) => ipcRenderer.invoke('pty:write', id, data),

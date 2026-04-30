@@ -23,6 +23,13 @@ interface ContextMenu {
   hasSelection: boolean
 }
 
+function getWindowsBuildNumber(): number | undefined {
+  if (window.electronAPI.platform !== 'win32') return undefined
+  const version = window.electronAPI.systemVersion
+  const build = Number(version.split('.').pop())
+  return Number.isFinite(build) ? build : undefined
+}
+
 let renderCount = 0
 export const TerminalPanel = memo(function TerminalPanel({ terminalId, isActive = true, terminalType, agentPreset }: TerminalPanelProps) {
   renderCount++
@@ -224,6 +231,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, isActive 
 
     const settings = settingsStore.getSettings()
     const colors = settingsStore.getTerminalColors()
+    const windowsBuildNumber = getWindowsBuildNumber()
 
     // Create terminal instance with customizable colors
     const terminal = new Terminal({
@@ -256,7 +264,13 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, isActive 
       scrollback: 10000,
       convertEol: true,
       allowProposedApi: true,
-      allowTransparency: true
+      allowTransparency: true,
+      windowsPty: window.electronAPI.platform === 'win32'
+        ? {
+            backend: 'conpty',
+            buildNumber: windowsBuildNumber
+          }
+        : undefined
     })
 
     const fitAddon = new FitAddon()
