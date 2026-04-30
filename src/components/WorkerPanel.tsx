@@ -666,58 +666,60 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     <div className="worker-panel">
       {processes.length > 0 && (
         <div className="worker-process-bar">
-          {processes.map(proc => {
-            const isVisible = logVisible[proc.name] !== false
-            return (
-              <div
-                key={proc.ptyId}
-                className={`worker-process-card${spotlightService !== null && spotlightService !== proc.name ? ' worker-card-dimmed' : ''}${spotlightService === proc.name ? ' worker-card-spotlight' : ''}`}
-              >
-                <span className={`worker-status-dot worker-status-${proc.status}`} />
-                <span
-                  className="worker-process-name"
-                  style={{ color: proc.color, cursor: 'pointer' }}
-                  onClick={() => toggleSpotlight(proc.name)}
-                  title={spotlightService === proc.name ? 'Exit spotlight' : 'Spotlight: show only this service'}
+          <div className="worker-process-list">
+            {processes.map(proc => {
+              const isVisible = logVisible[proc.name] !== false
+              return (
+                <div
+                  key={proc.ptyId}
+                  className={`worker-process-card${spotlightService !== null && spotlightService !== proc.name ? ' worker-card-dimmed' : ''}${spotlightService === proc.name ? ' worker-card-spotlight' : ''}`}
                 >
-                  {proc.name}
-                </span>
-                <div className="worker-process-actions">
-                  <button
-                    className={`worker-btn worker-btn-log ${isVisible ? 'active' : ''}`}
-                    onClick={() => toggleLogVisible(proc.name)}
-                    title={isVisible ? 'Hide log' : 'Show log'}
+                  <span className={`worker-status-dot worker-status-${proc.status}`} />
+                  <span
+                    className="worker-process-name"
+                    style={{ color: proc.color, cursor: 'pointer' }}
+                    onClick={() => toggleSpotlight(proc.name)}
+                    title={spotlightService === proc.name ? 'Exit spotlight' : `Spotlight: ${proc.name}`}
                   >
-                    {isVisible ? '◉' : '○'}
-                  </button>
-                  <button
-                    className={`worker-btn worker-btn-auto ${proc.autoStart ? 'active' : ''}`}
-                    onClick={() => toggleAutoStart(proc.name)}
-                    title={proc.autoStart ? 'Auto-start ON (click to disable)' : 'Auto-start OFF (click to enable)'}
-                  >
-                    {proc.autoStart ? '⚡' : '💤'}
-                  </button>
-                  {(proc.status === 'stopped' || proc.status === 'crashed') && (
-                    <button className="worker-btn" onClick={async () => {
-                      await reloadProcfile()
-                      const fresh = processesRef.current.find(p => p.name === proc.name)
-                      if (fresh) startProcess(fresh)
-                    }} title="Start">
-                      ▶
+                    {proc.name}
+                  </span>
+                  <div className="worker-process-actions">
+                    <button
+                      className={`worker-btn worker-btn-log ${isVisible ? 'active' : ''}`}
+                      onClick={() => toggleLogVisible(proc.name)}
+                      title={isVisible ? 'Hide log' : 'Show log'}
+                    >
+                      {isVisible ? '◉' : '○'}
                     </button>
-                  )}
-                  {(proc.status === 'running' || proc.status === 'starting') && (
-                    <button className="worker-btn" onClick={() => stopProcess(proc)} title="Stop">
-                      ■
+                    <button
+                      className={`worker-btn worker-btn-auto ${proc.autoStart ? 'active' : ''}`}
+                      onClick={() => toggleAutoStart(proc.name)}
+                      title={proc.autoStart ? 'Auto-start ON (click to disable)' : 'Auto-start OFF (click to enable)'}
+                    >
+                      {proc.autoStart ? '⚡' : '💤'}
                     </button>
-                  )}
-                  <button className="worker-btn" onClick={() => restartProcess(proc)} title="Restart">
-                    ⟳
-                  </button>
+                    {(proc.status === 'stopped' || proc.status === 'crashed') && (
+                      <button className="worker-btn" onClick={async () => {
+                        await reloadProcfile()
+                        const fresh = processesRef.current.find(p => p.name === proc.name)
+                        if (fresh) startProcess(fresh)
+                      }} title="Start">
+                        ▶
+                      </button>
+                    )}
+                    {(proc.status === 'running' || proc.status === 'starting') && (
+                      <button className="worker-btn" onClick={() => stopProcess(proc)} title="Stop">
+                        ■
+                      </button>
+                    )}
+                    <button className="worker-btn" onClick={() => restartProcess(proc)} title="Restart">
+                      ⟳
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })}
+          </div>
           <div className="worker-global-actions">
             <button className="worker-btn" onClick={startAll} title="Start All">▶ All</button>
             <button className="worker-btn" onClick={stopAll} title="Stop All">■ All</button>
