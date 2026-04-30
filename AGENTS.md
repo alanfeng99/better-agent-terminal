@@ -1,0 +1,26 @@
+# AGENTS.md - Project Guidelines
+
+Follow the project guidance in `CLAUDE.md`. The most important operational notes are repeated here for agents that load `AGENTS.md` first.
+
+## Package Management
+
+- This repository uses **pnpm**. Do not use `npm install`, `npm ci`, or `npx` for project workflows.
+- The pinned package manager is declared in `package.json` (`packageManager`: `pnpm@10.33.2`).
+- Use `pnpm install --frozen-lockfile` for reproducible installs.
+- Use `pnpm exec <tool>` instead of `npx <tool>`.
+- Keep `pnpm-lock.yaml` committed and do not reintroduce `package-lock.json`.
+- pnpm v10 blocks dependency lifecycle scripts unless explicitly allowed; required build-script packages are listed under `pnpm.onlyBuiltDependencies` in `package.json`.
+
+## Verification
+
+- Run `pnpm exec tsc --noEmit --pretty false` for type checking.
+- Run `pnpm run compile` for the standard build check.
+- Run `pnpm run test:node-resolver` when touching Node resolution or runtime startup.
+- For local packaging verification without macOS signing/notarization, run:
+  - `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --dir --config.mac.notarize=false --config.mac.identity=null`
+
+## Project Rules
+
+- Do not replace the built-in status line implementation.
+- Renderer logs should use `window.electronAPI.debug.log(...)`; Electron/backend logs should use the project logger.
+- When modifying shared code such as stores, IPC handlers, or shared types, trace consumers before committing.

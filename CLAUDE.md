@@ -4,8 +4,22 @@
 
 - **NEVER** break existing features when implementing new ones.
 - Before committing, verify ALL existing features still work — not just the new changes.
-- Run the build (`npx vite build`) to confirm compilation succeeds.
+- Run the build (`pnpm run compile`) to confirm compilation succeeds.
 - When modifying shared code (stores, IPC handlers, types), trace all consumers to ensure nothing breaks.
+
+## Package Management
+
+- This repository uses **pnpm**. Do not use `npm install`, `npm ci`, or `npx` for project workflows.
+- The pinned package manager is declared in `package.json` (`packageManager`: `pnpm@10.33.2`).
+- Use `pnpm install --frozen-lockfile` for reproducible installs.
+- Use `pnpm exec <tool>` instead of `npx <tool>`.
+- Keep `pnpm-lock.yaml` committed and do not reintroduce `package-lock.json`.
+- pnpm v10 blocks dependency lifecycle scripts unless explicitly allowed; required build-script packages are listed under `pnpm.onlyBuiltDependencies` in `package.json`.
+- Standard verification commands:
+  - `pnpm exec tsc --noEmit --pretty false`
+  - `pnpm run compile`
+  - `pnpm run test:node-resolver`
+  - For local packaging verification without macOS signing/notarization: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --dir --config.mac.notarize=false --config.mac.identity=null`
 
 ## Logging
 
