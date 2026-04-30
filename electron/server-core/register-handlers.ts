@@ -209,9 +209,25 @@ export function registerProxiedHandlers(deps: ProxiedHandlersDeps): void {
     const archKey = process.platform === 'linux'
       ? linuxClaudeArchCandidates()
       : [`${process.platform}-${process.arch}`]
+
+    const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    if (resourcesPath) {
+      for (const key of archKey) {
+        const packagedPath = path.join(
+          resourcesPath,
+          'app.asar.unpacked',
+          'node_modules',
+          '@anthropic-ai',
+          `claude-code-${key}`,
+          platformPkgBin
+        )
+        if (fsSync.existsSync(packagedPath)) return packagedPath
+      }
+    }
+
     const candidates = [
-      `@anthropic-ai/claude-code/bin/claude.exe`,
       ...archKey.map(k => `@anthropic-ai/claude-code-${k}/${platformPkgBin}`),
+      `@anthropic-ai/claude-code/bin/claude.exe`,
     ]
     for (const spec of candidates) {
       try {

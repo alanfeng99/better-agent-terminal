@@ -99,6 +99,11 @@ jobs:
         if: matrix.platform == 'linux'
         run: pnpm exec electron-builder --linux --publish never
 
+      - name: Verify packaged Claude binaries
+        env:
+          BAT_TARGET_ARCH: ${{ matrix.arch || '' }}
+        run: pnpm run verify:packaged-claude-binaries
+
       - name: Upload Windows artifact
         if: matrix.platform == 'win'
         uses: actions/upload-artifact@v4
