@@ -594,21 +594,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       for (const proc of procs) {
         if (disposed) break
         if (isRemoteClient || !proc.autoStart || proc.status === 'running') continue
-        ptyIdsRef.current.add(proc.ptyId)
-        await window.electronAPI.pty.create({
-          id: proc.ptyId,
-          cwd: processCwd,
-          type: 'terminal',
-          shell: shellRef.current,
-        })
-        window.electronAPI.pty.write(proc.ptyId, buildLaunchCommand(shellRef.current, proc.command))
-      }
-
-      // Mark started processes as running
-      if (!disposed) {
-        setProcesses(prev => prev.map(p =>
-          p.status === 'starting' ? { ...p, status: 'running' as const } : p
-        ))
+        await startProcess(proc)
       }
     })()
 
@@ -635,7 +621,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
         window.electronAPI.pty.kill(id)
       }
     }
-  }, [terminalId, procfilePath, processCwd, writeOutput])
+  }, [terminalId, procfilePath, processCwd, writeOutput, startProcess])
 
   // Handle resize/refresh when becoming active
   useEffect(() => {

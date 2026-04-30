@@ -1,1 +1,1 @@
-verify: npm run verify-runtime
+verify: pnpm run verify-runtime

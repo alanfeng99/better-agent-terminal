@@ -384,9 +384,12 @@ export class PtyManager {
       if (instance.usePty) {
         instance.process.write(data)
       } else {
-        // For child_process, write to stdin only (shell handles echo)
+        // For the child_process fallback stdin is a pipe, not a real PTY.
+        // xterm sends Enter as CR; shells reading from a pipe expect LF.
+        // Normalize line endings so commands written programmatically by
+        // WorkerPanel run the same way they do under node-pty.
         const cp = instance.process as ChildProcess
-        cp.stdin?.write(data)
+        cp.stdin?.write(data.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
       }
     }
   }
