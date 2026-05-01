@@ -47,7 +47,13 @@
     "@img/sharp-darwin-x64": "^0.34.5",
     "@img/sharp-libvips-darwin-arm64": "^1.2.4",
     "@img/sharp-libvips-darwin-x64": "^1.2.4",
-    "@lydell/node-pty": "^1.1.0"
+    "@lydell/node-pty": "^1.1.0",
+    "@lydell/node-pty-darwin-arm64": "1.1.0",
+    "@lydell/node-pty-darwin-x64": "1.1.0",
+    "@lydell/node-pty-linux-arm64": "1.1.0",
+    "@lydell/node-pty-linux-x64": "1.1.0",
+    "@lydell/node-pty-win32-arm64": "1.1.0",
+    "@lydell/node-pty-win32-x64": "1.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -207,6 +213,7 @@
       "node_modules/@openai/codex-darwin-*/**",
       "node_modules/@openai/codex-linux-*/**",
       "node_modules/@openai/codex-win32-*/**",
+      "node_modules/@lydell/node-pty*/**",
       "node_modules/@vscode/ripgrep/bin/**",
       "node_modules/@img/**/*"
     ]

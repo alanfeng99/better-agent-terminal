@@ -88,6 +88,22 @@ function pruneOpenAINativePackages(resourcesRoot, platform, arch) {
   }
 }
 
+function copyNodePtyPackage(resourcesRoot, platform, arch) {
+  const targetPackage = `@lydell/node-pty-${platform}-${arch}`
+  const binaryName = platform === 'win32' ? 'conpty.node' : 'pty.node'
+  const binaryPath = resolveFromPackage('@lydell/node-pty', `${targetPackage}/${binaryName}`)
+  const packageRoot = path.dirname(binaryPath)
+  const targetDir = path.join(resourcesRoot, 'app.asar.unpacked', 'node_modules', '@lydell', `node-pty-${platform}-${arch}`)
+  fs.rmSync(targetDir, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+  fs.cpSync(packageRoot, targetDir, { recursive: true, dereference: true })
+  const targetBinary = path.join(targetDir, binaryName)
+  if (!fs.existsSync(targetBinary)) {
+    throw new Error(`Failed to copy ${targetPackage}/${binaryName} to ${targetBinary}`)
+  }
+  console.log(`[afterPack] copied ${targetPackage}/${binaryName} -> ${targetBinary}`)
+}
+
 exports.default = async function afterPack(context) {
   const arch = normalizeArch(context.arch)
   const platform = context.electronPlatformName
@@ -97,6 +113,7 @@ exports.default = async function afterPack(context) {
   fs.mkdirSync(targetRoot, { recursive: true })
   pruneAnthropicNativePackages(targetRoot, platform, arch)
   pruneOpenAINativePackages(resourcesRoot, platform, arch)
+  copyNodePtyPackage(resourcesRoot, platform, arch)
 
   copyPackageForTarget(
     '@anthropic-ai/claude-code',
@@ -106,4 +123,5 @@ exports.default = async function afterPack(context) {
   )
   pruneAnthropicNativePackages(targetRoot, platform, arch)
   pruneOpenAINativePackages(resourcesRoot, platform, arch)
+  copyNodePtyPackage(resourcesRoot, platform, arch)
 }
