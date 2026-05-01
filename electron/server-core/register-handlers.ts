@@ -826,6 +826,19 @@ export function registerProxiedHandlers(deps: ProxiedHandlersDeps): void {
     }
   })
 
+  registerHandler('fs:delete-path', async (_ctx, targetPath: string) => {
+    try {
+      const abs = path.resolve(targetPath)
+      if (isSensitivePath(abs)) return { error: 'Access denied (sensitive path)' }
+      const stat = await fs.lstat(abs)
+      if (!stat.isDirectory()) return { error: 'Only directories can be deleted here' }
+      await fs.rm(abs, { recursive: true, force: false })
+      return { path: abs }
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
   registerHandler('fs:search', async (_ctx, dirPath: string, query: string) => {
     const IGNORED = new Set(['.git', 'node_modules', '.next', 'dist', 'dist-electron', '.cache', '__pycache__', '.DS_Store', 'release'])
     const results: { name: string; path: string; isDirectory: boolean }[] = []

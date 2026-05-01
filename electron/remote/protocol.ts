@@ -42,7 +42,7 @@ export const PROXIED_CHANNELS = new Set([
   'git:branch', 'git:log', 'git:diff', 'git:diff-files', 'git:status', 'git:get-github-url', 'git:getRoot',
   // FS
   'fs:readdir', 'fs:readFile', 'fs:search', 'fs:watch', 'fs:unwatch',
-  'fs:home', 'fs:list-dirs', 'fs:mkdir', 'fs:quick-locations', 'fs:resolve-path-links',
+  'fs:home', 'fs:list-dirs', 'fs:mkdir', 'fs:delete-path', 'fs:quick-locations', 'fs:resolve-path-links',
   'image:read-as-data-url',
   // OpenAI direct agent settings
   'openai:list-sessions', 'openai:get-api-key-status', 'openai:set-api-key',

@@ -353,6 +353,8 @@ const electronAPI = {
       >,
     mkdir: (parentPath: string, name: string) =>
       ipcRenderer.invoke('fs:mkdir', parentPath, name) as Promise<{ path: string } | { error: string }>,
+    deletePath: (targetPath: string) =>
+      ipcRenderer.invoke('fs:delete-path', targetPath) as Promise<{ path: string } | { error: string }>,
     watch: (dirPath: string) => ipcRenderer.invoke('fs:watch', dirPath) as Promise<boolean>,
     unwatch: (dirPath: string) => ipcRenderer.invoke('fs:unwatch', dirPath) as Promise<boolean>,
     onChanged: (callback: (dirPath: string) => void) => {

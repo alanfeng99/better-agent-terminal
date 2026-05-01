@@ -41,6 +41,9 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
   const [quickLocations, setQuickLocations] = useState<QuickLocation[]>([])
   const [quickError, setQuickError] = useState<string | null>(null)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
+  const selectedEntries = entries.filter(entry => selected.has(entry.path))
+  const deletableEntries = selectedEntries.filter(entry => entry.isDirectory)
+  const canDeleteSelected = !loading && !creating && deletableEntries.length > 0 && deletableEntries.length === selectedEntries.length
 
   const loadDir = useCallback(async (dirPath: string) => {
     setLoading(true)
@@ -119,17 +122,51 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
     }
   }, [creating])
 
+  const handleDeleteSelected = useCallback(async () => {
+    if (!canDeleteSelected) return
+
+    const confirmed = await window.electronAPI.dialog.confirm(
+      deletableEntries.length === 1
+        ? t('folderPicker.deleteConfirmSingle', { name: deletableEntries[0].name })
+        : t('folderPicker.deleteConfirmMulti', { count: deletableEntries.length }),
+      t('folderPicker.deleteConfirmTitle')
+    )
+    if (!confirmed) return
+
+    setError(null)
+    for (const entry of deletableEntries) {
+      const result = await window.electronAPI.fs.deletePath(entry.path)
+      if ('error' in result) {
+        setError(result.error)
+        return
+      }
+    }
+    await loadDir(currentPath)
+  }, [canDeleteSelected, currentPath, deletableEntries, loadDir, t])
+
   // Esc to close (top-level only — when creating, Esc cancels create)
   useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      const element = target as HTMLElement | null
+      if (!element) return false
+      const tag = element.tagName
+      return tag === 'INPUT' || tag === 'TEXTAREA' || element.isContentEditable
+    }
+
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (creating) { setCreating(false); setNewFolderName(''); setCreateError(null) }
         else onClose()
+        return
+      }
+      if (e.key === 'Delete' && !isTypingTarget(e.target) && canDeleteSelected) {
+        e.preventDefault()
+        void handleDeleteSelected()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [creating, onClose])
+  }, [canDeleteSelected, creating, handleDeleteSelected, onClose])
 
   const navigate = (path: string) => {
     loadDir(path)
@@ -269,6 +306,14 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
               {t('folderPicker.showHidden')}
             </label>
             <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                className="profile-action-btn"
+                onClick={() => { void handleDeleteSelected() }}
+                disabled={!canDeleteSelected}
+                title={t('folderPicker.deleteSelectedTitle')}
+              >
+                {t('common.delete')}
+              </button>
               <button
                 className="profile-action-btn"
                 onClick={() => { setCreating(true); setNewFolderName(''); setCreateError(null) }}

@@ -1,5 +1,13 @@
 import type { MessageItem } from './CodexAgentPanel.types'
 
+export function shouldAutoContinueAfterTurnEnd(payload: { reason?: string; error?: string } | null | undefined): boolean {
+  if (!payload) return false
+  if (payload.reason === 'completed') return true
+  if (payload.reason !== 'error') return false
+  const error = payload.error || ''
+  return /codex:\s*no response from model after \d+s\.\s*please try again\./i.test(error)
+}
+
 export function toolInputSummary(_toolName: string, input: Record<string, unknown>): string {
   if (input.command) return String(input.command).slice(0, 80)
   if (input.file_path) return String(input.file_path)

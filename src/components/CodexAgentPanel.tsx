@@ -13,7 +13,7 @@ import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
-import { firstMeaningfulLine, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
+import { firstMeaningfulLine, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
 
@@ -707,8 +707,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
       api.onTurnEnd((sid: string, payload) => {
         if (sid !== sessionId) return
-        // Auto-continue: only when turn completed successfully, until max reached
-        if (payload.reason !== 'completed') return
+        // Auto-continue: continue on success and specific recoverable Codex timeout errors.
+        if (!shouldAutoContinueAfterTurnEnd(payload)) return
         const ac = autoContinueRef.current
         if (ac.enabled && ac.used < ac.max) {
           ac.used++
