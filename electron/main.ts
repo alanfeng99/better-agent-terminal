@@ -1339,6 +1339,10 @@ function registerLocalHandlers() {
     const sourceEntry = await windowRegistry.getEntry(sourceWindowId)
     const targetEntry = await windowRegistry.getEntry(targetWindowId)
     if (!sourceEntry || !targetEntry) return false
+    if ((sourceEntry.profileId || null) !== (targetEntry.profileId || null)) {
+      logger.warn(`[workspace] Refused cross-profile move ${workspaceId} from ${sourceWindowId} to ${targetWindowId}`)
+      return false
+    }
 
     // Find workspace in source
     const srcWorkspaces = sourceEntry.workspaces as any[]
@@ -1371,14 +1375,21 @@ function registerLocalHandlers() {
     // Fix activeTerminalId in source if it belonged to the moved workspace
     const movedTerminalIds = new Set(movedTerminals.map((t: any) => t.id))
     if (sourceEntry.activeTerminalId && movedTerminalIds.has(sourceEntry.activeTerminalId)) {
-      sourceEntry.activeTerminalId = null
+      sourceEntry.activeTerminalId = (sourceEntry.terminals as any[]).find((t: any) => t.workspaceId === sourceEntry.activeWorkspaceId)?.id || null
     }
+    targetEntry.activeTerminalId =
+      (workspace as { focusedTerminalId?: string | null }).focusedTerminalId && movedTerminalIds.has((workspace as { focusedTerminalId?: string | null }).focusedTerminalId)
+        ? (workspace as { focusedTerminalId: string }).focusedTerminalId
+        : movedTerminals[0]?.id || null
 
     // Save both entries
     sourceEntry.lastActiveAt = Date.now()
     targetEntry.lastActiveAt = Date.now()
     await windowRegistry.saveEntry(sourceEntry)
     await windowRegistry.saveEntry(targetEntry)
+    if (sourceEntry.profileId) {
+      await profileManager.save(sourceEntry.profileId).catch(() => { /* ignore */ })
+    }
 
     // Notify both renderers to reload
     const sourceWin = windowMap.get(sourceWindowId)

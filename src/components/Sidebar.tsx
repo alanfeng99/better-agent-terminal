@@ -123,6 +123,11 @@ export function Sidebar({
     setMenuPos({ x, y })
   }, [contextMenu])
 
+  const moveWorkspaceToWindow = useCallback(async (sourceWindowId: string, targetWindowId: string, workspaceId: string, insertIndex: number) => {
+    const ok = await window.electronAPI.workspace.moveToWindow(sourceWindowId, targetWindowId, workspaceId, insertIndex)
+    if (!ok) window.alert('Workspace moves only work between windows in the same profile.')
+  }, [])
+
   // Context menu handler
   const handleContextMenu = useCallback((e: React.MouseEvent, workspaceId: string) => {
     e.preventDefault()
@@ -239,14 +244,14 @@ export function Sidebar({
 
     // Check for cross-window drop
     const crossWindow = parseCrossWindowDrop(e.dataTransfer)
-    if (crossWindow) {
-      e.stopPropagation() // prevent container onDrop from firing a second moveToWindow
-      const targetIndex = workspaces.findIndex(w => w.id === targetId)
-      const insertIndex = dragPosition === 'after' ? targetIndex + 1 : targetIndex
-      window.electronAPI.workspace.moveToWindow(
-        crossWindow.sourceWindowId, windowId!, crossWindow.workspaceId, Math.max(0, insertIndex)
-      )
-      setDraggedId(null)
+      if (crossWindow) {
+        e.stopPropagation() // prevent container onDrop from firing a second moveToWindow
+        const targetIndex = workspaces.findIndex(w => w.id === targetId)
+        const insertIndex = dragPosition === 'after' ? targetIndex + 1 : targetIndex
+        void moveWorkspaceToWindow(
+          crossWindow.sourceWindowId, windowId!, crossWindow.workspaceId, Math.max(0, insertIndex)
+        )
+        setDraggedId(null)
       setDragOverId(null)
       setDragPosition(null)
       return
@@ -282,7 +287,7 @@ export function Sidebar({
     setDraggedId(null)
     setDragOverId(null)
     setDragPosition(null)
-  }, [draggedId, dragPosition, workspaces, onReorderWorkspaces, windowId, parseCrossWindowDrop])
+  }, [draggedId, dragPosition, workspaces, onReorderWorkspaces, windowId, parseCrossWindowDrop, moveWorkspaceToWindow])
 
   return (
     <aside className="sidebar" style={{ width }}>
@@ -360,7 +365,7 @@ export function Sidebar({
           const crossWindow = parseCrossWindowDrop(e.dataTransfer)
           if (crossWindow) {
             e.preventDefault()
-            window.electronAPI.workspace.moveToWindow(
+            void moveWorkspaceToWindow(
               crossWindow.sourceWindowId, windowId!, crossWindow.workspaceId, workspaces.length
             )
             setDragOverId(null)
