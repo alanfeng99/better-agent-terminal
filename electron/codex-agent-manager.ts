@@ -15,7 +15,7 @@ import { dataUrlToTempFile } from './codex-agent/image-attachments'
 import { CODEX_MODELS, DEFAULT_CODEX_MODEL, normalizeCodexEffort } from './codex-agent/models'
 import { buildToolCallFromResponseItem, resultFromResponseItemOutput } from './codex-agent/response-items'
 import { getCodexClass } from './codex-agent/sdk'
-import { listCodexSessionSummaries, loadSessionHistoryItems, readModelFromSessionLog } from './codex-agent/session-log'
+import { findSessionLogForThread, iterateJsonlLines, listCodexSessionSummaries, loadSessionHistoryItems, readModelFromSessionLog } from './codex-agent/session-log'
 import { appendThinkingFromItem, handleItemCompleted, handleItemStarted, handleItemUpdated, type CodexStreamItemSink, type CodexStreamItemState } from './codex-agent/stream-items'
 import { applyCxEnvironment } from './semantic-navigation'
 import type { CodexApprovalPolicy, CodexSandboxMode, CodexSessionInstance, HistoryItem, SessionMetadata } from './codex-agent/types'
@@ -179,6 +179,35 @@ export class CodexAgentManager {
     const session = this.sessions.get(sessionId)
     if (!session) return false
     return session.state.messages.some(m => 'toolName' in m && m.id === toolId)
+  }
+
+  /**
+   * Sweep the rollout JSONL for `image_generation_call` response_items that the
+   * Codex SDK doesn't surface as item.* events during streaming. Called on
+   * turn.completed so generated images appear in the timeline live.
+   */
+  private async flushImageGenFromSessionLog(sessionId: string, turnStartedAt: number): Promise<void> {
+    const session = this.sessions.get(sessionId)
+    if (!session?.threadId) return
+    try {
+      const sessionLogPath = await findSessionLogForThread(session.threadId)
+      if (!sessionLogPath) return
+      for await (const line of iterateJsonlLines(sessionLogPath)) {
+        let entry: { timestamp?: string; type?: string; payload?: Record<string, unknown> }
+        try {
+          entry = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (entry.type !== 'response_item' || !entry.payload) continue
+        if (entry.payload.type !== 'image_generation_call') continue
+        const ts = entry.timestamp ? Date.parse(entry.timestamp) : Date.now()
+        if (Number.isFinite(ts) && ts < turnStartedAt) continue
+        this.handleResponseItemToolEvent(sessionId, entry.payload, Number.isFinite(ts) ? ts : Date.now())
+      }
+    } catch (err) {
+      logger.error(`[codex:${sessionId.slice(0, 8)}] flushImageGenFromSessionLog failed:`, err)
+    }
   }
 
   private handleResponseItemToolEvent(sessionId: string, payload: Record<string, unknown>, timestamp: number): void {
@@ -534,6 +563,10 @@ export class CodexAgentManager {
       sendError: message => this.send('claude:error', sessionId, message),
     }
     let sawTurnCompleted = false
+    // Codex SDK doesn't surface image_generation_call response_items as
+    // item.* events; the only signal is an empty agent_message item.completed.
+    // We use that as a hint to scan the rollout for the missing image.
+    let suspectImageGen = false
     let idleTimedOut = false
     let retryAfterStaleResume = false
     let idleTimer: ReturnType<typeof setTimeout> | undefined
@@ -626,6 +659,9 @@ export class CodexAgentManager {
 
           case 'item.completed': {
             const item = event.item as Record<string, unknown>
+            if (item?.type === 'agent_message' && !((item.text as string) || (item.content as string) || '').trim()) {
+              suspectImageGen = true
+            }
             handleItemCompleted(sessionId, item, itemState, itemSink)
             break
           }
@@ -640,6 +676,13 @@ export class CodexAgentManager {
               session.metadata.lastQueryCalls = 1
             }
             await this.syncModelFromSessionLog(sessionId)
+            // The Codex SDK doesn't surface image_generation_call response_items
+            // as item.* events during streaming. Empty agent_message item.completed
+            // is the only live signal that one happened — gate the rollout sweep
+            // on it so normal text turns don't pay the I/O cost.
+            if (suspectImageGen) {
+              await this.flushImageGenFromSessionLog(sessionId, turnStart)
+            }
             session.metadata.durationMs = Date.now() - (session.startTime || turnStart)
             this.send('claude:status', sessionId, { ...session.metadata })
 

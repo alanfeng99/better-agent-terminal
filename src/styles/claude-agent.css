@@ -1143,10 +1143,10 @@
 .codex-generated-image-card {
   display: inline-flex;
   flex-direction: column;
-  gap: 8px;
-  max-width: min(100%, 720px);
+  gap: 6px;
+  max-width: 320px;
   margin-top: 6px;
-  padding: 8px;
+  padding: 6px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -1162,10 +1162,10 @@
 
 .codex-generated-image-card img {
   display: block;
-  max-width: 100%;
-  max-height: 520px;
+  width: 100%;
+  max-height: 220px;
   border-radius: 4px;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .codex-generated-image-actions {
