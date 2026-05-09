@@ -2412,11 +2412,12 @@ async function inProcess() {
     assert.equal(cs.result.connected, false)
     assert.equal(cs.result.info, null)
 
-    // remote.startServer / connect / testConnection / listProfiles still
-    // return `{error}` until the real implementation lands. Renderer's
-    // SettingsPanel and ProfilePanel both branch on `'error' in result`.
-    const start = await dispatch({ jsonrpc: '2.0', id: 9003, method: 'remote.startServer', params: { options: {} } })
-    assert.equal(typeof start.result.error, 'string')
+    // remote.startServer is now real (#51) — its end-to-end behaviour is
+    // covered by the dedicated remote-server-impl block below. Here we
+    // only assert the still-stubbed client-side ops (connect/disconnect/
+    // testConnection/listProfiles) keep returning the {error} shape so
+    // SettingsPanel / ProfilePanel's `'error' in result` branches stay
+    // well-defined until the remote-client port lands.
     const conn = await dispatch({ jsonrpc: '2.0', id: 9004, method: 'remote.connect', params: { host: 'h', port: 1, token: 't', fingerprint: 'f' } })
     assert.equal(typeof conn.result.error, 'string')
     const test = await dispatch({ jsonrpc: '2.0', id: 9005, method: 'remote.testConnection', params: { host: 'h', port: 1, token: 't', fingerprint: 'f' } })
@@ -2803,6 +2804,198 @@ async function inProcess() {
       await assert.rejects(certMod.ensureCertificate(''), /non-empty string/)
       await assert.rejects(certMod.ensureCertificate(null), /non-empty string/)
     } finally {
+      rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  }
+
+  // remote-server-impl — WebSocket server lifecycle. Boots on an
+  // OS-assigned port (port:0), connects with rejectUnauthorized:false
+  // since we're using our own self-signed cert, runs the auth →
+  // ping → pong frame round-trip, then verifies status / persisted
+  // token / stop teardown.
+  {
+    const { RemoteServer } = await import('../src/lib/remote-server-impl.mjs')
+    const { mkdtempSync, rmSync, existsSync, readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { WebSocket } = await import('ws')
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'bat-remote-server-'))
+    const dir = join(tmpRoot, 'cfg')
+    let server
+    try {
+      server = new RemoteServer(dir)
+      assert.equal(server.isRunning, false)
+
+      // pre-start status shape — running:false, all fields null/empty.
+      const sBefore = server.status()
+      assert.equal(sBefore.running, false)
+      assert.equal(sBefore.port, null)
+      assert.equal(sBefore.fingerprint, null)
+      assert.deepEqual(sBefore.clients, [])
+
+      // Start. port:0 lets the OS pick; bind localhost.
+      const startResult = await server.start({ port: 0, bindInterface: 'localhost' })
+      assert.equal(server.isRunning, true)
+      assert.equal(typeof startResult.port, 'number')
+      assert.ok(startResult.port > 0)
+      assert.equal(typeof startResult.token, 'string')
+      assert.equal(startResult.token.length, 32, '16 random bytes hex = 32 chars')
+      assert.match(startResult.fingerprint, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/)
+      assert.equal(startResult.bindInterface, 'localhost')
+      assert.equal(startResult.boundHost, '127.0.0.1')
+
+      // Token persisted via remote-secrets envelope.
+      const tokenPath = join(dir, 'server-token.enc.json')
+      assert.equal(existsSync(tokenPath), true)
+      const onDiskToken = JSON.parse(readFileSync(tokenPath, 'utf-8'))
+      assert.equal(onDiskToken.enc, false)
+
+      // Status while running.
+      const sAfter = server.status()
+      assert.equal(sAfter.running, true)
+      assert.equal(sAfter.port, startResult.port)
+      assert.equal(sAfter.fingerprint, startResult.fingerprint)
+      assert.equal(sAfter.bindInterface, 'localhost')
+      assert.equal(sAfter.boundHost, '127.0.0.1')
+
+      // (a) Auth happy path — connect, send auth frame, get auth-result
+      // result:true, then ping → pong.
+      async function connectAndAuth(token) {
+        const ws = new WebSocket(`wss://127.0.0.1:${startResult.port}`, {
+          rejectUnauthorized: false,
+        })
+        await new Promise((resolve, reject) => {
+          ws.once('open', resolve)
+          ws.once('error', reject)
+        })
+        const seen = []
+        ws.on('message', raw => seen.push(JSON.parse(raw.toString())))
+        ws.send(JSON.stringify({ type: 'auth', id: 'auth-1', token, args: ['my-laptop', { windowId: 'w1' }] }))
+        // Wait for auth-result.
+        const deadline = Date.now() + 2000
+        while (seen.length === 0 && Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 20))
+        }
+        return { ws, seen }
+      }
+
+      const happy = await connectAndAuth(startResult.token)
+      assert.equal(happy.seen.length, 1)
+      assert.equal(happy.seen[0].type, 'auth-result')
+      assert.equal(happy.seen[0].result, true)
+      assert.equal(happy.seen[0].id, 'auth-1')
+
+      // Connected client appears in status.
+      const sWithClient = server.status()
+      assert.equal(sWithClient.clients.length, 1)
+      assert.equal(sWithClient.clients[0].label, 'my-laptop')
+      assert.equal(sWithClient.clients[0].windowId, 'w1')
+
+      // ping → pong round-trip.
+      happy.ws.send(JSON.stringify({ type: 'ping', id: 'p-1' }))
+      const pingDeadline = Date.now() + 2000
+      while (happy.seen.length < 2 && Date.now() < pingDeadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+      assert.equal(happy.seen.length, 2)
+      assert.equal(happy.seen[1].type, 'pong')
+      assert.equal(happy.seen[1].id, 'p-1')
+
+      // invoke for an unbridged channel returns invoke-error with a
+      // specific message — server is up but registry is empty in this
+      // slice. Renderer SettingsPanel + ProfilePanel branch on
+      // type:'invoke-error', so the error path stays well-defined.
+      happy.ws.send(JSON.stringify({ type: 'invoke', id: 'i-1', channel: 'claude:auth-status', args: [] }))
+      const invokeDeadline = Date.now() + 2000
+      while (happy.seen.length < 3 && Date.now() < invokeDeadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+      assert.equal(happy.seen.length, 3)
+      assert.equal(happy.seen[2].type, 'invoke-error')
+      assert.match(happy.seen[2].error, /not yet bridged/)
+
+      // invoke for a not-on-allowlist channel: rejected before the
+      // bridge check.
+      happy.ws.send(JSON.stringify({ type: 'invoke', id: 'i-2', channel: 'evil:nuke-fs', args: [] }))
+      const evilDeadline = Date.now() + 2000
+      while (happy.seen.length < 4 && Date.now() < evilDeadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+      assert.equal(happy.seen[3].type, 'invoke-error')
+      assert.match(happy.seen[3].error, /not exposed remotely/)
+
+      happy.ws.close()
+      await new Promise(r => setTimeout(r, 50))
+
+      // (b) Auth fail path — wrong token gets invalid-token + close.
+      const ws2 = new WebSocket(`wss://127.0.0.1:${startResult.port}`, { rejectUnauthorized: false })
+      await new Promise((resolve, reject) => { ws2.once('open', resolve); ws2.once('error', reject) })
+      const seen2 = []
+      ws2.on('message', raw => seen2.push(JSON.parse(raw.toString())))
+      ws2.send(JSON.stringify({ type: 'auth', id: 'auth-bad', token: 'wrong-token' }))
+      const failDeadline = Date.now() + 2000
+      while (seen2.length === 0 && Date.now() < failDeadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+      assert.equal(seen2[0].type, 'auth-result')
+      assert.match(seen2[0].error, /Invalid token/)
+
+      // (c) Persisted token survives stop+start: re-create server with same dir.
+      const persistedToken = server.getPersistedToken()
+      assert.equal(persistedToken, startResult.token)
+
+      await server.stop()
+      assert.equal(server.isRunning, false)
+      assert.equal(server.status().running, false)
+
+      const server2 = new RemoteServer(dir)
+      const restartResult = await server2.start({ port: 0, bindInterface: 'localhost' })
+      try {
+        // Same token re-loaded from disk.
+        assert.equal(restartResult.token, startResult.token, 'persisted token must survive restart')
+        // Same cert + fingerprint (cert file was written too).
+        assert.equal(restartResult.fingerprint, startResult.fingerprint)
+      } finally {
+        await server2.stop()
+      }
+
+      // (d) Brute-force ban — 5 wrong-token attempts within window
+      // pushes IP into bannedUntil > now.
+      // Use the same server2 path is closed; spin a fresh server for ban test.
+      const server3 = new RemoteServer(dir)
+      const r3 = await server3.start({ port: 0, bindInterface: 'localhost' })
+      try {
+        // Simulate 5 failures from same IP without going through actual
+        // sockets (faster + deterministic). The recordAuthFailure path is
+        // contract-equivalent.
+        const ip = '127.0.0.1'
+        for (let i = 0; i < 5; i++) server3.recordAuthFailure(ip)
+        assert.equal(server3.isBanned(ip), true)
+        // Ban duration > 0.
+        const entry = server3.authFailures.get(ip)
+        assert.ok(entry.bannedUntil > Date.now())
+
+        // Outside the window, recordAuthFailure resets the counter.
+        // We can't actually wait 60s; just simulate by mutating timestamp.
+        entry.firstFailAt = Date.now() - (61 * 1000)
+        entry.bannedUntil = 0
+        server3.recordAuthFailure(ip)
+        const newEntry = server3.authFailures.get(ip)
+        assert.equal(newEntry.count, 1, 'expired window should reset count to 1')
+
+        // clearAuthFailures purges.
+        server3.clearAuthFailures(ip)
+        assert.equal(server3.authFailures.has(ip), false)
+
+        // Validation — empty configDir construction throws.
+        assert.throws(() => new RemoteServer(''), /non-empty string/)
+        assert.throws(() => new RemoteServer(null), /non-empty string/)
+      } finally {
+        await server3.stop()
+      }
+
+      server = null // skip the outer-finally stop
+    } finally {
+      if (server && server.isRunning) await server.stop()
       rmSync(tmpRoot, { recursive: true, force: true })
     }
   }

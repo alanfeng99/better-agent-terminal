@@ -1,22 +1,21 @@
-// remote.* / tunnel.* — partial port.
+// remote.* / tunnel.* — server lifecycle is now real.
 //
-// Server/client lifecycle still stubs (TLS + WebSocket port lands later);
-// `tunnel.getConnection` now returns the real LAN/Tailscale address list
-// from `os.networkInterfaces()` so the SettingsPanel QR view can show
-// usable IPs even before a server is started.
+// startServer / stopServer / serverStatus boot the WebSocketServer port
+// from `lib/remote-server-impl.mjs`. The remote *client* side (connect /
+// disconnect / clientStatus / testConnection / listProfiles) is still
+// stubbed — that's a separate slice (port of electron/remote/remote-client.ts).
+//
+// `tunnel.getConnection` returns the live address list once the server
+// is running, otherwise the same {error, addresses} shape from #45 so
+// SettingsPanel can show usable IPs even before startServer is called.
 
 import { networkInterfaces } from 'node:os'
 import { registerHandler } from '../lib/protocol.mjs'
+import { resolveDataDir } from '../lib/data-paths.mjs'
+import { RemoteServer } from '../lib/remote-server-impl.mjs'
 
-const REMOTE_STUB_ERR = 'remote ops not yet wired through Tauri sidecar'
+const REMOTE_CLIENT_STUB_ERR = 'remote client ops not yet wired through Tauri sidecar'
 
-// Tunnel mode: where this address can be reached from.
-//   localhost — loopback, same-machine only
-//   tailscale — Tailscale 100.x.x.x address (private overlay)
-//   lan       — any other non-internal IPv4 (e.g. 192.168.x.x)
-//
-// Mirrors electron/remote/tunnel-manager.ts so renderer destructuring stays
-// stable when the real server lands.
 function getAllAddresses(boundHost) {
   if (boundHost === '127.0.0.1' || boundHost === '::1' || boundHost === 'localhost') {
     return [{ ip: '127.0.0.1', mode: 'localhost', label: 'localhost — 127.0.0.1' }]
@@ -40,22 +39,62 @@ function getAllAddresses(boundHost) {
 
 export { getAllAddresses }
 
-registerHandler('remote.startServer', async () => ({ error: REMOTE_STUB_ERR }))
-registerHandler('remote.stopServer', async () => false)
-registerHandler('remote.serverStatus', async () => ({
-  running: false, port: null, fingerprint: null, bindInterface: null, boundHost: null, clients: [],
-}))
-registerHandler('remote.connect', async () => ({ error: REMOTE_STUB_ERR }))
+// Singleton. Lazy-instantiated so resolveDataDir() runs after env is set.
+let serverInstance = null
+function getServer() {
+  if (!serverInstance) serverInstance = new RemoteServer(resolveDataDir())
+  return serverInstance
+}
+
+// Test seam — replaces the singleton (cleans up the old one if running).
+export async function __setRemoteServerForTests(server) {
+  if (serverInstance && serverInstance !== server && serverInstance.isRunning) {
+    try { await serverInstance.stop() } catch { /* ignore */ }
+  }
+  serverInstance = server
+}
+
+registerHandler('remote.startServer', async (params) => {
+  const opts = (params && typeof params === 'object' && params.options && typeof params.options === 'object')
+    ? params.options : {}
+  const port = typeof opts.port === 'number' ? opts.port : undefined
+  const bindInterface = typeof opts.bindInterface === 'string' ? opts.bindInterface : undefined
+  const token = typeof opts.token === 'string' ? opts.token : undefined
+  try {
+    return await getServer().start({ port, bindInterface, token })
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+registerHandler('remote.stopServer', async () => {
+  try { await getServer().stop(); return true }
+  catch { return false }
+})
+
+registerHandler('remote.serverStatus', async () => getServer().status())
+
+// Client-side ops still stubs — port lands separately.
+registerHandler('remote.connect', async () => ({ error: REMOTE_CLIENT_STUB_ERR }))
 registerHandler('remote.disconnect', async () => false)
 registerHandler('remote.clientStatus', async () => ({ connected: false, info: null }))
-registerHandler('remote.testConnection', async () => ({ ok: false, error: REMOTE_STUB_ERR }))
-registerHandler('remote.listProfiles', async () => ({ error: REMOTE_STUB_ERR }))
+registerHandler('remote.testConnection', async () => ({ ok: false, error: REMOTE_CLIENT_STUB_ERR }))
+registerHandler('remote.listProfiles', async () => ({ error: REMOTE_CLIENT_STUB_ERR }))
 
-// Renderer's QR/mobile view auto-starts the server in Electron; in Tauri the
-// server isn't wired yet so we surface the real address list with a clear
-// `error` field. SettingsPanel keeps a "server not running" affordance and
-// the address list is informational until startServer is implemented.
 registerHandler('tunnel.getConnection', async (params) => {
+  const server = getServer()
+  if (server.isRunning) {
+    const addresses = getAllAddresses(server.boundHost)
+    return {
+      url: `wss://${addresses[0]?.ip ?? server.boundHost}:${server.port}`,
+      token: server.getPersistedToken() ?? '',
+      fingerprint: server.fingerprint ?? '',
+      mode: addresses[0]?.mode ?? 'localhost',
+      addresses,
+    }
+  }
+  // Server not running — surface the real address list with an
+  // informative error so SettingsPanel can show usable IPs.
   const boundHost = typeof params?.boundHost === 'string' ? params.boundHost : 'all'
   const addresses = getAllAddresses(boundHost === 'all' ? '0.0.0.0' : boundHost)
   return {
