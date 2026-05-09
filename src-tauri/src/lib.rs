@@ -12,7 +12,7 @@ use commands::{
     app as app_cmd, clipboard as clipboard_cmd, debug as debug_cmd, dialog as dialog_cmd,
     fs as fs_cmd, git as git_cmd, github as github_cmd, image as image_cmd,
     notification as notification_cmd, pty as pty_cmd, settings, shell as shell_cmd,
-    update as update_cmd, workspace as workspace_cmd,
+    snippet as snippet_cmd, update as update_cmd, workspace as workspace_cmd,
 };
 
 pub fn run() {
@@ -22,6 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(pty_cmd::PtyState::default())
         .manage(notification_cmd::NotificationState::default())
+        .manage(snippet_cmd::SnippetState::default())
         .invoke_handler(tauri::generate_handler![
             settings::settings_load,
             settings::settings_save,
@@ -79,6 +80,16 @@ pub fn run() {
             github_cmd::github_issue_view,
             github_cmd::github_pr_comment,
             github_cmd::github_issue_comment,
+            snippet_cmd::snippet_get_all,
+            snippet_cmd::snippet_get_by_id,
+            snippet_cmd::snippet_get_favorites,
+            snippet_cmd::snippet_search,
+            snippet_cmd::snippet_get_by_workspace,
+            snippet_cmd::snippet_get_categories,
+            snippet_cmd::snippet_create,
+            snippet_cmd::snippet_update,
+            snippet_cmd::snippet_delete,
+            snippet_cmd::snippet_toggle_favorite,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

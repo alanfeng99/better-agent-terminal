@@ -1705,8 +1705,8 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       clearInput()
       try {
         const snippets = query
-          ? await window.batAppAPI.snippet.search(query)
-          : await window.batAppAPI.snippet.getByWorkspace(workspaceId)
+          ? await host.snippet.search(query)
+          : await host.snippet.getByWorkspace(workspaceId)
         const snippetsJsonPath = '~/Library/Application Support/better-agent-terminal/snippets.json'
         const snippetList = snippets.length === 0
           ? 'No snippets exist yet.'

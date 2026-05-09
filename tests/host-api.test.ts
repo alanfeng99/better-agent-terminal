@@ -126,6 +126,16 @@ async function run() {
       if (cmd === 'github_issue_view') return { number: 2 } as unknown as T
       if (cmd === 'github_pr_comment') return { success: true } as unknown as T
       if (cmd === 'github_issue_comment') return { success: true } as unknown as T
+      if (cmd === 'snippet_get_all') return [] as unknown as T
+      if (cmd === 'snippet_get_by_id') return null as unknown as T
+      if (cmd === 'snippet_get_favorites') return [] as unknown as T
+      if (cmd === 'snippet_search') return [] as unknown as T
+      if (cmd === 'snippet_get_by_workspace') return [] as unknown as T
+      if (cmd === 'snippet_get_categories') return ['env', 'k8s'] as unknown as T
+      if (cmd === 'snippet_create') return { id: 1 } as unknown as T
+      if (cmd === 'snippet_update') return { id: 1 } as unknown as T
+      if (cmd === 'snippet_delete') return true as unknown as T
+      if (cmd === 'snippet_toggle_favorite') return { id: 1 } as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -267,6 +277,23 @@ async function run() {
       { success: true },
     )
 
+    // snippet.* — JSON-backed env snippet store on the Rust side.
+    assert.deepEqual(await mod.host.snippet.getAll(), [])
+    assert.equal(await mod.host.snippet.getById(1), null)
+    assert.deepEqual(await mod.host.snippet.getFavorites(), [])
+    assert.deepEqual(await mod.host.snippet.search('foo'), [])
+    assert.deepEqual(await mod.host.snippet.getByWorkspace('ws-1'), [])
+    // workspaceId is optional — undefined still flows through.
+    await mod.host.snippet.getByWorkspace()
+    assert.deepEqual(await mod.host.snippet.getCategories(), ['env', 'k8s'])
+    const created = await mod.host.snippet.create({ title: 't', content: 'c' })
+    assert.deepEqual(created, { id: 1 })
+    const updated = await mod.host.snippet.update(1, { title: 'new' })
+    assert.deepEqual(updated, { id: 1 })
+    assert.equal(await mod.host.snippet.delete(1), true)
+    const toggled = await mod.host.snippet.toggleFavorite(1)
+    assert.deepEqual(toggled, { id: 1 })
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -328,6 +355,17 @@ async function run() {
       { cmd: 'github_issue_view', args: { cwd: '/repo', number: 7 } },
       { cmd: 'github_pr_comment', args: { cwd: '/repo', number: 42, body: 'lgtm' } },
       { cmd: 'github_issue_comment', args: { cwd: '/repo', number: 7, body: 'thx' } },
+      { cmd: 'snippet_get_all', args: undefined },
+      { cmd: 'snippet_get_by_id', args: { id: 1 } },
+      { cmd: 'snippet_get_favorites', args: undefined },
+      { cmd: 'snippet_search', args: { query: 'foo' } },
+      { cmd: 'snippet_get_by_workspace', args: { workspaceId: 'ws-1' } },
+      { cmd: 'snippet_get_by_workspace', args: { workspaceId: undefined } },
+      { cmd: 'snippet_get_categories', args: undefined },
+      { cmd: 'snippet_create', args: { input: { title: 't', content: 'c' } } },
+      { cmd: 'snippet_update', args: { id: 1, updates: { title: 'new' } } },
+      { cmd: 'snippet_delete', args: { id: 1 } },
+      { cmd: 'snippet_toggle_favorite', args: { id: 1 } },
     ])
   }
 

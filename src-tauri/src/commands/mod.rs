@@ -18,5 +18,6 @@ pub mod notification;
 pub mod pty;
 pub mod settings;
 pub mod shell;
+pub mod snippet;
 pub mod update;
 pub mod workspace;

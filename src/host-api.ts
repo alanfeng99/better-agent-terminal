@@ -258,6 +258,25 @@ function createTauriHost(): BatAppAPI {
       onDetached: () => () => {},
       onReattached: () => () => {},
     },
+    snippet: {
+      // JSON-backed env snippet store. Mirrors
+      // electron/snippet-db.ts. Tauri auto-camelCases struct field
+      // names, so e.g. CreateSnippetInput.workspace_id surfaces as
+      // workspaceId in the invoke payload.
+      getAll: () => getInvoke()<unknown[]>('snippet_get_all'),
+      getById: (id: number) => getInvoke()<unknown>('snippet_get_by_id', { id }),
+      getFavorites: () => getInvoke()<unknown[]>('snippet_get_favorites'),
+      search: (query: string) => getInvoke()<unknown[]>('snippet_search', { query }),
+      getByWorkspace: (workspaceId?: string) =>
+        getInvoke()<unknown[]>('snippet_get_by_workspace', { workspaceId }),
+      getCategories: () => getInvoke()<string[]>('snippet_get_categories'),
+      create: (input: unknown) => getInvoke()<unknown>('snippet_create', { input }),
+      update: (id: number, updates: unknown) =>
+        getInvoke()<unknown>('snippet_update', { id, updates }),
+      delete: (id: number) => getInvoke()<boolean>('snippet_delete', { id }),
+      toggleFavorite: (id: number) =>
+        getInvoke()<unknown>('snippet_toggle_favorite', { id }),
+    },
     notification: {
       // In-memory store on the Rust side — see
       // src-tauri/src/commands/notification.rs. Push updates fire
@@ -421,7 +440,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 const PORTED_NAMESPACES = new Set([
   'settings', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
-  'notification', 'system', 'github',
+  'notification', 'system', 'github', 'snippet',
 ])
 
 export function installTauriShim(): void {
