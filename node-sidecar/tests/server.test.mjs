@@ -508,6 +508,89 @@ async function inProcess() {
   const bad2 = await dispatch({ jsonrpc: '2.0', id: 213, method: 'claude.setPermissionMode', params: { sessionId: 's', mode: 42 } })
   assert.equal(bad2.result, false)
 
+  // claude.sendMessage event mapping with a fake SDK. We can't observe
+  // events emitted via process.stdout from in-process dispatch, so
+  // intercept by overriding sendEvent. The fake SDK feeds the handler
+  // a canonical sequence — system/init → assistant → result/success —
+  // and we assert each maps to the expected renderer event with the
+  // right payload key. Captures sdkSessionId for resume on next call.
+  const captured = []
+  const restoreSendEvent = mod.__setSendEventForTests((name, payload) => captured.push({ name, payload }))
+  const fakeSdkForSend = {
+    query({ prompt, options }) {
+      captured.push({ name: '__queryArgs', payload: { prompt, resume: options?.resume ?? null, cwd: options?.cwd ?? null } })
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: 'sdk-sess-abc', cwd: '/x', model: 'claude-sonnet-4-6', permissionMode: 'default' },
+        { type: 'assistant', session_id: 'sdk-sess-abc', message: { role: 'assistant', content: [{ type: 'text', text: 'hello back' }] } },
+        { type: 'result', subtype: 'success', session_id: 'sdk-sess-abc', result: 'hello back', stop_reason: 'end_turn', total_cost_usd: 0.001, num_turns: 1 },
+      ]
+      return (async function*() {
+        for (const m of messages) yield m
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkForSend)
+  try {
+    // Fresh session so we don't reuse state-1's mutated map.
+    await dispatch({ jsonrpc: '2.0', id: 220, method: 'claude.startSession',
+      params: { sessionId: 'send-1', options: { cwd: '/x' } } })
+    const sendReply = await dispatch({ jsonrpc: '2.0', id: 221, method: 'claude.sendMessage',
+      params: { sessionId: 'send-1', prompt: 'hi' } })
+    assert.equal(sendReply.result.ok, true)
+    // Event sequence: status, message, result, turn-end (in order).
+    const events = captured.filter(c => c.name && c.name.startsWith('claude:'))
+    const seq = events.map(e => e.name)
+    assert.deepEqual(seq, ['claude:status', 'claude:message', 'claude:result', 'claude:turn-end'])
+    // status payload.meta.sdkSessionId
+    assert.equal(events[0].payload.meta.sdkSessionId, 'sdk-sess-abc')
+    // message payload.message.content shape preserved
+    assert.equal(events[1].payload.message.message.content[0].text, 'hello back')
+    // turn-end carries reason + sdkSessionId
+    assert.equal(events[3].payload.payload.reason, 'completed')
+    assert.equal(events[3].payload.payload.sdkSessionId, 'sdk-sess-abc')
+
+    // Second sendMessage must pass `resume: 'sdk-sess-abc'` to the SDK
+    // (proving multi-turn context preservation).
+    const queryCallsBefore = captured.filter(c => c.name === '__queryArgs').length
+    await dispatch({ jsonrpc: '2.0', id: 222, method: 'claude.sendMessage',
+      params: { sessionId: 'send-1', prompt: 'follow up' } })
+    const queryArgsRound2 = captured.filter(c => c.name === '__queryArgs')
+    assert.equal(queryArgsRound2.length, queryCallsBefore + 1)
+    assert.equal(queryArgsRound2[queryArgsRound2.length - 1].payload.resume, 'sdk-sess-abc')
+
+    // Concurrent send must be rejected (the streaming flag clears in
+    // the finally block, so we trigger this by pre-flagging the session).
+    const s = mod.sessions.get('send-1')
+    s.streaming = true
+    const conflict = await dispatch({ jsonrpc: '2.0', id: 223, method: 'claude.sendMessage',
+      params: { sessionId: 'send-1', prompt: 'parallel' } })
+    assert.equal(conflict.result.ok, false)
+    assert.match(conflict.result.error || '', /streaming/)
+    s.streaming = false
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreSendEvent()
+  }
+
+  // SDK-unavailable fallback: claude.sendMessage stays usable as a stub
+  // so renderer doesn't hang. Locks the release-without-bundle contract.
+  __setSdkOverrideForTests(null)
+  const captured2 = []
+  const restore2 = mod.__setSendEventForTests((n, p) => captured2.push({ name: n, payload: p }))
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 230, method: 'claude.startSession',
+      params: { sessionId: 'send-stub', options: { cwd: '/x' } } })
+    const stubReply = await dispatch({ jsonrpc: '2.0', id: 231, method: 'claude.sendMessage',
+      params: { sessionId: 'send-stub', prompt: 'hi' } })
+    assert.equal(stubReply.result.ok, true)
+    assert.equal(stubReply.result.stub, true)
+    const stubEvents = captured2.filter(c => c.name?.startsWith('claude:')).map(c => c.name)
+    assert.deepEqual(stubEvents, ['claude:message', 'claude:turn-end'])
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restore2()
+  }
+
   // worktree.* — full create/status/remove/rehydrate round trip against a
   // real ephemeral git repo. Skipped if `git` isn't on PATH.
   const { worktreeCreate, worktreeRemove, worktreeStatus, worktreeRehydrate, worktreeGetGitRoot, activeWorktrees } = mod
@@ -601,6 +684,12 @@ async function endToEnd() {
   const child = spawn(process.execPath, [serverPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
+    // Disable real SDK loading so claude.sendMessage takes the
+    // deterministic stub path. The SDK code path is exercised by
+    // the cargo end_to_end_bundled_sdk_loads_through_bundled_node
+    // integration test instead — which is the right place because
+    // that test actually has a bundled SDK available.
+    env: { ...process.env, BAT_SIDECAR_DISABLE_SDK: '1' },
   })
   // Capture stderr so a hidden crash surfaces if the test fails.
   let stderr = ''

@@ -96,6 +96,10 @@ pub struct SpawnConfig {
     /// (claude.accountList, snippets-by-sidecar, etc.) read/write to the
     /// same on-disk location as the Rust host.
     pub data_dir: Option<PathBuf>,
+    /// Extra environment variables for the sidecar process. Tests use
+    /// this to set `BAT_SIDECAR_DISABLE_SDK=1` and force deterministic
+    /// stub behaviour for claude.sendMessage; production leaves it empty.
+    pub extra_env: Vec<(String, String)>,
 }
 
 impl SidecarState {
@@ -228,6 +232,9 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
     if let Some(dir) = &cfg.data_dir {
         command.env("BAT_SIDECAR_DATA_DIR", dir);
     }
+    for (k, v) in &cfg.extra_env {
+        command.env(k, v);
+    }
     let mut child = command.spawn().map_err(|e| BridgeError {
         message: format!(
             "sidecar: failed to spawn {}: {e}",
@@ -352,21 +359,21 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     if let Ok(env_script) = std::env::var("BAT_SIDECAR_SCRIPT") {
         let p = PathBuf::from(env_script);
         if p.is_file() {
-            return Ok(SpawnConfig { node_path, script_path: p, data_dir });
+            return Ok(SpawnConfig { node_path, script_path: p, data_dir, extra_env: Vec::new() });
         }
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         let candidate = resource_dir.join("node-sidecar").join("src").join("server.mjs");
         if candidate.is_file() {
-            return Ok(SpawnConfig { node_path, script_path: candidate, data_dir });
+            return Ok(SpawnConfig { node_path, script_path: candidate, data_dir, extra_env: Vec::new() });
         }
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let dev = cwd.join("node-sidecar").join("src").join("server.mjs");
     if dev.is_file() {
-        return Ok(SpawnConfig { node_path, script_path: dev, data_dir });
+        return Ok(SpawnConfig { node_path, script_path: dev, data_dir, extra_env: Vec::new() });
     }
 
     Err(BridgeError {
@@ -657,7 +664,7 @@ mod tests {
             eprintln!("skipped: node-sidecar/node_modules not installed (run `pnpm --dir node-sidecar install`)");
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None, extra_env: Vec::new() };
         let state = SidecarState::new();
         let result = state
             .call(&cfg, "claude.getSupportedModels", Value::Null, Duration::from_secs(30))
@@ -687,7 +694,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path: node_path.clone(), script_path: script, data_dir: None };
+        let cfg = SpawnConfig { node_path: node_path.clone(), script_path: script, data_dir: None, extra_env: Vec::new() };
         let state = SidecarState::new();
         let result = state
             .call(&cfg, "ping", json!({"via":"bundled"}), Duration::from_secs(10))
@@ -712,7 +719,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None, extra_env: Vec::new() };
         let state = SidecarState::new();
         let result = state
             .call(&cfg, "ping", json!({"hello":"world"}), Duration::from_secs(5))
@@ -734,7 +741,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None, extra_env: Vec::new() };
         let state = SidecarState::new();
         let err = state
             .call(&cfg, "no.such.method", Value::Null, Duration::from_secs(5))
@@ -754,7 +761,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None, extra_env: Vec::new() };
         let state = SidecarState::new();
         let auth = state
             .call(&cfg, "claude.authStatus", Value::Null, Duration::from_secs(15))
@@ -788,7 +795,15 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        // Force the deterministic SDK-unavailable stub path so this test
+        // doesn't try to call the real Anthropic API. The SDK code path
+        // is exercised by end_to_end_bundled_sdk_loads_through_bundled_node.
+        let cfg = SpawnConfig {
+            node_path,
+            script_path: script,
+            data_dir: None,
+            extra_env: vec![("BAT_SIDECAR_DISABLE_SDK".into(), "1".into())],
+        };
         let state = SidecarState::new();
         // Collector sink — captures (event_name, payload) pairs from the
         // bridge's reader thread. Equivalent to Tauri's Emitter::emit, but
@@ -848,7 +863,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None, extra_env: Vec::new() };
         let state = SidecarState::new();
         let timeout = Duration::from_secs(5);
         let sid = "rt-state-1";
@@ -891,7 +906,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = Arc::new(SpawnConfig { node_path, script_path: script, data_dir: None });
+        let cfg = Arc::new(SpawnConfig { node_path, script_path: script, data_dir: None, extra_env: Vec::new() });
         let state = Arc::new(SidecarState::new());
         // Warm the bridge so all threads share the same child.
         state.call(&cfg, "ping", Value::Null, Duration::from_secs(5)).unwrap();

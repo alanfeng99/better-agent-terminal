@@ -81,6 +81,16 @@ function ensureSession(sessionId) {
       effort: undefined,
       permissionMode: 'default',
       autoContinue: { enabled: false, max: 0, used: 0, prompt: '' },
+      // SDK session id captured from the first SDKResultMessage; used as
+      // `resume` on subsequent sendMessage calls so the SDK preserves
+      // conversation context.
+      sdkSessionId: null,
+      // Per-session abort signal; set during sendMessage so abortSession
+      // can cancel an in-flight query.
+      abortController: null,
+      // Guard against concurrent sendMessage calls — same contract as the
+      // Electron isStreaming flag.
+      streaming: false,
     }
     sessions.set(sessionId, s)
   }
@@ -106,23 +116,125 @@ registerHandler('claude.startSession', async (params) => {
   return { ok: true, sessionId }
 })
 
+// Real SDK-driven sendMessage. Each call kicks off a fresh single-shot
+// query() with `resume: <previousSdkSessionId>` so the SDK preserves
+// context across turns. Streaming-input mode + control methods
+// (interrupt/setPermissionMode/setModel mid-stream) are deferred — the
+// minimal flow here is "user types, model responds, repeat". Setters
+// like setPermissionMode still mutate session state and the next
+// sendMessage picks them up via queryOptions.
+//
+// SDKMessage→event mapping (best-effort, mirrors Electron's processMessage
+// for the events the renderer listens to):
+//   system/init      → claude:status (metadata refresh + sdkSessionId capture)
+//   assistant        → claude:message (raw SDK assistant message; renderer
+//                      already knows how to extract text + tool_use blocks
+//                      from BetaMessage shape)
+//   result/success   → claude:result (full SDKResultMessage)
+//                      → claude:turn-end (legacy completion signal)
+//   result/error     → claude:error (errMsg) + claude:turn-end (reason:'error')
+//   any throw        → claude:error + claude:turn-end (reason:'error')
+//
+// SDK-unavailable fallback (e.g. release without bundled node_modules)
+// preserves the original stub so the renderer doesn't hang on a never-
+// resolving promise. We log to stderr so the dev/release distinction is
+// visible.
 registerHandler('claude.sendMessage', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.sendMessage: missing sessionId')
   }
-  // Echo a fake message + turn-end so listeners on the renderer can
-  // observe the event path without a live model. Real handlers will
-  // stream from @anthropic-ai/claude-agent-sdk.
-  sendEvent('claude:message', { sessionId, message: { role: 'assistant', content: '(stub reply)' } })
-  sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: '(stub)' } })
-  return { ok: true }
+  const prompt = typeof params?.prompt === 'string' ? params.prompt : ''
+  const s = ensureSession(sessionId)
+  if (s.streaming) {
+    // Mirror Electron contract: queueing is renderer-side concern; we
+    // just refuse the second concurrent send.
+    return { ok: false, error: 'session already streaming' }
+  }
+
+  const sdk = await loadAnthropicSdk()
+  if (!sdk || typeof sdk.query !== 'function') {
+    // Same stub the pre-#21 handler emitted, kept for SDK-unavailable
+    // dev shells and as a graceful fallback. Logged so it's obvious
+    // this isn't a real reply.
+    process.stderr.write(`[sidecar] claude.sendMessage: SDK unavailable, returning stub for session ${sessionId}\n`)
+    sendEvent('claude:message', { sessionId, message: { role: 'assistant', content: '(stub reply — SDK unavailable)' } })
+    sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: '(stub)' } })
+    return { ok: true, stub: true }
+  }
+
+  const cwd = (s.options && typeof s.options === 'object' && typeof s.options.cwd === 'string') ? s.options.cwd : process.cwd()
+  const queryOptions = { cwd }
+  if (s.model) queryOptions.model = s.model
+  if (s.permissionMode && s.permissionMode !== 'default') queryOptions.permissionMode = s.permissionMode
+  if (s.sdkSessionId) queryOptions.resume = s.sdkSessionId
+
+  s.streaming = true
+  s.abortController = new AbortController()
+  queryOptions.abortController = s.abortController
+
+  try {
+    const generator = sdk.query({ prompt, options: queryOptions })
+    s.currentQuery = generator
+    for await (const msg of generator) {
+      if (s.abortController.signal.aborted) break
+      // Capture session_id from any message that carries one — the SDK
+      // emits it on every message, but we specifically watch system/init
+      // for the first canonical id.
+      if (msg && typeof msg.session_id === 'string') {
+        s.sdkSessionId = msg.session_id
+      }
+      const t = msg?.type
+      if (t === 'system' && msg.subtype === 'init') {
+        sendEvent('claude:status', {
+          sessionId,
+          meta: {
+            sdkSessionId: msg.session_id,
+            cwd: msg.cwd ?? cwd,
+            model: msg.model ?? s.model,
+            permissionMode: msg.permissionMode ?? s.permissionMode,
+          },
+        })
+      } else if (t === 'assistant') {
+        sendEvent('claude:message', { sessionId, message: msg })
+      } else if (t === 'result') {
+        if (msg.subtype === 'success') {
+          sendEvent('claude:result', { sessionId, result: msg })
+          sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: msg.result, sdkSessionId: msg.session_id } })
+        } else {
+          sendEvent('claude:error', { sessionId, error: msg.message || 'query error' })
+          sendEvent('claude:turn-end', { sessionId, payload: { reason: 'error' } })
+        }
+      }
+      // Other SDKMessage variants (partial_assistant, tool_progress, etc.)
+      // are ignored for now. They're additive — adding handlers later
+      // won't break the minimal flow.
+    }
+    return { ok: true }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    const aborted = s.abortController?.signal.aborted
+      || /aborted/i.test(errMsg)
+    if (!aborted) {
+      sendEvent('claude:error', { sessionId, error: errMsg })
+    }
+    sendEvent('claude:turn-end', { sessionId, payload: { reason: aborted ? 'aborted' : 'error' } })
+    return { ok: !aborted, error: aborted ? undefined : errMsg }
+  } finally {
+    s.streaming = false
+    s.currentQuery = null
+    s.abortController = null
+  }
 })
 
 registerHandler('claude.stopSession', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.stopSession: missing sessionId')
+  }
+  const s = sessions.get(sessionId)
+  if (s?.abortController) {
+    try { s.abortController.abort() } catch { /* already aborted */ }
   }
   const existed = sessions.delete(sessionId)
   return { ok: true, existed }
@@ -134,8 +246,14 @@ registerHandler('claude.abortSession', async (params) => {
     throw new Error('claude.abortSession: missing sessionId')
   }
   const session = sessions.get(sessionId)
+  if (session?.abortController) {
+    try { session.abortController.abort() } catch { /* already aborted */ }
+  }
   if (session) {
     session.active = false
+    // claude:turn-end is also emitted by sendMessage's catch, but we
+    // emit here too in case abort is called after streaming finished
+    // (the renderer expects an explicit signal).
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'aborted' } })
   }
   return { ok: true }
@@ -225,6 +343,14 @@ async function loadAnthropicSdk() {
   if (_sdkOverrideSet) return _sdkOverride
   if (_sdkLoadAttempted) return _sdkModule
   _sdkLoadAttempted = true
+  // Escape hatch for tests + dev shells: BAT_SIDECAR_DISABLE_SDK=1
+  // forces the SDK-unavailable path even if @anthropic-ai/claude-agent-sdk
+  // is importable. The e2e test uses this so claude.sendMessage takes
+  // the deterministic stub path instead of trying to call the real API.
+  if (process.env.BAT_SIDECAR_DISABLE_SDK === '1') {
+    _sdkModule = null
+    return null
+  }
   try {
     _sdkModule = await import('@anthropic-ai/claude-agent-sdk')
     return _sdkModule
@@ -1178,9 +1304,22 @@ function writeMessage(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
-export function sendEvent(name, params) {
+// Tests can swap _emitImpl to capture events without touching stdout.
+// Production callers use sendEvent which trampolines through _emitImpl.
+let _emitImpl = (name, params) => {
   writeMessage({ jsonrpc: '2.0', method: `event:${name}`, params: params ?? null })
 }
+export function sendEvent(name, params) {
+  _emitImpl(name, params ?? null)
+}
+// Returns a restore() function that resets to the production impl.
+export function __setSendEventForTests(fn) {
+  const prev = _emitImpl
+  _emitImpl = fn
+  return () => { _emitImpl = prev }
+}
+// Test-only access to the session map for fixture mutation.
+export { sessions }
 
 async function dispatch(message) {
   if (!message || typeof message !== 'object') {
