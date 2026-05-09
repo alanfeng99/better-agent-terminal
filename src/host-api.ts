@@ -95,9 +95,12 @@ function createTauriHost(): BatAppAPI {
     settings: {
       load: () => getInvoke()<string | null>('settings_load'),
       save: (data: string) => getInvoke()<void>('settings_save', { data }),
+      // Tauri auto-camelCases Rust args, so `shell_type: String` lands as
+      // `shellType` in the invoke payload.
+      getShellPath: (shell: string) =>
+        getInvoke()<string>('settings_get_shell_path', { shellType: shell }),
       // Not yet ported — defer to Electron-shaped errors so callers see a
       // consistent failure mode.
-      getShellPath: () => notImplemented('settings.getShellPath'),
       clearTerminalHistory: () => notImplemented('settings.clearTerminalHistory'),
       detectCx: () => notImplemented('settings.detectCx'),
     },
@@ -114,6 +117,27 @@ function createTauriHost(): BatAppAPI {
       selectFolder: () => notImplemented('dialog.selectFolder'),
       selectImages: () => notImplemented('dialog.selectImages'),
       selectFiles: () => notImplemented('dialog.selectFiles'),
+    },
+    fs: {
+      readFile: (filePath: string) =>
+        getInvoke()<{ content?: string; error?: string; size?: number }>(
+          'fs_read_file',
+          { path: filePath },
+        ),
+      // Other fs surface (readdir, search, mkdir, watch, …) is not yet
+      // ported — they need stricter design (event streaming, workspace
+      // scoping) before crossing the bridge.
+      readdir: () => notImplemented('fs.readdir'),
+      resolvePathLinks: () => notImplemented('fs.resolvePathLinks'),
+      search: () => notImplemented('fs.search'),
+      home: () => notImplemented('fs.home'),
+      quickLocations: () => notImplemented('fs.quickLocations'),
+      listDirs: () => notImplemented('fs.listDirs'),
+      mkdir: () => notImplemented('fs.mkdir'),
+      deletePath: () => notImplemented('fs.deletePath'),
+      watch: () => notImplemented('fs.watch'),
+      unwatch: () => notImplemented('fs.unwatch'),
+      onChanged: () => notImplemented('fs.onChanged'),
     },
   }
 
@@ -175,7 +199,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 
 // Namespaces whose methods are routed through Tauri invoke. Listed here so
 // the permissive shim can prefer the real impl when present.
-const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog'])
+const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs'])
 
 export function installTauriShim(): void {
   if (getHostKind() !== 'tauri') return

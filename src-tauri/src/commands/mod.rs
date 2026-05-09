@@ -7,5 +7,6 @@
 // edit at this layer plus the adapter route.
 
 pub mod dialog;
+pub mod fs;
 pub mod settings;
 pub mod shell;

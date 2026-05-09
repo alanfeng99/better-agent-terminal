@@ -9,18 +9,18 @@
 - [x] **Host API adapter** — `src/host-api.ts` 提供 `host` proxy，由 `getHostKind()` 判斷 Electron/Tauri/unknown，全部命名空間預設 throw 「not yet implemented」避免靜默失敗。
 - [x] **Renamed `window.electronAPI` → `window.batAppAPI`** — preload 和 31 個 callsite 一起改名，TS type 由 `BatAppAPI = Window['batAppAPI']` 取得，不再依賴跨 project reference 編譯。`AboutPanel`、`UpdateNotification` 兩個 callsite 已切到 adapter 作為示範。
 - [x] **Tauri 2 scaffolding** — `src-tauri/`、`vite.tauri.config.ts`、`pnpm tauri:dev|build` 指令。
-- [x] **首批 Rust commands** — `settings_load` / `settings_save`（讀寫 `<app-data>/settings.json`）、`shell_open_external`（透過 `tauri-plugin-opener`，拒絕 `file://`）、`shell_open_path`（同樣走 opener，拒絕空字串）、`dialog_confirm`（透過 `tauri-plugin-dialog`，OK/Cancel modal）。
-- [x] **Adapter Tauri routing** — `host.settings.{load,save}`、`host.shell.{openExternal,openPath}`、`host.dialog.confirm` 在 Tauri 下走 `invoke`；其餘命名空間仍 throw。
+- [x] **首批 Rust commands** — `settings_load` / `settings_save`（讀寫 `<app-data>/settings.json`）、`settings_get_shell_path`（純函式 + 平台分支，可單元測試 `exists` 注入）、`shell_open_external`（透過 `tauri-plugin-opener`，拒絕 `file://`）、`shell_open_path`（同樣走 opener，拒絕空字串）、`dialog_confirm`（透過 `tauri-plugin-dialog`，OK/Cancel modal）、`fs_read_file`（512 KiB 上限 + `path_guard::is_sensitive_path` 的 deny-list）。
+- [x] **Adapter Tauri routing** — `host.settings.{load,save,getShellPath}`、`host.shell.{openExternal,openPath}`、`host.dialog.confirm`、`host.fs.readFile` 在 Tauri 下走 `invoke`；其餘命名空間仍 throw。
 - [x] **Tests**
-  - `tests/host-api.test.ts`：8 個情境涵蓋偵測、Electron 委派、Tauri invoke routing（含 `shell_open_path`、`dialog_confirm`、optional title）、legacy `__TAURI__` marker、衝突優先序、permissive shim。
+  - `tests/host-api.test.ts`：8 個情境涵蓋偵測、Electron 委派、Tauri invoke routing（含 `shell_open_path`、`dialog_confirm`、`fs_read_file`、`settings_get_shell_path`、optional title）、legacy `__TAURI__` marker、衝突優先序、permissive shim。
   - `tests/tauri-launch.test.ts`：啟動 release exe 3 秒，斷言沒提前崩。
-  - `cargo test`：`settings::tests::settings_path_uses_settings_json_filename`、`shell::tests::{file_urls_are_rejected,empty_paths_are_rejected}`、`dialog::tests::defaults_title_to_confirm`。
+  - `cargo test`（17 tests）：`settings::tests`（路徑 + `resolve_shell_path` 的 unix/windows 分支）、`shell::tests::{file_urls_are_rejected,empty_paths_are_rejected}`、`dialog::tests::defaults_title_to_confirm`、`fs::tests`（讀檔、>512 KiB cap、不存在路徑）、`path_guard::tests`（deny-list 命中、目錄包含、白名單）。
 - [x] **Release build verified on Windows** — `pnpm exec tauri build` 產生 12.8 MB exe + 5.2 MB MSI + 3.7 MB NSIS installer，smoke test 通過。
 - [x] npm scripts：`test:host-api`、`test:tauri-launch`、`test:tauri-rust`、`tauri:*`。
 
 ### 進行中 / 下一步
 
-- [ ] 把更多 Electron preload 命名空間 port 到 Rust（依風險排序：~~`shell.openPath`~~ ✅、~~`dialog.confirm`~~ ✅、`fs.readFile`、`settings.getShellPath`、`dialog.selectFolder`/`selectFiles`/`selectImages`、`clipboard.*`）。
+- [ ] 把更多 Electron preload 命名空間 port 到 Rust（依風險排序：~~`shell.openPath`~~ ✅、~~`dialog.confirm`~~ ✅、~~`fs.readFile`~~ ✅、~~`settings.getShellPath`~~ ✅、`dialog.selectFolder`/`selectFiles`/`selectImages`、`clipboard.*`、`fs.home`/`fs.readdir`、`image:read-as-data-url`）。
 - [ ] 規劃 PTY 路線（Phase 2）：Rust PTY vs Node sidecar prototype。
 - [ ] Agent SDK Node sidecar 設計（Phase 2）。
 - [ ] 把全部 `window.batAppAPI.*` 直呼換成 `host.*`，讓 renderer 完全不直讀全域。

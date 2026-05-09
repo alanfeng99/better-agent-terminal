@@ -67,6 +67,8 @@ async function run() {
       if (cmd === 'shell_open_external') return undefined as unknown as T
       if (cmd === 'shell_open_path') return undefined as unknown as T
       if (cmd === 'dialog_confirm') return true as unknown as T
+      if (cmd === 'fs_read_file') return { content: 'hello' } as unknown as T
+      if (cmd === 'settings_get_shell_path') return '/bin/zsh' as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -86,6 +88,12 @@ async function run() {
     // title is optional — the adapter passes undefined through.
     await mod.host.dialog.confirm('Just a message')
 
+    const fsResult = await mod.host.fs.readFile('C:/Users/me/notes.txt')
+    assert.deepEqual(fsResult, { content: 'hello' })
+
+    const shellPath = await mod.host.settings.getShellPath('zsh')
+    assert.equal(shellPath, '/bin/zsh')
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -93,6 +101,8 @@ async function run() {
       { cmd: 'shell_open_path', args: { path: 'C:/Users/me/project' } },
       { cmd: 'dialog_confirm', args: { message: 'Proceed?', title: 'Heads up' } },
       { cmd: 'dialog_confirm', args: { message: 'Just a message', title: undefined } },
+      { cmd: 'fs_read_file', args: { path: 'C:/Users/me/notes.txt' } },
+      { cmd: 'settings_get_shell_path', args: { shellType: 'zsh' } },
     ])
   }
 
