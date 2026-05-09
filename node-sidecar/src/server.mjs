@@ -19,7 +19,7 @@
 // Tests live in node-sidecar/tests/server.test.mjs.
 
 import { createInterface } from 'node:readline'
-import { readdir, stat, readFile } from 'node:fs/promises'
+import { readdir, stat, readFile, appendFile, mkdir, unlink } from 'node:fs/promises'
 import { createReadStream, accessSync, constants as fsConstants } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join, basename } from 'node:path'
@@ -509,6 +509,75 @@ registerHandler('claude.isResting', async (params) => {
   if (typeof sessionId !== 'string' || !sessionId) return false
   const session = sessions.get(sessionId)
   return session?.isResting === true
+})
+
+// claude.archiveMessages / loadArchived / clearArchive: per-session
+// JSONL archive at `<dataDir>/message-archives/<sessionId>.jsonl`.
+// Mirror of electron/server-core/register-handlers.ts:505+. The
+// renderer uses these to compact long conversations: archive flushes
+// off-screen messages to disk, loadArchived pages them back from the
+// tail, clear removes the file when the session is reset.
+//
+// Pure fs ops — no SDK involvement. Path validation is per-session-id
+// only (alpha-numeric segment) so a malicious sessionId can't escape
+// the archive dir; sessionId is a UUID-or-similar string anyway.
+function archiveFilePath(sessionId) {
+  const safe = String(sessionId).replace(/[^a-zA-Z0-9_.\-]/g, '_')
+  return join(resolveDataDir(), 'message-archives', `${safe}.jsonl`)
+}
+
+registerHandler('claude.archiveMessages', async (params) => {
+  const sessionId = params?.sessionId
+  const messages = params?.messages
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  if (!Array.isArray(messages)) return false
+  const dir = join(resolveDataDir(), 'message-archives')
+  try {
+    await mkdir(dir, { recursive: true })
+    const lines = messages.map(m => JSON.stringify(m)).join('\n') + (messages.length > 0 ? '\n' : '')
+    if (lines) await appendFile(archiveFilePath(sessionId), lines, 'utf-8')
+    return true
+  } catch (err) {
+    process.stderr.write(`[sidecar] claude.archiveMessages: ${err instanceof Error ? err.message : String(err)}\n`)
+    return false
+  }
+})
+
+registerHandler('claude.loadArchived', async (params) => {
+  const sessionId = params?.sessionId
+  const offset = Number.isFinite(params?.offset) ? Math.max(0, Math.floor(params.offset)) : 0
+  const limit = Number.isFinite(params?.limit) ? Math.max(0, Math.floor(params.limit)) : 0
+  if (typeof sessionId !== 'string' || !sessionId) return { messages: [], total: 0, hasMore: false }
+  let raw
+  try {
+    raw = await readFile(archiveFilePath(sessionId), 'utf-8')
+  } catch {
+    return { messages: [], total: 0, hasMore: false }
+  }
+  const lines = raw.split('\n').filter(l => l.trim())
+  const total = lines.length
+  // Mirror Electron's tail-paging: load N items ending at (total - offset).
+  // Caller uses offset to skip already-loaded entries from the bottom.
+  const end = total - offset
+  const start = Math.max(0, end - limit)
+  if (end <= 0) return { messages: [], total, hasMore: false }
+  const slice = lines.slice(start, end)
+  const messages = []
+  for (const line of slice) {
+    try { messages.push(JSON.parse(line)) } catch { /* drop malformed */ }
+  }
+  return { messages, total, hasMore: start > 0 }
+})
+
+registerHandler('claude.clearArchive', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  try {
+    await unlink(archiveFilePath(sessionId))
+  } catch {
+    // ENOENT is fine — already cleared.
+  }
+  return true
 })
 
 // Real SDK-driven sendMessage. Each call kicks off a fresh single-shot

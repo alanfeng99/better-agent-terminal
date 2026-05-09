@@ -472,6 +472,23 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string) =>
             getInvoke()<unknown>('claude_is_resting', { sessionId })
         }
+        // Conversation archive ops — append/page/clear off-screen
+        // messages to a per-session JSONL under <data-dir>/message-archives/.
+        if (key === 'archiveMessages') {
+          return (sessionId: string, messages: unknown[]) =>
+            getInvoke()<boolean>('claude_archive_messages', { sessionId, messages })
+        }
+        if (key === 'loadArchived') {
+          return (sessionId: string, offset: number, limit: number) =>
+            getInvoke()<{ messages: unknown[]; total: number; hasMore: boolean }>(
+              'claude_load_archived',
+              { sessionId, offset, limit },
+            )
+        }
+        if (key === 'clearArchive') {
+          return (sessionId: string) =>
+            getInvoke()<boolean>('claude_clear_archive', { sessionId })
+        }
         // resumeSession: rehydrate an existing SDK session id so the next
         // sendMessage continues that conversation instead of starting
         // fresh. Renderer panels call this on remount when they have a

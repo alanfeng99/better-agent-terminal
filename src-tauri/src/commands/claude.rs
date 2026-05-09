@@ -382,6 +382,40 @@ pub fn claude_fork_session(
 }
 
 #[tauri::command]
+pub fn claude_archive_messages(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    messages: Value,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.archiveMessages", json!({
+        "sessionId": session_id, "messages": messages,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_load_archived(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.loadArchived", json!({
+        "sessionId": session_id, "offset": offset, "limit": limit,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_clear_archive(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.clearArchive", json!({ "sessionId": session_id }))
+}
+
+#[tauri::command]
 pub fn claude_rest_session(
     app: AppHandle,
     state: State<'_, SidecarState>,

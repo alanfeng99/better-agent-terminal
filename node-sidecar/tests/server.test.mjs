@@ -1126,6 +1126,109 @@ async function inProcess() {
     restoreRestSend()
   }
 
+  // claude.archiveMessages / loadArchived / clearArchive — pure fs
+  // round-trip under a tmpdir BAT_SIDECAR_DATA_DIR override. Drives a
+  // 5-message archive, loads with offset/limit pages from the tail
+  // (mirror Electron's tail-pagination contract), clears, and verifies
+  // the file is gone.
+  const archiveDataDir = mkdtempSync(join(tmpdir(), 'sidecar-archive-'))
+  const savedDataDirArchive = process.env.BAT_SIDECAR_DATA_DIR
+  process.env.BAT_SIDECAR_DATA_DIR = archiveDataDir
+  try {
+    // Empty archive (no file yet) → empty page.
+    const empty = await dispatch({ jsonrpc: '2.0', id: 450, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 0, limit: 10 } })
+    assert.deepEqual(empty.result, { messages: [], total: 0, hasMore: false })
+
+    // Archive 5 messages.
+    const msgs = [
+      { id: 'm1', role: 'user', content: 'first' },
+      { id: 'm2', role: 'assistant', content: 'reply 1' },
+      { id: 'm3', role: 'user', content: 'second' },
+      { id: 'm4', role: 'assistant', content: 'reply 2' },
+      { id: 'm5', role: 'user', content: 'third' },
+    ]
+    const archived = await dispatch({ jsonrpc: '2.0', id: 451, method: 'claude.archiveMessages',
+      params: { sessionId: 'arch-1', messages: msgs } })
+    assert.equal(archived.result, true)
+
+    // Tail page: offset=0, limit=2 → last 2 messages [m4, m5]; hasMore true.
+    const tail2 = await dispatch({ jsonrpc: '2.0', id: 452, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 0, limit: 2 } })
+    assert.equal(tail2.result.total, 5)
+    assert.equal(tail2.result.hasMore, true)
+    assert.equal(tail2.result.messages.length, 2)
+    assert.equal(tail2.result.messages[0].id, 'm4')
+    assert.equal(tail2.result.messages[1].id, 'm5')
+
+    // Page back: offset=2 (skip last 2), limit=2 → [m2, m3]; hasMore true.
+    const tail22 = await dispatch({ jsonrpc: '2.0', id: 453, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 2, limit: 2 } })
+    assert.equal(tail22.result.messages.length, 2)
+    assert.equal(tail22.result.messages[0].id, 'm2')
+    assert.equal(tail22.result.messages[1].id, 'm3')
+    assert.equal(tail22.result.hasMore, true)
+
+    // Beyond start: offset=4, limit=10 → [m1] only; hasMore false.
+    const tailEnd = await dispatch({ jsonrpc: '2.0', id: 454, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 4, limit: 10 } })
+    assert.equal(tailEnd.result.messages.length, 1)
+    assert.equal(tailEnd.result.messages[0].id, 'm1')
+    assert.equal(tailEnd.result.hasMore, false)
+
+    // Past total: offset=999 → empty + hasMore:false (graceful).
+    const past = await dispatch({ jsonrpc: '2.0', id: 455, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 999, limit: 10 } })
+    assert.deepEqual(past.result, { messages: [], total: 5, hasMore: false })
+
+    // Append more — archive should grow not overwrite.
+    await dispatch({ jsonrpc: '2.0', id: 456, method: 'claude.archiveMessages',
+      params: { sessionId: 'arch-1', messages: [{ id: 'm6', role: 'user', content: 'fourth' }] } })
+    const grown = await dispatch({ jsonrpc: '2.0', id: 457, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 0, limit: 1 } })
+    assert.equal(grown.result.total, 6)
+    assert.equal(grown.result.messages[0].id, 'm6')
+
+    // clearArchive removes the file → next load returns empty page.
+    const cleared = await dispatch({ jsonrpc: '2.0', id: 458, method: 'claude.clearArchive',
+      params: { sessionId: 'arch-1' } })
+    assert.equal(cleared.result, true)
+    const afterClear = await dispatch({ jsonrpc: '2.0', id: 459, method: 'claude.loadArchived',
+      params: { sessionId: 'arch-1', offset: 0, limit: 10 } })
+    assert.deepEqual(afterClear.result, { messages: [], total: 0, hasMore: false })
+    // clearArchive on a non-existent file is still ok.
+    const clearAgain = await dispatch({ jsonrpc: '2.0', id: 460, method: 'claude.clearArchive',
+      params: { sessionId: 'arch-never' } })
+    assert.equal(clearAgain.result, true)
+
+    // Defensive: missing/invalid params return false / empty page.
+    const noSidArch = await dispatch({ jsonrpc: '2.0', id: 461, method: 'claude.archiveMessages',
+      params: { messages: [] } })
+    assert.equal(noSidArch.result, false)
+    const noMsgsArch = await dispatch({ jsonrpc: '2.0', id: 462, method: 'claude.archiveMessages',
+      params: { sessionId: 'x' } })
+    assert.equal(noMsgsArch.result, false)
+    const noSidLoad = await dispatch({ jsonrpc: '2.0', id: 463, method: 'claude.loadArchived',
+      params: { offset: 0, limit: 10 } })
+    assert.deepEqual(noSidLoad.result, { messages: [], total: 0, hasMore: false })
+    const noSidClear = await dispatch({ jsonrpc: '2.0', id: 464, method: 'claude.clearArchive',
+      params: {} })
+    assert.equal(noSidClear.result, false)
+
+    // sessionId path-escape attempt — sanitised to underscores so the
+    // archive file lives inside message-archives/ regardless. We just
+    // check it doesn't throw and round-trips under the sanitized name.
+    await dispatch({ jsonrpc: '2.0', id: 465, method: 'claude.archiveMessages',
+      params: { sessionId: '../../etc/passwd', messages: [{ id: 'evil' }] } })
+    const escaped = await dispatch({ jsonrpc: '2.0', id: 466, method: 'claude.loadArchived',
+      params: { sessionId: '../../etc/passwd', offset: 0, limit: 10 } })
+    assert.equal(escaped.result.total, 1, 'sanitized path round-trips')
+  } finally {
+    rmSync(archiveDataDir, { recursive: true, force: true })
+    if (savedDataDirArchive === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
+    else process.env.BAT_SIDECAR_DATA_DIR = savedDataDirArchive
+  }
+
   // Parity test: queryOptions must include the same keys Electron sets.
   // Without these, the sidecar session loses the claude_code system
   // prompt + tool preset → no Bash/Read/Edit etc. Capture the raw
