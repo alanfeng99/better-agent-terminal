@@ -382,6 +382,33 @@ pub fn claude_fork_session(
 }
 
 #[tauri::command]
+pub fn claude_rest_session(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.restSession", json!({ "sessionId": session_id }))
+}
+
+#[tauri::command]
+pub fn claude_wake_session(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.wakeSession", json!({ "sessionId": session_id }))
+}
+
+#[tauri::command]
+pub fn claude_is_resting(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.isResting", json!({ "sessionId": session_id }))
+}
+
+#[tauri::command]
 pub fn claude_fetch_subagent_messages(
     app: AppHandle,
     state: State<'_, SidecarState>,

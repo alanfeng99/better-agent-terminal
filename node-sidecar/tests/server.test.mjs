@@ -568,6 +568,32 @@ async function inProcess() {
     assert.deepEqual(seq, ['claude:status', 'claude:message', 'claude:result', 'claude:turn-end'])
     // status payload.meta.sdkSessionId
     assert.equal(events[0].payload.meta.sdkSessionId, 'sdk-sess-abc')
+    // status meta must carry the full SessionMetadata shape, not a
+    // sparse subset — the renderer's ClaudeAgentPanel reads
+    // `inputTokens.toLocaleString()` etc. without optional chaining.
+    // Lock the same 19 keys + 13 numeric typeof asserted on the
+    // getSessionMeta RPC reply, so any sparse status emit fails here
+    // rather than crashing the panel.
+    for (const key of [
+      'permissionMode', 'model', 'effort', 'autoCompactWindow',
+      'sdkSessionId', 'cwd', 'totalCost',
+      'inputTokens', 'outputTokens', 'durationMs', 'numTurns',
+      'contextWindow', 'maxOutputTokens', 'contextTokens',
+      'cacheReadTokens', 'cacheCreationTokens',
+      'callCacheRead', 'callCacheWrite', 'lastQueryCalls',
+    ]) {
+      assert.ok(key in events[0].payload.meta,
+        `claude:status meta missing field: ${key}`)
+    }
+    for (const numKey of [
+      'totalCost', 'inputTokens', 'outputTokens', 'durationMs', 'numTurns',
+      'contextWindow', 'maxOutputTokens', 'contextTokens',
+      'cacheReadTokens', 'cacheCreationTokens',
+      'callCacheRead', 'callCacheWrite', 'lastQueryCalls',
+    ]) {
+      assert.equal(typeof events[0].payload.meta[numKey], 'number',
+        `claude:status meta.${numKey} must be a number`)
+    }
     // message payload.message.content shape preserved
     assert.equal(events[1].payload.message.message.content[0].text, 'hello back')
     // turn-end carries reason + sdkSessionId
@@ -994,6 +1020,106 @@ async function inProcess() {
   } finally {
     __setSdkOverrideForTests(undefined)
     restoreFetchSend2()
+  }
+
+  // claude.restSession / wakeSession / isResting — the renderer's
+  // pause/resume UX. rest aborts in-flight + emits a one-line system
+  // message so the panel shows "tap to wake"; wake clears the flag;
+  // sendMessage also auto-wakes (mirror of claude-agent-manager.ts:581).
+  // Drive a fake SDK so we can pre-flag streaming + verify abort signal
+  // propagation without depending on real network.
+  const restEvents = []
+  const restoreRestSend = mod.__setSendEventForTests((method, payload) => {
+    restEvents.push({ method, payload })
+  })
+  try {
+    // Bring up a session via resumeSession (gives it an sdkSessionId).
+    const fakeSdkRest = {
+      query() {
+        return (async function*() { /* never yields */ })()
+      },
+    }
+    __setSdkOverrideForTests(fakeSdkRest)
+    await dispatch({ jsonrpc: '2.0', id: 430, method: 'claude.resumeSession',
+      params: { sessionId: 'rest-1', sdkSessionId: 'sdk-rest-x',
+        options: { cwd: '/r' } } })
+
+    // Initial state: not resting.
+    const before = await dispatch({ jsonrpc: '2.0', id: 431, method: 'claude.isResting',
+      params: { sessionId: 'rest-1' } })
+    assert.equal(before.result, false)
+
+    // Pre-flag streaming + plant an abortController to verify rest aborts.
+    const restingSession = mod.sessions.get('rest-1')
+    const ac = new AbortController()
+    restingSession.streaming = true
+    restingSession.abortController = ac
+
+    restEvents.length = 0
+    const restReply = await dispatch({ jsonrpc: '2.0', id: 432, method: 'claude.restSession',
+      params: { sessionId: 'rest-1' } })
+    assert.equal(restReply.result, true)
+    assert.equal(restingSession.isResting, true)
+    assert.equal(restingSession.streaming, false, 'rest must clear streaming flag')
+    assert.equal(restingSession.abortController, null, 'rest must drop abortController')
+    assert.equal(ac.signal.aborted, true, 'rest must abort the in-flight signal')
+    // Emitted exactly one system message hint.
+    const sysMsgEvents = restEvents.filter(e => e.method === 'claude:message'
+      && e.payload?.message?.role === 'system')
+    assert.equal(sysMsgEvents.length, 1, 'rest emits one system hint message')
+    assert.match(sysMsgEvents[0].payload.message.content, /resting/i)
+
+    // isResting now true.
+    const during = await dispatch({ jsonrpc: '2.0', id: 433, method: 'claude.isResting',
+      params: { sessionId: 'rest-1' } })
+    assert.equal(during.result, true)
+
+    // wakeSession clears the flag.
+    const wakeReply = await dispatch({ jsonrpc: '2.0', id: 434, method: 'claude.wakeSession',
+      params: { sessionId: 'rest-1' } })
+    assert.equal(wakeReply.result, true)
+    assert.equal(restingSession.isResting, false)
+    const after = await dispatch({ jsonrpc: '2.0', id: 435, method: 'claude.isResting',
+      params: { sessionId: 'rest-1' } })
+    assert.equal(after.result, false)
+
+    // sendMessage also auto-wakes a resting session (mirror of Electron
+    // line 581-582 — incoming user input always wakes).
+    restingSession.isResting = true
+    // SDK is still installed; use a fake that yields a complete turn so
+    // sendMessage doesn't hang, but we don't care about the response —
+    // only the isResting flip is under test.
+    __setSdkOverrideForTests({
+      query() {
+        return (async function*() {
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-rest-x', cwd: '/r', model: null, permissionMode: 'default' }
+          yield { type: 'result', subtype: 'success', session_id: 'sdk-rest-x', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 }
+        })()
+      },
+    })
+    await dispatch({ jsonrpc: '2.0', id: 436, method: 'claude.sendMessage',
+      params: { sessionId: 'rest-1', prompt: 'wake up' } })
+    assert.equal(restingSession.isResting, false, 'sendMessage auto-wakes')
+
+    // Defensive: missing/unknown sessionId returns false on all three.
+    const noSidRest = await dispatch({ jsonrpc: '2.0', id: 437, method: 'claude.restSession',
+      params: {} })
+    assert.equal(noSidRest.result, false)
+    const noSidWake = await dispatch({ jsonrpc: '2.0', id: 438, method: 'claude.wakeSession',
+      params: {} })
+    assert.equal(noSidWake.result, false)
+    const noSidIsResting = await dispatch({ jsonrpc: '2.0', id: 439, method: 'claude.isResting',
+      params: {} })
+    assert.equal(noSidIsResting.result, false)
+    const unknownRest = await dispatch({ jsonrpc: '2.0', id: 440, method: 'claude.restSession',
+      params: { sessionId: 'never-started' } })
+    assert.equal(unknownRest.result, false)
+    const unknownIsResting = await dispatch({ jsonrpc: '2.0', id: 441, method: 'claude.isResting',
+      params: { sessionId: 'never-started' } })
+    assert.equal(unknownIsResting.result, false)
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreRestSend()
   }
 
   // Parity test: queryOptions must include the same keys Electron sets.

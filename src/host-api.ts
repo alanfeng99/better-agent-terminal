@@ -456,6 +456,22 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string, agentToolUseId: string) =>
             getInvoke()<unknown>('claude_fetch_subagent_messages', { sessionId, agentToolUseId })
         }
+        // Resting UX: pause/resume a session without destroying its SDK
+        // session id. restSession aborts in-flight + emits a system hint;
+        // the next sendMessage auto-wakes via the sidecar's
+        // s.isResting=false flip.
+        if (key === 'restSession') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_rest_session', { sessionId })
+        }
+        if (key === 'wakeSession') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_wake_session', { sessionId })
+        }
+        if (key === 'isResting') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_is_resting', { sessionId })
+        }
         // resumeSession: rehydrate an existing SDK session id so the next
         // sendMessage continues that conversation instead of starting
         // fresh. Renderer panels call this on remount when they have a

@@ -104,6 +104,10 @@ function ensureSession(sessionId) {
       // claude.resolveAskUser, which calls the stored resolve fn.
       pendingPermissions: new Map(),
       pendingAskUser: new Map(),
+      // Renderer's "resting" UX: ClaudeAgentPanel toggles this when the
+      // user sends the session to background so it doesn't keep
+      // streaming. wakeSession and the next sendMessage both clear it.
+      isResting: false,
     }
     sessions.set(sessionId, s)
   }
@@ -276,10 +280,9 @@ registerHandler('claude.rewindToPrompt', async (params) => {
   session.abortController = null
   session.sdkSessionId = newSdkSessionId
   // Best-effort: notify renderers that the session metadata changed.
-  sendEvent('claude:status', {
-    sessionId,
-    meta: { sdkSessionId: newSdkSessionId, cwd, model: session.model, permissionMode: session.permissionMode },
-  })
+  // Use the full shape so ClaudeAgentPanel's status line doesn't crash
+  // on .inputTokens.toLocaleString() etc.
+  sendEvent('claude:status', { sessionId, meta: buildSessionMeta(session) })
   const removedPromptCount = lines.length - cutoffIdx
   return { newSdkSessionId, removedPromptCount }
 })
@@ -463,6 +466,51 @@ registerHandler('claude.fetchSubagentMessages', async (params) => {
   return items
 })
 
+// claude.restSession / wakeSession / isResting: mirror the resting-UX
+// flag from electron/claude-agent-manager.ts:2481+. The renderer flips
+// a session into "resting" when the user wants to pause it without
+// destroying the SDK session id — abort any in-flight query, clear the
+// streaming guard, and emit a single system-message hint so the panel
+// shows "tap to wake". Wake clears the flag; the next sendMessage also
+// clears it (see claude.sendMessage below).
+registerHandler('claude.restSession', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  const session = sessions.get(sessionId)
+  if (!session) return false
+  if (session.abortController) {
+    try { session.abortController.abort() } catch { /* already aborted */ }
+  }
+  session.abortController = null
+  session.streaming = false
+  session.isResting = true
+  sendEvent('claude:message', {
+    sessionId,
+    message: {
+      id: `sys-rest-${Date.now()}`,
+      sessionId,
+      role: 'system',
+      content: 'Session is resting. Send a message to wake it up.',
+      timestamp: Date.now(),
+    },
+  })
+  return true
+})
+registerHandler('claude.wakeSession', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  const session = sessions.get(sessionId)
+  if (!session) return false
+  session.isResting = false
+  return true
+})
+registerHandler('claude.isResting', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  const session = sessions.get(sessionId)
+  return session?.isResting === true
+})
+
 // Real SDK-driven sendMessage. Each call kicks off a fresh single-shot
 // query() with `resume: <previousSdkSessionId>` so the SDK preserves
 // context across turns. Streaming-input mode + control methods
@@ -498,6 +546,9 @@ registerHandler('claude.sendMessage', async (params) => {
     // just refuse the second concurrent send.
     return { ok: false, error: 'session already streaming' }
   }
+  // Mirror Electron line 581-582: any incoming sendMessage wakes a
+  // resting session — the user just typed, so they want a reply.
+  if (s.isResting) s.isResting = false
 
   const sdk = await loadAnthropicSdk()
   if (!sdk || typeof sdk.query !== 'function') {
@@ -596,15 +647,16 @@ registerHandler('claude.sendMessage', async (params) => {
       }
       const t = msg?.type
       if (t === 'system' && msg.subtype === 'init') {
-        sendEvent('claude:status', {
-          sessionId,
-          meta: {
-            sdkSessionId: msg.session_id,
-            cwd: msg.cwd ?? cwd,
-            model: msg.model ?? s.model,
-            permissionMode: msg.permissionMode ?? s.permissionMode,
-          },
-        })
+        // Apply SDK-reported overrides (sdkSessionId/cwd/model/permissionMode)
+        // before snapshotting so the renderer sees the canonical values.
+        // The full meta shape avoids ClaudeAgentPanel crashing on
+        // .inputTokens.toLocaleString() etc.
+        if (typeof msg.session_id === 'string') s.sdkSessionId = msg.session_id
+        if (typeof msg.model === 'string') s.model = msg.model
+        if (typeof msg.permissionMode === 'string') s.permissionMode = msg.permissionMode
+        const meta = buildSessionMeta(s)
+        if (typeof msg.cwd === 'string' && meta) meta.cwd = msg.cwd
+        sendEvent('claude:status', { sessionId, meta })
       } else if (t === 'stream_event') {
         // Real-time text/thinking deltas from the model stream. The
         // renderer's onStream listener uses payload.data to drive
@@ -1140,18 +1192,17 @@ registerHandler('claude.getSessionState', async (params) => {
     autoCompactWindow: s.autoCompactWindow,
   }
 })
-registerHandler('claude.getSessionMeta', async (params) => {
-  const s = sessions.get(String(params?.sessionId ?? ''))
+// buildSessionMeta(session): shared between the getSessionMeta RPC and
+// every claude:status emit so the renderer's ClaudeAgentPanel always
+// gets the full 19-field shape. The renderer reads
+// `inputTokens.toLocaleString()` (no optional chaining), so a sparse
+// meta payload from a status event would crash the status line — we
+// must always emit the full shape with 0 / null defaults.
+//
+// lastUsage is captured snake_case from SDK message_start/message_delta
+// /result events; translate to the camelCase shape the renderer expects.
+function buildSessionMeta(s) {
   if (!s) return null
-  // Match the Electron SessionMetadata shape (electron/claude-agent-manager.ts:181)
-  // — the renderer's status line reads `inputTokens`/`outputTokens`/etc.
-  // with `.toLocaleString()` directly (no optional chaining), so any
-  // missing field crashes the panel. Default every field to 0 / null so
-  // a fresh session before the first turn still renders cleanly.
-  // lastUsage is captured from SDK message_start/message_delta/result
-  // events with snake_case keys (see the t==='stream_event'/'result'
-  // branches in claude.sendMessage). Translate to the camelCase shape
-  // the renderer expects.
   const u = s.lastUsage
   const inputTokens = u?.input_tokens ?? 0
   const outputTokens = u?.output_tokens ?? 0
@@ -1180,6 +1231,11 @@ registerHandler('claude.getSessionMeta', async (params) => {
     callCacheWrite: 0,
     lastQueryCalls: 0,
   }
+}
+
+registerHandler('claude.getSessionMeta', async (params) => {
+  const s = sessions.get(String(params?.sessionId ?? ''))
+  return buildSessionMeta(s)
 })
 // claude.getContextUsage: surface the cached usage from the last
 // stream_event / result for this session in a shape the renderer's
