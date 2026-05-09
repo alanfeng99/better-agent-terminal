@@ -529,6 +529,46 @@ mod tests {
 
     fn require_node() -> Option<PathBuf> { which_node() }
 
+    // Sidecar got split in slice #40 from a single server.mjs into a tree
+    // with sibling lib/ and handlers/ subdirs. tauri.conf.json had been
+    // listing a single file under bundle.resources, which silently kept
+    // working in dev/release until #40 — when the new ESM imports
+    // (./lib/protocol.mjs etc.) couldn't resolve under target/debug/
+    // because Tauri only copied server.mjs there, not its siblings. The
+    // user-visible symptom: a flood of `[object Object]` unhandled
+    // promise rejections from every Tauri invoke, with the underlying
+    // sidecar stderr tail showing `ERR_MODULE_NOT_FOUND` for protocol.mjs.
+    //
+    // Pin the contract: bundle.resources must include the entire src/
+    // directory (and either of {lib,handlers} subdirs), never just
+    // server.mjs alone. If anyone reverts to a single-file entry, this
+    // turns red immediately and points at the right config line.
+    #[test]
+    fn tauri_conf_bundles_full_sidecar_src_tree() {
+        let conf_path = repo_root().join("src-tauri").join("tauri.conf.json");
+        let raw = std::fs::read_to_string(&conf_path).expect("tauri.conf.json must be readable");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("tauri.conf.json must parse");
+        let resources = parsed
+            .pointer("/bundle/resources")
+            .and_then(|v| v.as_object())
+            .expect("bundle.resources must be an object");
+        let keys: Vec<&str> = resources.keys().map(|s| s.as_str()).collect();
+        assert!(
+            keys.iter().any(|k| *k == "../node-sidecar/src/" || k.contains("node-sidecar/src/lib") || k.contains("node-sidecar/src/handlers") || *k == "../node-sidecar/src/**"),
+            "bundle.resources must ship the full node-sidecar/src/ tree (lib/ + handlers/), \
+             got keys: {keys:?}. Single-file `node-sidecar/src/server.mjs` regressed \
+             post-#40 split — see comment above.",
+        );
+        // Belt-and-braces: the single-file form must NOT be present, since
+        // it leaves siblings unbundled and reintroduces the bug.
+        assert!(
+            !keys.iter().any(|k| *k == "../node-sidecar/src/server.mjs"),
+            "bundle.resources should not list server.mjs as a single file — it leaves \
+             sibling lib/ and handlers/ unbundled."
+        );
+    }
+
     #[test]
     fn find_bundled_node_returns_none_for_missing_dir() {
         let tmp = std::env::temp_dir().join(format!("bat-bundled-node-test-empty-{}", std::process::id()));
