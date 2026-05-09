@@ -6,6 +6,7 @@
 // (src/host-api.ts), so renaming or replacing a command is a one-place
 // edit at this layer plus the adapter route.
 
+pub mod agent;
 pub mod app;
 pub mod claude;
 pub mod clipboard;
@@ -16,10 +17,13 @@ pub mod git;
 pub mod github;
 pub mod image;
 pub mod notification;
+pub mod openai;
 pub mod profile;
 pub mod pty;
 pub mod settings;
 pub mod shell;
 pub mod snippet;
 pub mod update;
+pub mod worker_buffer;
 pub mod workspace;
+pub mod worktree;

@@ -10,11 +10,12 @@ mod path_guard;
 mod sidecar;
 
 use commands::{
-    app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd, debug as debug_cmd,
-    dialog as dialog_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd,
-    image as image_cmd, notification as notification_cmd, profile as profile_cmd,
-    pty as pty_cmd, settings, shell as shell_cmd, snippet as snippet_cmd,
-    update as update_cmd, workspace as workspace_cmd,
+    agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
+    debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd,
+    github as github_cmd, image as image_cmd, notification as notification_cmd,
+    openai as openai_cmd, profile as profile_cmd, pty as pty_cmd, settings,
+    shell as shell_cmd, snippet as snippet_cmd, update as update_cmd,
+    worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
 };
 
 pub fn run() {
@@ -25,6 +26,7 @@ pub fn run() {
         .manage(pty_cmd::PtyState::default())
         .manage(notification_cmd::NotificationState::default())
         .manage(snippet_cmd::SnippetState::default())
+        .manage(worker_buffer_cmd::WorkerBufferState::default())
         .manage(sidecar::SidecarState::new())
         .invoke_handler(tauri::generate_handler![
             settings::settings_load,
@@ -130,6 +132,21 @@ pub fn run() {
             claude_cmd::claude_get_session_meta,
             claude_cmd::claude_get_context_usage,
             claude_cmd::claude_get_worktree_status,
+            openai_cmd::openai_get_api_key_status,
+            openai_cmd::openai_set_api_key,
+            openai_cmd::openai_clear_api_key,
+            openai_cmd::openai_list_sessions,
+            openai_cmd::openai_compact_now,
+            worktree_cmd::worktree_create,
+            worktree_cmd::worktree_remove,
+            worktree_cmd::worktree_status,
+            worktree_cmd::worktree_merge,
+            worktree_cmd::worktree_rehydrate,
+            agent_cmd::agent_list_presets,
+            worker_buffer_cmd::worker_buffer_init,
+            worker_buffer_cmd::worker_buffer_append,
+            worker_buffer_cmd::worker_buffer_read_all,
+            worker_buffer_cmd::worker_buffer_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

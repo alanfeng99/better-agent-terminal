@@ -134,6 +134,44 @@ registerHandler('claude.getSessionMeta', async () => null)
 registerHandler('claude.getContextUsage', async () => null)
 registerHandler('claude.getWorktreeStatus', async () => null)
 
+// --- openai.* stubs --------------------------------------------------------
+
+registerHandler('openai.getApiKeyStatus', async () => ({ hasKey: false }))
+registerHandler('openai.setApiKey', async (params) => {
+  if (typeof params?.apiKey !== 'string') {
+    throw new Error('openai.setApiKey: missing apiKey')
+  }
+  return false
+})
+registerHandler('openai.clearApiKey', async () => true)
+registerHandler('openai.listSessions', async () => [])
+registerHandler('openai.compactNow', async (params) => {
+  if (typeof params?.sessionId !== 'string' || !params.sessionId) {
+    throw new Error('openai.compactNow: missing sessionId')
+  }
+  return false
+})
+
+// --- worktree.* stubs ------------------------------------------------------
+//
+// Until the agent worktree manager moves into the sidecar, these report
+// success:false with a clear error so the renderer's worktree panel
+// shows a "feature unavailable" hint rather than crashing.
+
+const WORKTREE_STUB_ERR = 'worktree ops not yet wired through Tauri sidecar'
+registerHandler('worktree.create', async () => ({ success: false, error: WORKTREE_STUB_ERR }))
+registerHandler('worktree.remove', async () => ({ success: false, error: WORKTREE_STUB_ERR }))
+registerHandler('worktree.status', async () => null)
+registerHandler('worktree.merge', async () => ({ success: false, error: WORKTREE_STUB_ERR }))
+registerHandler('worktree.rehydrate', async () => ({ success: false }))
+
+// --- agent.* ---------------------------------------------------------------
+//
+// Single read-only method today: which presets the host knows how to
+// start. Returns an empty list until presets are registered in the
+// sidecar. Renderer treats empty list as "no advanced presets available".
+registerHandler('agent.listPresets', async () => [])
+
 // --- protocol ---------------------------------------------------------------
 
 function writeMessage(obj) {

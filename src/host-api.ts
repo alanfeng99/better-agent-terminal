@@ -494,9 +494,90 @@ function createTauriHost(): BatAppAPI {
               cb(p.sessionId, (p as Record<string, unknown>)[payloadKey])
             })
         }
-        return () => notImplemented(`claude.${key}`)
+        // Unported claude.* methods get a permissive default rather than
+        // throwing, since the Claude surface has 40+ methods and a single
+        // unported call would otherwise crash the panel that holds it.
+        // Any access logs once via warnOnce and returns:
+        //   - on*  -> () => () => {}  (no-op unsubscriber)
+        //   - else -> (...) => Promise.resolve(null)
+        // Callers that actually need a real impl will see the warning in
+        // DevTools and we port it on demand.
+        return permissiveValueFor(`claude.${key}`)
       },
     }),
+    openai: new Proxy({}, {
+      // Mirrors Electron preload openai.*: 5 methods. All go through the
+      // sidecar under their canonical method names.
+      get(_t, prop) {
+        const key = String(prop)
+        const map: Record<string, string> = {
+          getApiKeyStatus: 'openai_get_api_key_status',
+          setApiKey: 'openai_set_api_key',
+          clearApiKey: 'openai_clear_api_key',
+          listSessions: 'openai_list_sessions',
+          compactNow: 'openai_compact_now',
+        }
+        if (key === 'setApiKey') {
+          return (apiKey: string) => getInvoke()<unknown>('openai_set_api_key', { apiKey })
+        }
+        if (key === 'listSessions') {
+          return (cwd: string) => getInvoke()<unknown>('openai_list_sessions', { cwd })
+        }
+        if (key === 'compactNow') {
+          return (sessionId: string) => getInvoke()<unknown>('openai_compact_now', { sessionId })
+        }
+        if (map[key]) {
+          return () => getInvoke()<unknown>(map[key])
+        }
+        return permissiveValueFor(`openai.${key}`)
+      },
+    }),
+    worktree: new Proxy({}, {
+      // worktree.* — agent-tied. Sidecar handlers stub success=false for
+      // create/remove/merge until the agent worktree manager moves over.
+      get(_t, prop) {
+        const key = String(prop)
+        if (key === 'create') {
+          return (sessionId: string, cwd: string) =>
+            getInvoke()<unknown>('worktree_create', { sessionId, cwd })
+        }
+        if (key === 'remove') {
+          return (sessionId: string, deleteBranch: boolean) =>
+            getInvoke()<unknown>('worktree_remove', { sessionId, deleteBranch })
+        }
+        if (key === 'status') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('worktree_status', { sessionId })
+        }
+        if (key === 'merge') {
+          return (sessionId: string, strategy: string) =>
+            getInvoke()<unknown>('worktree_merge', { sessionId, strategy })
+        }
+        if (key === 'rehydrate') {
+          return (sessionId: string, cwd: string, worktreePath: string, branchName: string) =>
+            getInvoke()<unknown>('worktree_rehydrate', {
+              sessionId, cwd, worktreePath, branchName,
+            })
+        }
+        return permissiveValueFor(`worktree.${key}`)
+      },
+    }),
+    agent: {
+      listPresets: () => getInvoke()<string[]>('agent_list_presets'),
+    },
+    workerBuffer: {
+      // Renderer-side terminal buffer cache. We back this with a Rust
+      // Mutex<HashMap<String, String>> rather than the sidecar so it
+      // stays fast for tight write loops (xterm output, etc).
+      init: (panelId: string) =>
+        getInvoke()<boolean>('worker_buffer_init', { panelId }),
+      append: (panelId: string, lines: string) =>
+        getInvoke()<boolean>('worker_buffer_append', { panelId, lines }),
+      readAll: (panelId: string) =>
+        getInvoke()<string>('worker_buffer_read_all', { panelId }),
+      clear: (panelId: string) =>
+        getInvoke()<boolean>('worker_buffer_clear', { panelId }),
+    },
     pty: {
       create: (options: unknown) =>
         getInvoke()<string>('pty_create', { options: options as Record<string, unknown> }),
@@ -577,7 +658,7 @@ const PORTED_NAMESPACES = new Set([
   'settings', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
   'notification', 'system', 'github', 'snippet', 'profile',
-  'claude',
+  'claude', 'openai', 'worktree', 'agent', 'workerBuffer',
 ])
 
 export function installTauriShim(): void {

@@ -178,6 +178,21 @@ async function run() {
       if (cmd === 'claude_get_session_meta') return null as unknown as T
       if (cmd === 'claude_get_context_usage') return null as unknown as T
       if (cmd === 'claude_get_worktree_status') return null as unknown as T
+      if (cmd === 'openai_get_api_key_status') return { hasKey: false } as unknown as T
+      if (cmd === 'openai_set_api_key') return false as unknown as T
+      if (cmd === 'openai_clear_api_key') return true as unknown as T
+      if (cmd === 'openai_list_sessions') return [] as unknown as T
+      if (cmd === 'openai_compact_now') return false as unknown as T
+      if (cmd === 'worktree_create') return { success: false, error: 'stub' } as unknown as T
+      if (cmd === 'worktree_remove') return { success: false, error: 'stub' } as unknown as T
+      if (cmd === 'worktree_status') return null as unknown as T
+      if (cmd === 'worktree_merge') return { success: false, error: 'stub' } as unknown as T
+      if (cmd === 'worktree_rehydrate') return { success: false } as unknown as T
+      if (cmd === 'agent_list_presets') return [] as unknown as T
+      if (cmd === 'worker_buffer_init') return true as unknown as T
+      if (cmd === 'worker_buffer_append') return true as unknown as T
+      if (cmd === 'worker_buffer_read_all') return '' as unknown as T
+      if (cmd === 'worker_buffer_clear') return true as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -400,6 +415,38 @@ async function run() {
     assert.equal(await mod.host.claude.getContextUsage('s-1'), null)
     assert.equal(await mod.host.claude.getWorktreeStatus('s-1'), null)
 
+    // openai.* — sidecar stubs.
+    assert.deepEqual(await mod.host.openai.getApiKeyStatus(), { hasKey: false })
+    assert.equal(await mod.host.openai.setApiKey('sk-x'), false)
+    assert.equal(await mod.host.openai.clearApiKey(), true)
+    assert.deepEqual(await mod.host.openai.listSessions('/cwd'), [])
+    assert.equal(await mod.host.openai.compactNow('s-1'), false)
+
+    // worktree.* — sidecar stubs.
+    assert.deepEqual(await mod.host.worktree.create('s-1', '/cwd'), {
+      success: false, error: 'stub',
+    })
+    assert.deepEqual(await mod.host.worktree.remove('s-1', true), {
+      success: false, error: 'stub',
+    })
+    assert.equal(await mod.host.worktree.status('s-1'), null)
+    assert.deepEqual(await mod.host.worktree.merge('s-1', 'merge'), {
+      success: false, error: 'stub',
+    })
+    assert.deepEqual(
+      await mod.host.worktree.rehydrate('s-1', '/cwd', '/wt', 'feat'),
+      { success: false },
+    )
+
+    // agent.listPresets — single call.
+    assert.deepEqual(await mod.host.agent.listPresets(), [])
+
+    // workerBuffer.* — Rust-backed in-process state.
+    assert.equal(await mod.host.workerBuffer.init('p1'), true)
+    assert.equal(await mod.host.workerBuffer.append('p1', 'line\n'), true)
+    assert.equal(await mod.host.workerBuffer.readAll('p1'), '')
+    assert.equal(await mod.host.workerBuffer.clear('p1'), true)
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -510,6 +557,21 @@ async function run() {
       { cmd: 'claude_get_session_meta', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_context_usage', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_worktree_status', args: { sessionId: 's-1' } },
+      { cmd: 'openai_get_api_key_status', args: undefined },
+      { cmd: 'openai_set_api_key', args: { apiKey: 'sk-x' } },
+      { cmd: 'openai_clear_api_key', args: undefined },
+      { cmd: 'openai_list_sessions', args: { cwd: '/cwd' } },
+      { cmd: 'openai_compact_now', args: { sessionId: 's-1' } },
+      { cmd: 'worktree_create', args: { sessionId: 's-1', cwd: '/cwd' } },
+      { cmd: 'worktree_remove', args: { sessionId: 's-1', deleteBranch: true } },
+      { cmd: 'worktree_status', args: { sessionId: 's-1' } },
+      { cmd: 'worktree_merge', args: { sessionId: 's-1', strategy: 'merge' } },
+      { cmd: 'worktree_rehydrate', args: { sessionId: 's-1', cwd: '/cwd', worktreePath: '/wt', branchName: 'feat' } },
+      { cmd: 'agent_list_presets', args: undefined },
+      { cmd: 'worker_buffer_init', args: { panelId: 'p1' } },
+      { cmd: 'worker_buffer_append', args: { panelId: 'p1', lines: 'line\n' } },
+      { cmd: 'worker_buffer_read_all', args: { panelId: 'p1' } },
+      { cmd: 'worker_buffer_clear', args: { panelId: 'p1' } },
     ])
   }
 
@@ -518,20 +580,23 @@ async function run() {
     const invoke: TauriInvoke = async () => undefined as unknown as never
     setWindow({ __TAURI_INTERNALS__: { invoke } })
     const mod = await loadFreshAdapter()
-    // worktree is still unported — use it as the canary for
-    // "namespace not yet implemented" behaviour.
-    assert.throws(() => (mod.host as { worktree: { list: () => unknown } }).worktree.list(),
-      /worktree\.list is not yet implemented under Tauri/)
+    // remote.* / tunnel.* are still unported (Phase 3) — use one as the
+    // canary for "namespace not yet implemented" behaviour.
+    assert.throws(() => (mod.host as { remote: { startServer: () => unknown } }).remote.startServer(),
+      /remote\.startServer is not yet implemented under Tauri/)
     // Within a ported namespace, individually unported entries (e.g.
     // pty.restart) still throw the same way.
     assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),
       /pty\.restart is not yet implemented under Tauri/)
-    // claude.* is partially ported: authStatus/accountList plus the four
-    // lifecycle calls + six event listeners route through the sidecar.
-    // Anything else (setAutoContinue, getSupportedModels, ...) still
-    // throws a per-method "not yet implemented".
-    assert.throws(() => (mod.host as { claude: { setAutoContinue: () => unknown } }).claude.setAutoContinue(),
-      /claude\.setAutoContinue is not yet implemented under Tauri/)
+    // claude.* unported methods (e.g. setAutoContinue) used to throw,
+    // but the surface is too large for that to be useful — they now
+    // return Promise.resolve(null) with a one-time console.warn so panel
+    // mounts don't crash. Same applies to openai.* / worktree.* keys
+    // that aren't in the explicit map.
+    const setRes = await (mod.host as { claude: { setAutoContinue: (...a: unknown[]) => Promise<unknown> } }).claude.setAutoContinue('s-1', { enabled: true })
+    assert.equal(setRes, null)
+    const oxRes = await (mod.host as { openai: { unknownMethod: () => Promise<unknown> } }).openai.unknownMethod()
+    assert.equal(oxRes, null)
   }
 
   // 5) Legacy __TAURI__ marker still works (detection only — invoke can't be
