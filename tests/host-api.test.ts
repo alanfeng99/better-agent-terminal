@@ -157,6 +157,10 @@ async function run() {
       if (cmd === 'claude_account_list') {
         return { accounts: [], activeAccountId: null, switchWarningShown: false } as unknown as T
       }
+      if (cmd === 'claude_start_session') return { ok: true, sessionId: 's-1' } as unknown as T
+      if (cmd === 'claude_send_message') return { ok: true } as unknown as T
+      if (cmd === 'claude_stop_session') return { ok: true, existed: true } as unknown as T
+      if (cmd === 'claude_abort_session') return { ok: true } as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -343,6 +347,18 @@ async function run() {
     assert.deepEqual(await mod.host.claude.accountList(), {
       accounts: [], activeAccountId: null, switchWarningShown: false,
     })
+    // Lifecycle: startSession, sendMessage, stopSession, abortSession.
+    const started = await mod.host.claude.startSession('s-1', { cwd: '/x' })
+    assert.deepEqual(started, { ok: true, sessionId: 's-1' })
+    await mod.host.claude.sendMessage('s-1', 'hello')
+    // sendMessage's optional images + autoCompactWindow are passed through.
+    await mod.host.claude.sendMessage('s-1', 'with images', ['/img.png'], 4000)
+    assert.deepEqual(await mod.host.claude.stopSession('s-1'), { ok: true, existed: true })
+    await mod.host.claude.abortSession('s-1')
+    // Event listener registration returns a synchronous unsubscriber.
+    const unsubMsg = mod.host.claude.onMessage(() => {})
+    assert.equal(typeof unsubMsg, 'function')
+    unsubMsg()
 
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
@@ -432,6 +448,11 @@ async function run() {
       { cmd: 'profile_deactivate', args: { profileId: 'default' } },
       { cmd: 'claude_auth_status', args: undefined },
       { cmd: 'claude_account_list', args: undefined },
+      { cmd: 'claude_start_session', args: { sessionId: 's-1', options: { cwd: '/x' } } },
+      { cmd: 'claude_send_message', args: { sessionId: 's-1', prompt: 'hello', images: undefined, autoCompactWindow: undefined } },
+      { cmd: 'claude_send_message', args: { sessionId: 's-1', prompt: 'with images', images: ['/img.png'], autoCompactWindow: 4000 } },
+      { cmd: 'claude_stop_session', args: { sessionId: 's-1' } },
+      { cmd: 'claude_abort_session', args: { sessionId: 's-1' } },
     ])
   }
 
@@ -448,10 +469,12 @@ async function run() {
     // pty.restart) still throw the same way.
     assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),
       /pty\.restart is not yet implemented under Tauri/)
-    // claude.* is partially ported: authStatus/accountList route to the
-    // sidecar, anything else throws a per-method "not yet implemented".
-    assert.throws(() => (mod.host as { claude: { startSession: () => unknown } }).claude.startSession(),
-      /claude\.startSession is not yet implemented under Tauri/)
+    // claude.* is partially ported: authStatus/accountList plus the four
+    // lifecycle calls + six event listeners route through the sidecar.
+    // Anything else (setAutoContinue, getSupportedModels, ...) still
+    // throws a per-method "not yet implemented".
+    assert.throws(() => (mod.host as { claude: { setAutoContinue: () => unknown } }).claude.setAutoContinue(),
+      /claude\.setAutoContinue is not yet implemented under Tauri/)
   }
 
   // 5) Legacy __TAURI__ marker still works (detection only — invoke can't be

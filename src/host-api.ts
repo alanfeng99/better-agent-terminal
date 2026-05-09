@@ -388,10 +388,10 @@ function createTauriHost(): BatAppAPI {
     },
     claude: new Proxy({}, {
       // The Claude surface is large (30+ methods on the Electron preload).
-      // For Phase 2 MVP we route only authStatus + accountList through the
-      // Node sidecar via the Rust bridge — the rest stay loud "not yet
-      // implemented" stubs so missing coverage fails clearly. Adding more
-      // methods is just one new branch per command.
+      // Phase 2 ports authStatus/accountList plus the four session
+      // lifecycle calls and six event-stream listeners that the renderer
+      // attaches at startup. Everything else still throws a per-method
+      // "not yet implemented". claude_ping is internal-only.
       get(_t, prop) {
         const key = String(prop)
         if (key === 'authStatus') {
@@ -400,8 +400,54 @@ function createTauriHost(): BatAppAPI {
         if (key === 'accountList') {
           return () => getInvoke()<unknown>('claude_account_list')
         }
-        // claude_ping is intentionally not exposed on the renderer — it
-        // exists in Rust as a sidecar smoke test only.
+        if (key === 'startSession') {
+          return (sessionId: string, options: unknown) =>
+            getInvoke()<unknown>('claude_start_session', { sessionId, options })
+        }
+        if (key === 'sendMessage') {
+          return (sessionId: string, prompt: string, images?: string[], autoCompactWindow?: number | null) =>
+            getInvoke()<unknown>('claude_send_message', {
+              sessionId, prompt, images, autoCompactWindow,
+            })
+        }
+        if (key === 'stopSession') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_stop_session', { sessionId })
+        }
+        if (key === 'abortSession') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_abort_session', { sessionId })
+        }
+        // Listener registrations — the sidecar emits id-less notifications
+        // like {"method":"event:claude:message","params":{sessionId,...}}.
+        // The Rust bridge strips the "event:" prefix and forwards via
+        // Tauri's Emitter, so the renderer subscribes through @tauri-apps
+        // /api/event::listen on names like "claude:message".
+        const eventListeners: Record<string, string> = {
+          onMessage: 'claude:message',
+          onToolUse: 'claude:tool-use',
+          onToolResult: 'claude:tool-result',
+          onResult: 'claude:result',
+          onTurnEnd: 'claude:turn-end',
+          onError: 'claude:error',
+        }
+        if (eventListeners[key]) {
+          const evName = eventListeners[key]
+          return (cb: (sessionId: string, payload: unknown) => void) =>
+            listenAdapter<{ sessionId: string; [k: string]: unknown }>(evName, p => {
+              // The Electron preload contract is `(sessionId, payload)`.
+              // Sidecar payloads encode sessionId in the wrapper object;
+              // the second arg is whatever sub-key the event uses
+              // (message / toolCall / result / payload / data / error).
+              const payloadKey = key === 'onMessage' ? 'message'
+                : key === 'onToolUse' ? 'toolCall'
+                : key === 'onToolResult' ? 'result'
+                : key === 'onResult' ? 'result'
+                : key === 'onTurnEnd' ? 'payload'
+                : 'error'
+              cb(p.sessionId, (p as Record<string, unknown>)[payloadKey])
+            })
+        }
         return () => notImplemented(`claude.${key}`)
       },
     }),

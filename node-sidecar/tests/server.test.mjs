@@ -53,6 +53,21 @@ async function inProcess() {
   // Duplicate registration throws — protects us against accidental override.
   assert.throws(() => registerHandler('ping', () => 1), /already registered/)
   assert.ok(handlers.has('ping'))
+
+  // Session lifecycle stubs validate sessionId and return ok.
+  const start = await dispatch({ jsonrpc: '2.0', id: 100, method: 'claude.startSession', params: { sessionId: 's-1', options: { cwd: '/x' } } })
+  assert.equal(start.result.ok, true)
+  assert.equal(start.result.sessionId, 's-1')
+  const stop = await dispatch({ jsonrpc: '2.0', id: 101, method: 'claude.stopSession', params: { sessionId: 's-1' } })
+  assert.equal(stop.result.ok, true)
+  assert.equal(stop.result.existed, true)
+  // Stopping an unknown session returns existed=false rather than erroring.
+  const stop2 = await dispatch({ jsonrpc: '2.0', id: 102, method: 'claude.stopSession', params: { sessionId: 'unknown' } })
+  assert.equal(stop2.result.existed, false)
+  // Missing sessionId rejects.
+  const bad = await dispatch({ jsonrpc: '2.0', id: 103, method: 'claude.sendMessage', params: {} })
+  assert.equal(bad.error.code, -32000)
+  assert.match(bad.error.message, /missing sessionId/)
 }
 
 // End-to-end: spawn `node server.mjs`, send a few requests, assert replies.
@@ -80,27 +95,46 @@ async function endToEnd() {
   send({ jsonrpc: '2.0', id: 1, method: 'ping', params: { x: 1 } })
   send({ jsonrpc: '2.0', id: 2, method: 'claude.authStatus' })
   send({ jsonrpc: '2.0', id: 3, method: 'no.such' })
+  // Lifecycle pair: startSession then sendMessage. sendMessage triggers
+  // two event notifications (claude:message + claude:turn-end), so the
+  // total emission count from the server is 4 + 2 = 6 lines.
+  send({ jsonrpc: '2.0', id: 4, method: 'claude.startSession', params: { sessionId: 'e2e-1', options: { cwd: '/' } } })
+  send({ jsonrpc: '2.0', id: 5, method: 'claude.sendMessage', params: { sessionId: 'e2e-1', prompt: 'hi' } })
 
-  // Poll for 3 replies. ~3s budget is generous for a cold Node start.
+  // Poll until we see all 5 replies. Events go to a separate accumulator.
+  const events = replies // alias for readability — we filter below
   const deadline = Date.now() + 5000
-  while (replies.length < 3 && Date.now() < deadline) {
+  while (replies.filter(r => r.id !== undefined).length < 5 && Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 25))
   }
+  // Give events a moment to flush, since the server emits them before the
+  // sendMessage reply but they may interleave on Windows pipes.
+  await new Promise(r => setTimeout(r, 100))
 
   child.stdin.end()
   await new Promise(r => child.once('close', r))
 
-  if (replies.length !== 3) {
-    throw new Error(`sidecar e2e: expected 3 replies, got ${replies.length}; stderr=${stderr}`)
+  const idReplies = events.filter(r => r.id !== undefined && r.id !== null)
+  const eventNotifs = events.filter(r => typeof r.method === 'string' && r.method.startsWith('event:'))
+  if (idReplies.length !== 5) {
+    throw new Error(`sidecar e2e: expected 5 id-replies, got ${idReplies.length}; stderr=${stderr}`)
   }
   // The server dispatches handlers concurrently (rl.on('line', async ...)),
   // so responses are not guaranteed to arrive in request order. Index
   // by id, which is what a real client (the Rust bridge) does anyway.
-  const byId = new Map(replies.map(r => [r.id, r]))
+  const byId = new Map(idReplies.map(r => [r.id, r]))
   assert.equal(byId.get(1).result.ok, true)
   assert.deepEqual(byId.get(1).result.echo, { x: 1 })
   assert.equal(byId.get(2).result, null)
   assert.equal(byId.get(3).error.code, -32601)
+  assert.equal(byId.get(4).result.ok, true)
+  assert.equal(byId.get(4).result.sessionId, 'e2e-1')
+  assert.equal(byId.get(5).result.ok, true)
+
+  // sendMessage must have produced both events.
+  const eventNames = new Set(eventNotifs.map(e => e.method))
+  assert.ok(eventNames.has('event:claude:message'), `expected event:claude:message, got ${[...eventNames]}`)
+  assert.ok(eventNames.has('event:claude:turn-end'), `expected event:claude:turn-end, got ${[...eventNames]}`)
 }
 
 async function run() {

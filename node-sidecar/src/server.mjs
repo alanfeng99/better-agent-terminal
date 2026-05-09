@@ -46,6 +46,57 @@ registerHandler('ping', async (params) => {
 registerHandler('claude.authStatus', async () => null)
 registerHandler('claude.accountList', async () => [])
 
+// Session lifecycle stubs. Until the agent SDK actually moves into the
+// sidecar, these just acknowledge the call and synthesise a minimal
+// "turn-end" event so the renderer's lifecycle wiring can be exercised
+// end-to-end without a real model. They keep an in-memory map of
+// known sessionIds purely so stop/abort can return useful flags.
+const sessions = new Map()
+
+registerHandler('claude.startSession', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('claude.startSession: missing sessionId')
+  }
+  sessions.set(sessionId, { active: true, options: params?.options ?? null })
+  return { ok: true, sessionId }
+})
+
+registerHandler('claude.sendMessage', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('claude.sendMessage: missing sessionId')
+  }
+  // Echo a fake message + turn-end so listeners on the renderer can
+  // observe the event path without a live model. Real handlers will
+  // stream from @anthropic-ai/claude-agent-sdk.
+  sendEvent('claude:message', { sessionId, message: { role: 'assistant', content: '(stub reply)' } })
+  sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: '(stub)' } })
+  return { ok: true }
+})
+
+registerHandler('claude.stopSession', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('claude.stopSession: missing sessionId')
+  }
+  const existed = sessions.delete(sessionId)
+  return { ok: true, existed }
+})
+
+registerHandler('claude.abortSession', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('claude.abortSession: missing sessionId')
+  }
+  const session = sessions.get(sessionId)
+  if (session) {
+    session.active = false
+    sendEvent('claude:turn-end', { sessionId, payload: { reason: 'aborted' } })
+  }
+  return { ok: true }
+})
+
 // --- protocol ---------------------------------------------------------------
 
 function writeMessage(obj) {

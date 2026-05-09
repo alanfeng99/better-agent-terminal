@@ -109,6 +109,10 @@ pub fn run() {
             claude_cmd::claude_ping,
             claude_cmd::claude_auth_status,
             claude_cmd::claude_account_list,
+            claude_cmd::claude_start_session,
+            claude_cmd::claude_send_message,
+            claude_cmd::claude_stop_session,
+            claude_cmd::claude_abort_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Serialize)]
 pub struct BridgeError {
@@ -97,7 +98,11 @@ impl SidecarState {
         Self::default()
     }
 
-    fn ensure_spawned(&self, cfg: &SpawnConfig) -> Result<Arc<SidecarHandle>, BridgeError> {
+    fn ensure_spawned(
+        &self,
+        cfg: &SpawnConfig,
+        emit: Option<EventSink>,
+    ) -> Result<Arc<SidecarHandle>, BridgeError> {
         let mut guard = self.inner.lock().expect("sidecar lock");
         if let Some(h) = guard.as_ref() {
             // Confirm the child is still alive. If it exited, drop and respawn.
@@ -119,7 +124,7 @@ impl SidecarState {
                 }
             }
         }
-        let handle = spawn_sidecar(cfg)?;
+        let handle = spawn_sidecar(cfg, emit)?;
         let arc = Arc::new(handle);
         *guard = Some(Arc::clone(&arc));
         Ok(arc)
@@ -132,7 +137,18 @@ impl SidecarState {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, BridgeError> {
-        let handle = self.ensure_spawned(cfg)?;
+        self.call_with_emit(cfg, None, method, params, timeout)
+    }
+
+    pub fn call_with_emit(
+        &self,
+        cfg: &SpawnConfig,
+        emit: Option<EventSink>,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, BridgeError> {
+        let handle = self.ensure_spawned(cfg, emit)?;
         let id = handle.alloc_id();
         let (tx, rx) = channel::<Result<Value, String>>();
         handle.pending.insert(id, tx);
@@ -186,7 +202,18 @@ impl SidecarState {
     }
 }
 
-fn spawn_sidecar(cfg: &SpawnConfig) -> Result<SidecarHandle, BridgeError> {
+// EventSink lets the bridge forward sidecar-pushed notifications without
+// hard-coding tauri::AppHandle: tests inject a Vec-collecting closure,
+// production code wraps `app.emit(name, params)` from an AppHandle.
+pub type EventSink = Arc<dyn Fn(&str, &Value) + Send + Sync + 'static>;
+
+pub fn app_handle_emit_sink(app: AppHandle) -> EventSink {
+    Arc::new(move |name: &str, params: &Value| {
+        let _ = app.emit(name, params.clone());
+    })
+}
+
+fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHandle, BridgeError> {
     let mut command = Command::new(&cfg.node_path);
     command
         .arg(&cfg.script_path)
@@ -209,7 +236,8 @@ fn spawn_sidecar(cfg: &SpawnConfig) -> Result<SidecarHandle, BridgeError> {
     let pending: Arc<PendingTable> = Arc::new(PendingTable::default());
     let pending_for_reader = Arc::clone(&pending);
 
-    // Reader thread: parse line-delimited JSON, route by id.
+    // Reader thread: parse line-delimited JSON, route by id, fan out events.
+    let emit_for_reader = emit.clone();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
@@ -222,10 +250,22 @@ fn spawn_sidecar(cfg: &SpawnConfig) -> Result<SidecarHandle, BridgeError> {
                 Ok(m) => m,
                 Err(_) => continue, // malformed line; skip
             };
-            // Server events have no id and a method like "event:name". We
-            // don't dispatch them yet — the agent migration will wire them
-            // through Tauri's Emitter. For now they're dropped on the floor.
-            let Some(id) = msg.id else { continue };
+            // Server events have no id and a method like "event:name".
+            // Strip the "event:" prefix and forward the params payload to
+            // the registered sink (Tauri AppHandle in production, a test
+            // collector in unit tests).
+            if msg.id.is_none() {
+                if let Some(method) = msg.method.as_deref() {
+                    if let Some(name) = method.strip_prefix("event:") {
+                        if let Some(sink) = emit_for_reader.as_ref() {
+                            let params = msg.params.unwrap_or(Value::Null);
+                            sink(name, &params);
+                        }
+                    }
+                }
+                continue;
+            }
+            let id = msg.id.unwrap();
             if let Some(tx) = pending_for_reader.take(id) {
                 let outcome = if let Some(err) = msg.error {
                     Err(format!("sidecar({}): {}", err.code, err.message))
@@ -255,6 +295,8 @@ struct SidecarReply {
     #[allow(dead_code)]
     jsonrpc: Option<String>,
     id: Option<u64>,
+    method: Option<String>,
+    params: Option<Value>,
     result: Option<Value>,
     error: Option<SidecarReplyError>,
 }
@@ -479,6 +521,63 @@ mod tests {
             .expect("accountList");
         assert!(accounts.is_array());
         assert_eq!(accounts.as_array().unwrap().len(), 0);
+        state.reset();
+    }
+
+    #[test]
+    fn end_to_end_session_lifecycle_emits_events() {
+        let Some(node_path) = require_node() else {
+            eprintln!("skipped: node not on PATH");
+            return;
+        };
+        let script = sidecar_script();
+        if !script.is_file() {
+            eprintln!("skipped: missing {}", script.display());
+            return;
+        }
+        let cfg = SpawnConfig { node_path, script_path: script };
+        let state = SidecarState::new();
+        // Collector sink — captures (event_name, payload) pairs from the
+        // bridge's reader thread. Equivalent to Tauri's Emitter::emit, but
+        // doesn't require an AppHandle in tests.
+        let collected: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let collected_for_sink = Arc::clone(&collected);
+        let sink: EventSink = Arc::new(move |name: &str, params: &Value| {
+            collected_for_sink.lock().unwrap().push((name.to_string(), params.clone()));
+        });
+
+        // startSession then sendMessage. sendMessage triggers
+        // claude:message + claude:turn-end events from the sidecar stub.
+        state
+            .call_with_emit(
+                &cfg,
+                Some(Arc::clone(&sink)),
+                "claude.startSession",
+                json!({"sessionId":"t-1","options":{"cwd":"/"}}),
+                Duration::from_secs(5),
+            )
+            .expect("startSession");
+        state
+            .call_with_emit(
+                &cfg,
+                Some(Arc::clone(&sink)),
+                "claude.sendMessage",
+                json!({"sessionId":"t-1","prompt":"hi"}),
+                Duration::from_secs(5),
+            )
+            .expect("sendMessage");
+
+        // Events fire from the reader thread; give it a beat to flush.
+        std::thread::sleep(Duration::from_millis(150));
+
+        let events = collected.lock().unwrap();
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"claude:message"), "missing claude:message in {names:?}");
+        assert!(names.contains(&"claude:turn-end"), "missing claude:turn-end in {names:?}");
+        // Payload sanity: message event includes our session id.
+        let msg_event = events.iter().find(|(n, _)| n == "claude:message").unwrap();
+        assert_eq!(msg_event.1["sessionId"], "t-1");
+        drop(events);
         state.reset();
     }
 
