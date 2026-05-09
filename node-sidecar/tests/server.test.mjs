@@ -572,6 +572,137 @@ async function inProcess() {
     restoreSendEvent()
   }
 
+  // Parity test: queryOptions must include the same keys Electron sets.
+  // Without these, the sidecar session loses the claude_code system
+  // prompt + tool preset → no Bash/Read/Edit etc. Capture the raw
+  // options by intercepting query() and assert each parity key is set.
+  const parityCaptured = []
+  const restoreParitySend = mod.__setSendEventForTests(() => {})
+  const fakeSdkParity = {
+    query({ prompt, options }) {
+      parityCaptured.push({ prompt, options })
+      // Yield a minimal valid stream so handler exits cleanly.
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: 'p-sdk', cwd: '/p', model: 'claude-opus-4-7', permissionMode: 'default' },
+        { type: 'result', subtype: 'success', session_id: 'p-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 },
+      ]
+      return (async function*() { for (const m of messages) yield m })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkParity)
+  try {
+    // Use an Opus 4.7 auto-compact preset so we exercise the
+    // sdkModelForClaudeSelection mapping (preset → base id) plus the
+    // CLAUDE_CODE_AUTO_COMPACT_WINDOW env hookup.
+    await dispatch({ jsonrpc: '2.0', id: 230, method: 'claude.startSession',
+      params: { sessionId: 'parity-1', options: {
+        cwd: '/p',
+        model: 'claude-opus-4-7:auto-compact-200k',
+        autoCompactWindow: 200000,
+        permissionMode: 'bypassPermissions',
+        effort: 'high',
+      } } })
+    await dispatch({ jsonrpc: '2.0', id: 231, method: 'claude.sendMessage',
+      params: { sessionId: 'parity-1', prompt: 'hello' } })
+    assert.equal(parityCaptured.length, 1, 'expected exactly one query() call')
+    const opts = parityCaptured[0].options
+    // claude_code preset (system prompt + tools) — without these the
+    // session has no built-in tools.
+    assert.deepEqual(opts.systemPrompt, { type: 'preset', preset: 'claude_code' })
+    assert.deepEqual(opts.tools, { type: 'preset', preset: 'claude_code' })
+    // Streaming + setting + agent UX flags.
+    assert.equal(opts.includePartialMessages, true)
+    assert.equal(opts.promptSuggestions, true)
+    assert.deepEqual(opts.settingSources, ['user', 'project', 'local'])
+    assert.equal(opts.agentProgressSummaries, true)
+    assert.deepEqual(opts.toolConfig, { askUserQuestion: { previewFormat: 'html' } })
+    // Effort + permission + bypass mapping.
+    assert.equal(opts.effort, 'high')
+    assert.equal(opts.permissionMode, 'bypassPermissions')
+    assert.equal(opts.allowDangerouslySkipPermissions, true)
+    // sdkModelForClaudeSelection maps the preset to the base id.
+    assert.equal(opts.model, 'claude-opus-4-7')
+    // autoCompactWindow → CLAUDE_CODE_AUTO_COMPACT_WINDOW env passthrough.
+    assert.ok(opts.env, 'expected env on queryOptions when autoCompactWindow is set')
+    assert.equal(opts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000')
+    // abortController must be set so abort propagates.
+    assert.ok(opts.abortController, 'expected abortController on queryOptions')
+
+    // Second turn with empty prompt must enable continue + carry resume.
+    await dispatch({ jsonrpc: '2.0', id: 232, method: 'claude.sendMessage',
+      params: { sessionId: 'parity-1', prompt: '' } })
+    const opts2 = parityCaptured[1].options
+    assert.equal(opts2.resume, 'p-sdk', 'resume should carry sdkSessionId from prior turn')
+    assert.equal(opts2.continue, true, 'continue:true expected when resuming with empty prompt')
+
+    // bypassPlan must map to plan (SDK does not understand bypassPlan).
+    mod.sessions.get('parity-1').permissionMode = 'bypassPlan'
+    await dispatch({ jsonrpc: '2.0', id: 233, method: 'claude.sendMessage',
+      params: { sessionId: 'parity-1', prompt: 'plan it' } })
+    const opts3 = parityCaptured[2].options
+    assert.equal(opts3.permissionMode, 'plan', 'bypassPlan -> plan mapping')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreParitySend()
+  }
+
+  // Image attachment must turn the prompt into an async generator that
+  // yields a single SDKUserMessage with image+text content blocks.
+  const imageCaptured = []
+  const restoreImageSend = mod.__setSendEventForTests(() => {})
+  const fakeSdkImage = {
+    query({ prompt, options }) {
+      imageCaptured.push({ prompt, options })
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: 'img-sdk', cwd: '/i', model: 'claude-sonnet-4-6', permissionMode: 'default' },
+        { type: 'result', subtype: 'success', session_id: 'img-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 },
+      ]
+      return (async function*() { for (const m of messages) yield m })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkImage)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 240, method: 'claude.startSession',
+      params: { sessionId: 'img-1', options: { cwd: '/i', model: 'claude-sonnet-4-6' } } })
+    // 1×1 transparent PNG.
+    const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+    await dispatch({ jsonrpc: '2.0', id: 241, method: 'claude.sendMessage',
+      params: { sessionId: 'img-1', prompt: 'describe this', images: [tinyPng] } })
+    assert.equal(imageCaptured.length, 1)
+    const promptArg = imageCaptured[0].prompt
+    assert.equal(typeof promptArg, 'object', 'expected async generator for prompt with images')
+    assert.equal(typeof promptArg[Symbol.asyncIterator], 'function', 'expected async iterable prompt')
+    // Drain the generator and check the user message shape.
+    const collected = []
+    for await (const m of promptArg) collected.push(m)
+    assert.equal(collected.length, 1)
+    const userMsg = collected[0]
+    assert.equal(userMsg.type, 'user')
+    assert.equal(userMsg.message.role, 'user')
+    assert.equal(userMsg.message.content.length, 2)
+    assert.equal(userMsg.message.content[0].type, 'image')
+    assert.equal(userMsg.message.content[0].source.media_type, 'image/png')
+    assert.equal(userMsg.message.content[1].type, 'text')
+    assert.equal(userMsg.message.content[1].text, 'describe this')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreImageSend()
+  }
+
+  // Helpers (sdkModelForClaudeSelection + dataUrlToContentBlock) sanity.
+  const { sdkModelForClaudeSelection, dataUrlToContentBlock } = mod
+  assert.equal(sdkModelForClaudeSelection(undefined), undefined)
+  assert.equal(sdkModelForClaudeSelection('claude-sonnet-4-6'), 'claude-sonnet-4-6')
+  assert.equal(sdkModelForClaudeSelection('claude-opus-4-7:auto-compact-200k'), 'claude-opus-4-7')
+  assert.equal(sdkModelForClaudeSelection('claude-opus-4-7:auto-compact-300k'), 'claude-opus-4-7')
+  assert.equal(sdkModelForClaudeSelection('claude-opus-4-7:1m'), 'claude-opus-4-7')
+  assert.equal(dataUrlToContentBlock('not a data url'), null)
+  assert.equal(dataUrlToContentBlock(''), null)
+  const block = dataUrlToContentBlock('data:image/png;base64,iVBORw0KGgo=')
+  assert.equal(block?.type, 'image')
+  assert.equal(block?.source.media_type, 'image/png')
+  assert.equal(block?.source.data, 'iVBORw0KGgo=')
+
   // Drift guard: sidecar CLAUDE_MODEL_CONTEXT_WINDOWS must agree with
   // src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
   // for every base-id key + value, AND must contain entries for all

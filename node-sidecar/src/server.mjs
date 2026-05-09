@@ -170,17 +170,66 @@ registerHandler('claude.sendMessage', async (params) => {
   }
 
   const cwd = (s.options && typeof s.options === 'object' && typeof s.options.cwd === 'string') ? s.options.cwd : process.cwd()
-  const queryOptions = { cwd }
-  if (s.model) queryOptions.model = s.model
-  if (s.permissionMode && s.permissionMode !== 'default') queryOptions.permissionMode = s.permissionMode
-  if (s.sdkSessionId) queryOptions.resume = s.sdkSessionId
+  // Mirror Electron's queryOptions construction (claude-agent-manager.ts).
+  // Without these the sidecar session would run as a vanilla Anthropic
+  // chat — no Bash/Read/Edit tools, no system prompt preset, no partial
+  // streaming, no settings file pickup. Each option lines up with the
+  // Electron equivalent so behaviour matches across hosts.
+  const sdkMode = s.permissionMode === 'bypassPlan' ? 'plan' : s.permissionMode
+  const sdkModel = sdkModelForClaudeSelection(s.model)
+  const claudeCodePath = resolveClaudeCliBinary()
+  const queryOptions = {
+    cwd,
+    systemPrompt: { type: 'preset', preset: 'claude_code' },
+    tools: { type: 'preset', preset: 'claude_code' },
+    includePartialMessages: true,
+    promptSuggestions: true,
+    settingSources: ['user', 'project', 'local'],
+    agentProgressSummaries: true,
+    toolConfig: { askUserQuestion: { previewFormat: 'html' } },
+  }
+  if (sdkMode && sdkMode !== 'default') queryOptions.permissionMode = sdkMode
+  if (s.permissionMode === 'bypassPermissions') queryOptions.allowDangerouslySkipPermissions = true
+  if (s.effort) queryOptions.effort = s.effort
+  if (sdkModel) queryOptions.model = sdkModel
+  if (claudeCodePath) queryOptions.pathToClaudeCodeExecutable = claudeCodePath
+  // CLAUDE_CODE_AUTO_COMPACT_WINDOW gets read by the SDK-spawned claude
+  // binary, so wire it via queryOptions.env (forwarded to the child).
+  if (s.autoCompactWindow) {
+    queryOptions.env = { ...process.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(s.autoCompactWindow) }
+  }
+  if (s.sdkSessionId) {
+    queryOptions.resume = s.sdkSessionId
+    // When resuming with an empty prompt, opt into continue mode so the
+    // SDK keeps autonomous progress. Mirrors Electron behaviour.
+    if (!prompt || prompt.trim() === '' || prompt.trim() === ' ') {
+      queryOptions.continue = true
+    }
+  }
+
+  // Build prompt arg. With image attachments we yield a single
+  // SDKUserMessage via an async generator (the SDK accepts both `string`
+  // and `AsyncIterable<SDKUserMessage>` for `prompt`).
+  let promptArg = prompt || ' '
+  const images = Array.isArray(params?.images) ? params.images : null
+  if (images && images.length > 0) {
+    const imageBlocks = images.map(dataUrlToContentBlock).filter(Boolean)
+    if (imageBlocks.length > 0) {
+      const contentBlocks = [
+        ...imageBlocks,
+        ...(prompt ? [{ type: 'text', text: prompt }] : []),
+      ]
+      const userMessage = { type: 'user', message: { role: 'user', content: contentBlocks } }
+      promptArg = (async function* singleMessage() { yield userMessage })()
+    }
+  }
 
   s.streaming = true
   s.abortController = new AbortController()
   queryOptions.abortController = s.abortController
 
   try {
-    const generator = sdk.query({ prompt, options: queryOptions })
+    const generator = sdk.query({ prompt: promptArg, options: queryOptions })
     s.currentQuery = generator
     for await (const msg of generator) {
       if (s.abortController.signal.aborted) break
@@ -857,7 +906,35 @@ function expectedContextWindowForModel(model) {
   return null
 }
 
-export { CLAUDE_BUILTIN_MODELS, CLAUDE_BUILTIN_DEDUP_KEYS, CLAUDE_MODEL_CONTEXT_WINDOWS, expectedContextWindowForModel }
+// Mirror of src/utils/claude-model-presets.ts sdkModelForClaudeSelection:
+// auto-compact presets all wrap the underlying claude-opus-4-7 base id,
+// so the SDK call uses the base id and the auto-compact window is
+// configured separately via CLAUDE_CODE_AUTO_COMPACT_WINDOW env.
+const CLAUDE_OPUS_47_PRESETS = new Set([
+  'claude-opus-4-7:auto-compact-200k',
+  'claude-opus-4-7:auto-compact-300k',
+  'claude-opus-4-7:auto-compact-400k',
+  'claude-opus-4-7:1m',
+])
+function sdkModelForClaudeSelection(model) {
+  if (!model) return undefined
+  if (CLAUDE_OPUS_47_PRESETS.has(model)) return 'claude-opus-4-7'
+  return model
+}
+
+// Mirror of electron/claude-agent-manager.ts dataUrlToContentBlock — parse
+// "data:image/<mime>;base64,<...>" into the SDK's expected block. Skip
+// >20MB base64 to dodge API rejection (raw image is ~15MB at base64 1.33x).
+function dataUrlToContentBlock(dataUrl) {
+  if (typeof dataUrl !== 'string') return null
+  const m = dataUrl.match(/^data:(image\/[a-z+]+);base64,(.+)$/i)
+  if (!m) return null
+  const base64 = m[2]
+  if (base64.length > 20 * 1024 * 1024) return null
+  return { type: 'image', source: { type: 'base64', media_type: m[1], data: base64 } }
+}
+
+export { CLAUDE_BUILTIN_MODELS, CLAUDE_BUILTIN_DEDUP_KEYS, CLAUDE_MODEL_CONTEXT_WINDOWS, expectedContextWindowForModel, sdkModelForClaudeSelection, dataUrlToContentBlock }
 
 // --- remote.* / tunnel.* stubs --------------------------------------------
 //
