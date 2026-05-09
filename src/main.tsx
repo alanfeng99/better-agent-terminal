@@ -2,6 +2,13 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './i18n'
 import App from './App'
+import { installTauriShim } from './host-api'
+
+// Under Tauri the Electron preload doesn't run, so window.batAppAPI is
+// missing. The shim installs a permissive stub keyed off the host adapter
+// so unmigrated callsites don't crash render — features still log a
+// "not yet implemented" warning the first time they're hit.
+installTauriShim()
 import './styles/base.css'
 import './styles/layout.css'
 import './styles/panels.css'

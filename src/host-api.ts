@@ -120,3 +120,80 @@ function createTauriHost(): BatAppAPI {
     },
   }) as BatAppAPI
 }
+
+// Permissive shim used to keep the React tree alive while we port the rest
+// of the host surface. Unlike createTauriHost(), this version returns
+// best-effort no-op values for unimplemented methods so synchronous reads
+// during render (e.g. window.batAppAPI.platform, getDetachedId(),
+// onSomething(cb)) don't blow up. Each unported access logs once via
+// console.warn so the gap is visible in DevTools.
+//
+// Wire via installTauriShim() from main.tsx — it is intentionally NOT the
+// default behaviour of `host`, because tests and ported call sites should
+// continue to fail loudly instead of silently no-oping.
+
+function detectPlatform(): 'win32' | 'darwin' | 'linux' {
+  if (typeof navigator === 'undefined') return 'linux'
+  const p = (navigator as { platform?: string }).platform || ''
+  if (/win/i.test(p)) return 'win32'
+  if (/mac/i.test(p)) return 'darwin'
+  return 'linux'
+}
+
+const warned = new Set<string>()
+function warnOnce(name: string): void {
+  if (warned.has(name)) return
+  warned.add(name)
+  // eslint-disable-next-line no-console
+  console.warn(`host-api: ${name} called under Tauri but not yet implemented; returning a no-op value`)
+}
+
+function permissiveValueFor(name: string, asFunction = true): unknown {
+  warnOnce(name)
+  if (!asFunction) return null
+  // Return a function that lazily resolves to null/Promise<null> so both
+  // sync and async callers get a sensible shape. Listener registrations
+  // (on*) are usually unsubscribers; we return a no-op for those.
+  if (name.includes('.on')) return () => () => {}
+  return (..._args: unknown[]) => {
+    // Heuristic: methods named getX, listX, fetchX, loadX, saveX etc. tend
+    // to be promise-returning. We can't tell statically, so default to a
+    // resolved promise — synchronous callers can still chain .then() on a
+    // promise.
+    return Promise.resolve(null)
+  }
+}
+
+// Namespaces whose methods are routed through Tauri invoke. Listed here so
+// the permissive shim can prefer the real impl when present.
+const PORTED_NAMESPACES = new Set(['settings', 'shell'])
+
+export function installTauriShim(): void {
+  if (getHostKind() !== 'tauri') return
+  const win = (globalThis as unknown as { window?: Record<string, unknown> }).window
+  if (!win || win.batAppAPI) return
+  const real = createTauriHost() as unknown as Record<string, unknown>
+  const platform = detectPlatform()
+  const shim = new Proxy({}, {
+    get(_t, prop) {
+      const key = String(prop)
+      if (key === 'platform') return platform
+      if (key === 'systemVersion') return ''
+      if (PORTED_NAMESPACES.has(key)) return real[key]
+      // Build a nested namespace proxy that returns permissive values.
+      return new Proxy({}, {
+        get(_n, sub) {
+          const subKey = String(sub)
+          // getDetachedId is the one synchronous method preload.ts exposes
+          // that the renderer reads during initial render — return null so
+          // React doesn't choke.
+          if (key === 'workspace' && subKey === 'getDetachedId') {
+            return () => { warnOnce('workspace.getDetachedId'); return null }
+          }
+          return permissiveValueFor(`${key}.${subKey}`)
+        },
+      })
+    },
+  })
+  win.batAppAPI = shim
+}

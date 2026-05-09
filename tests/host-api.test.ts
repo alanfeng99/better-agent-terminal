@@ -112,6 +112,58 @@ async function run() {
     assert.equal(mod.getHostKind(), 'electron')
   }
 
+  // 7) installTauriShim() lets unmigrated callsites no-op gracefully.
+  //    - Ported APIs (settings.load) still go through invoke
+  //    - Sync APIs return sensible defaults (workspace.getDetachedId -> null,
+  //      platform -> detected)
+  //    - Unknown async APIs return Promise.resolve(null)
+  //    - Listener registrations (on*) return a no-op unsubscriber
+  {
+    const invokeCalls: string[] = []
+    const invoke: TauriInvoke = async <T>(cmd: string) => {
+      invokeCalls.push(cmd)
+      return null as unknown as T
+    }
+    // No batAppAPI yet — the shim should install one.
+    const win: WinShape = { __TAURI_INTERNALS__: { invoke } }
+    setWindow(win)
+    const mod = await loadFreshAdapter()
+    mod.installTauriShim()
+    const shimmed = (win as unknown as { batAppAPI?: Record<string, unknown> }).batAppAPI
+    assert.ok(shimmed, 'installTauriShim should attach window.batAppAPI')
+
+    // platform is synchronous and required by App.tsx during render
+    const platform = (shimmed as { platform: string }).platform
+    assert.ok(['win32', 'darwin', 'linux'].includes(platform), `unexpected platform: ${platform}`)
+
+    // workspace.getDetachedId is synchronous; preload returns string|null
+    const detached = (shimmed as { workspace: { getDetachedId: () => string | null } }).workspace.getDetachedId()
+    assert.equal(detached, null)
+
+    // Unknown async API returns Promise.resolve(null)
+    const result = await (shimmed as { foo: { bar: () => Promise<unknown> } }).foo.bar()
+    assert.equal(result, null)
+
+    // Listener-style registration returns a no-op unsubscriber that itself returns void.
+    const unsub = (shimmed as { pty: { onOutput: (cb: (...a: unknown[]) => void) => () => void } }).pty.onOutput(() => {})
+    assert.equal(typeof unsub, 'function')
+    assert.equal(unsub(), undefined)
+
+    // Ported settings.load is still routed through invoke.
+    await (shimmed as { settings: { load: () => Promise<unknown> } }).settings.load()
+    assert.deepEqual(invokeCalls, ['settings_load'])
+  }
+
+  // 8) installTauriShim() is a no-op when not running under Tauri.
+  {
+    setWindow({ batAppAPI: { foo: 1 } })
+    const mod = await loadFreshAdapter()
+    mod.installTauriShim()
+    const win = (globalThis as { window?: { batAppAPI: { foo: number } } }).window
+    // The original batAppAPI is left alone.
+    assert.equal(win?.batAppAPI?.foo, 1)
+  }
+
   console.log('host-api: passed')
 }
 
