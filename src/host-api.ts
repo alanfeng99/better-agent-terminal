@@ -583,6 +583,19 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string, toolUseId: string, answers: unknown) =>
             getInvoke()<unknown>('claude_resolve_ask_user', { sessionId, toolUseId, answers })
         }
+        // Project MCP detection / approval (cwd-keyed, not session-keyed).
+        // Mounted by ClaudeAgentPanel to spot unapproved `<cwd>/.mcp.json`
+        // and offer to flip enableAllProjectMcpServers in project settings.
+        if (key === 'checkMcpJsonStatus') {
+          return (cwd: string) =>
+            getInvoke()<{ exists: boolean; approved: boolean; servers: string[] }>(
+              'claude_check_mcp_json_status', { cwd })
+        }
+        if (key === 'enableAllProjectMcp') {
+          return (cwd: string) =>
+            getInvoke()<{ ok: boolean; changed: boolean; path: string }>(
+              'claude_enable_all_project_mcp', { cwd })
+        }
         const sessionReadCommands: Record<string, string> = {
           getSupportedModels: 'claude_get_supported_models',
           getSupportedCommands: 'claude_get_supported_commands',

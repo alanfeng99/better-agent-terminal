@@ -674,6 +674,137 @@ async function inProcess() {
     __resetMetadataCacheForTests()
   }
 
+  // claude.checkMcpJsonStatus / enableAllProjectMcp.
+  //
+  // The Claude CLI silently ignores `<cwd>/.mcp.json` unless one of the
+  // settings files (user / project / project.local) supplies an
+  // approval marker. ClaudeAgentPanel uses these two RPCs on mount to
+  // detect unapproved .mcp.json and offer a one-click fix. The check
+  // logic is the matrix below — pin every branch so a future settings
+  // schema change can't silently break the renderer prompt.
+  //
+  // We isolate by pointing $HOME at a mkdtemp dir for the duration
+  // (since the user-level settings file lives at ~/.claude/settings.json
+  // and we don't want a real dev-machine settings.json to mask the test).
+  const mcpRoot = mkdtempSync(join(tmpdir(), 'mcp-status-'))
+  const mcpHome = join(mcpRoot, 'home'); mkdirSync(mcpHome, { recursive: true })
+  const mcpProj = join(mcpRoot, 'proj'); mkdirSync(mcpProj, { recursive: true })
+  const mcpSavedHome = process.env.HOME
+  const mcpSavedUserProfile = process.env.USERPROFILE
+  process.env.HOME = mcpHome
+  process.env.USERPROFILE = mcpHome  // os.homedir() reads this on Windows
+  try {
+    // (a) no .mcp.json present → exists:false, approved:false, servers:[]
+    let r = await dispatch({ jsonrpc: '2.0', id: 800,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.deepEqual(r.result, { exists: false, approved: false, servers: [] })
+
+    // (b) .mcp.json present but no settings → exists:true, approved:false
+    writeFileSync(join(mcpProj, '.mcp.json'),
+      JSON.stringify({ mcpServers: { foo: { command: 'x' }, bar: { command: 'y' } } }))
+    r = await dispatch({ jsonrpc: '2.0', id: 801,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.equal(r.result.exists, true)
+    assert.equal(r.result.approved, false)
+    assert.deepEqual(r.result.servers.sort(), ['bar', 'foo'])
+
+    // (c) approved via enableAllProjectMcpServers in PROJECT settings
+    mkdirSync(join(mcpProj, '.claude'), { recursive: true })
+    writeFileSync(join(mcpProj, '.claude', 'settings.json'),
+      JSON.stringify({ enableAllProjectMcpServers: true, otherKey: 'keep' }))
+    r = await dispatch({ jsonrpc: '2.0', id: 802,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.equal(r.result.approved, true, 'enableAllProjectMcpServers in project settings approves')
+
+    // (d) approved via exhaustive enabledMcpjsonServers list
+    writeFileSync(join(mcpProj, '.claude', 'settings.json'),
+      JSON.stringify({ enabledMcpjsonServers: ['foo', 'bar', 'extra'] }))
+    r = await dispatch({ jsonrpc: '2.0', id: 803,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.equal(r.result.approved, true, 'exhaustive enabledMcpjsonServers approves')
+
+    // (e) PARTIAL enabledMcpjsonServers (1/2 covered) → unapproved
+    // — the CLI only attaches individually-listed servers, so reporting
+    // approved=true here would mislead the user.
+    writeFileSync(join(mcpProj, '.claude', 'settings.json'),
+      JSON.stringify({ enabledMcpjsonServers: ['foo'] }))
+    r = await dispatch({ jsonrpc: '2.0', id: 804,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.equal(r.result.approved, false, 'partial enabledMcpjsonServers must NOT count as approved')
+
+    // (f) approved via USER settings (~/.claude/settings.json) — wipe
+    // project settings first so the source-precedence is unambiguous.
+    rmSync(join(mcpProj, '.claude', 'settings.json'))
+    mkdirSync(join(mcpHome, '.claude'), { recursive: true })
+    writeFileSync(join(mcpHome, '.claude', 'settings.json'),
+      JSON.stringify({ enableAllProjectMcpServers: true }))
+    r = await dispatch({ jsonrpc: '2.0', id: 805,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.equal(r.result.approved, true, 'enableAllProjectMcpServers in user settings approves')
+
+    // (g) approved via LOCAL settings (settings.local.json overrides project)
+    rmSync(join(mcpHome, '.claude', 'settings.json'))
+    writeFileSync(join(mcpProj, '.claude', 'settings.local.json'),
+      JSON.stringify({ enableAllProjectMcpServers: true }))
+    r = await dispatch({ jsonrpc: '2.0', id: 806,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.equal(r.result.approved, true, 'enableAllProjectMcpServers in settings.local.json approves')
+    rmSync(join(mcpProj, '.claude', 'settings.local.json'))
+
+    // (h) malformed .mcp.json (invalid JSON) → treated as no .mcp.json
+    writeFileSync(join(mcpProj, '.mcp.json'), '{ this is not json')
+    r = await dispatch({ jsonrpc: '2.0', id: 807,
+      method: 'claude.checkMcpJsonStatus', params: { cwd: mcpProj } })
+    assert.deepEqual(r.result, { exists: false, approved: false, servers: [] })
+
+    // (i) missing cwd param → graceful empty default (no throw)
+    r = await dispatch({ jsonrpc: '2.0', id: 808, method: 'claude.checkMcpJsonStatus' })
+    assert.deepEqual(r.result, { exists: false, approved: false, servers: [] })
+
+    // --- enableAllProjectMcp ---
+    // (j) fresh project (no .claude/ dir, no settings.json) → both created
+    const freshProj = join(mcpRoot, 'fresh'); mkdirSync(freshProj, { recursive: true })
+    writeFileSync(join(freshProj, '.mcp.json'),
+      JSON.stringify({ mcpServers: { only: { command: 'x' } } }))
+    let w = await dispatch({ jsonrpc: '2.0', id: 810,
+      method: 'claude.enableAllProjectMcp', params: { cwd: freshProj } })
+    assert.equal(w.result.ok, true)
+    assert.equal(w.result.changed, true, 'fresh write reports changed')
+    const written = JSON.parse(await readFile(join(freshProj, '.claude', 'settings.json'), 'utf-8'))
+    assert.equal(written.enableAllProjectMcpServers, true)
+
+    // (k) existing settings — preserve other keys
+    const presProj = join(mcpRoot, 'preserve'); mkdirSync(join(presProj, '.claude'), { recursive: true })
+    writeFileSync(join(presProj, '.claude', 'settings.json'),
+      JSON.stringify({ existingKey: 'keep', nested: { deep: 1 } }))
+    w = await dispatch({ jsonrpc: '2.0', id: 811,
+      method: 'claude.enableAllProjectMcp', params: { cwd: presProj } })
+    assert.equal(w.result.changed, true)
+    const merged = JSON.parse(await readFile(join(presProj, '.claude', 'settings.json'), 'utf-8'))
+    assert.equal(merged.enableAllProjectMcpServers, true)
+    assert.equal(merged.existingKey, 'keep', 'existing top-level key preserved')
+    assert.deepEqual(merged.nested, { deep: 1 }, 'existing nested key preserved')
+
+    // (l) idempotent — second call when flag is already true → changed:false, file unchanged
+    const beforeMtime = (await readFile(join(presProj, '.claude', 'settings.json'), 'utf-8'))
+    w = await dispatch({ jsonrpc: '2.0', id: 812,
+      method: 'claude.enableAllProjectMcp', params: { cwd: presProj } })
+    assert.equal(w.result.changed, false, 'idempotent second call reports changed:false')
+    const afterMtime = (await readFile(join(presProj, '.claude', 'settings.json'), 'utf-8'))
+    assert.equal(beforeMtime, afterMtime, 'idempotent second call does not rewrite the file')
+
+    // (m) missing cwd → throws (write op needs an explicit target)
+    const errReply = await dispatch({ jsonrpc: '2.0', id: 813, method: 'claude.enableAllProjectMcp' })
+    assert.ok(errReply.error, 'enableAllProjectMcp without cwd must error')
+    assert.match(errReply.error.message, /missing cwd/i)
+  } finally {
+    if (mcpSavedHome === undefined) delete process.env.HOME
+    else process.env.HOME = mcpSavedHome
+    if (mcpSavedUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = mcpSavedUserProfile
+    rmSync(mcpRoot, { recursive: true, force: true })
+  }
+
   // Per-session state round-trip via dispatch. Verifies setters mutate
   // the session map and getters read back exactly what was written.
   // This is the "stub stays consistent" contract — when SDK lands the

@@ -154,6 +154,8 @@ pub fn run() {
             claude_cmd::claude_rewind_to_prompt,
             claude_cmd::claude_resolve_permission,
             claude_cmd::claude_resolve_ask_user,
+            claude_cmd::claude_check_mcp_json_status,
+            claude_cmd::claude_enable_all_project_mcp,
             openai_cmd::openai_get_api_key_status,
             openai_cmd::openai_set_api_key,
             openai_cmd::openai_clear_api_key,

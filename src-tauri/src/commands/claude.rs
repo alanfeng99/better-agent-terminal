@@ -516,3 +516,21 @@ pub fn claude_resolve_ask_user(
         "sessionId": session_id, "toolUseId": tool_use_id, "answers": answers,
     }))
 }
+
+#[tauri::command]
+pub fn claude_check_mcp_json_status(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    cwd: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.checkMcpJsonStatus", json!({ "cwd": cwd }))
+}
+
+#[tauri::command]
+pub fn claude_enable_all_project_mcp(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    cwd: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.enableAllProjectMcp", json!({ "cwd": cwd }))
+}

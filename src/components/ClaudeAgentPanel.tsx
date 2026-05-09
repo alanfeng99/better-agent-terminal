@@ -1128,6 +1128,44 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     }
   }, [isActive, sessionId])
 
+  // Project .mcp.json detection. The Claude SDK silently ignores
+  // <cwd>/.mcp.json unless settings.json supplies an approval marker
+  // (`enableAllProjectMcpServers: true` or an exhaustive
+  // `enabledMcpjsonServers: [...]`) — and SDK mode can't show the
+  // CLI's interactive approval prompt. We detect the unapproved-but-
+  // present case on mount and offer a one-click fix that writes
+  // `enableAllProjectMcpServers: true` into project settings. Codex
+  // sessions are skipped — they don't talk to the Claude CLI.
+  useEffect(() => {
+    if (isCodexSession) return
+    if (!cwd) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const status = await window.batAppAPI.claude.checkMcpJsonStatus(cwd) as
+          { exists: boolean; approved: boolean; servers: string[] } | undefined
+        if (cancelled || !status?.exists || status.approved) return
+        const servers = Array.isArray(status.servers) && status.servers.length > 0
+          ? status.servers.join(', ')
+          : '(server list empty)'
+        const ok = await host.dialog.confirm(
+          `Project ${cwd} declares MCP servers in .mcp.json:\n\n  ${servers}\n\nThe Claude SDK silently skips them until they're approved. Enable them now?\n\n(Writes "enableAllProjectMcpServers": true into ${cwd}/.claude/settings.json — revoke later by editing that file.)`,
+          'Approve project MCP servers?'
+        )
+        if (!ok || cancelled) return
+        await window.batAppAPI.claude.enableAllProjectMcp(cwd)
+        setMessages(prev => [...prev, {
+          id: `sys-mcp-approve-${Date.now()}`,
+          sessionId,
+          role: 'system' as const,
+          content: `Project MCP servers (${servers}) approved. Start a new session for them to attach.`,
+          timestamp: Date.now(),
+        }])
+      } catch { /* silent — detection is best-effort UX */ }
+    })()
+    return () => { cancelled = true }
+  }, [sessionId, cwd, isCodexSession])
+
   // Fetch supported models on demand when model list is opened (no session required)
   useEffect(() => {
     if (showModelList && availableModels.length === 0) {
