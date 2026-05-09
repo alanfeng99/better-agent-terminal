@@ -56,6 +56,7 @@ pub fn run() {
             workspace_cmd::workspace_load,
             workspace_cmd::workspace_save,
             update_cmd::update_get_version,
+            update_cmd::update_check,
             debug_cmd::debug_log,
             git_cmd::git_get_github_url,
             git_cmd::git_get_branch,

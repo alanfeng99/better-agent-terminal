@@ -233,9 +233,10 @@ function createTauriHost(): BatAppAPI {
     },
     update: {
       getVersion: () => getInvoke()<string>('update_get_version'),
-      // GitHub release polling lives in Phase 3 (packaging) — until the
-      // signing pipeline is rebuilt under Tauri there's no point checking.
-      check: () => notImplemented('update.check'),
+      // Forwards to the sidecar (Node fetch) — no Rust HTTP stack needed.
+      // Returns the same shape the renderer's UpdateNotification consumed
+      // under Electron: { hasUpdate, currentVersion, latestRelease }.
+      check: () => getInvoke()<unknown>('update_check'),
     },
     debug: {
       // Renderer logs forward to the Rust side, which currently writes to

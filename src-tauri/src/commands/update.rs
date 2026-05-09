@@ -1,16 +1,36 @@
-// update:* — small slice of the Electron update surface.
+// update:* — version + release-poll helpers.
 //
-// We only port `update_get_version` for now: it reads the package
-// version string Tauri compiled in (via PackageInfo). The Electron
-// version of `update_check` queries GitHub Releases over HTTPS — that's
-// substantial enough (HTTP client, release-channel parsing, signature
-// validation) that we keep it as `notImplemented` until the packaging
-// pipeline catches up. Phase 3 in plans/tauri-migration-plan.md owns
-// the cross-runtime update flow rebuild.
+// `update_get_version` reads the package version Tauri compiled in.
+// `update_check` forwards to the sidecar's update.check handler with
+// the current version baked in, so the renderer can reuse the same
+// {hasUpdate, currentVersion, latestRelease} shape it consumed under
+// Electron. Sidecar uses Node's built-in fetch so we don't pay for a
+// Rust HTTP client / TLS stack here.
+
+use crate::sidecar::{BridgeError, SidecarState, app_handle_emit_sink, resolve_spawn_config};
+use serde_json::{Value, json};
+use std::time::Duration;
 
 #[tauri::command]
 pub fn update_get_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+#[tauri::command]
+pub fn update_check(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SidecarState>,
+) -> Result<Value, BridgeError> {
+    let cfg = resolve_spawn_config(&app)?;
+    let sink = app_handle_emit_sink(app.clone());
+    let current_version = app.package_info().version.to_string();
+    state.call_with_emit(
+        &cfg,
+        Some(sink),
+        "update.check",
+        json!({ "currentVersion": current_version }),
+        Duration::from_secs(15),
+    )
 }
 
 #[cfg(test)]

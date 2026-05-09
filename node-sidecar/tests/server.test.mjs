@@ -68,6 +68,15 @@ async function inProcess() {
   const bad = await dispatch({ jsonrpc: '2.0', id: 103, method: 'claude.sendMessage', params: {} })
   assert.equal(bad.error.code, -32000)
   assert.match(bad.error.message, /missing sessionId/)
+
+  // compareVersions semantics — pure helper, doesn't hit network.
+  const { compareVersions } = mod
+  assert.equal(compareVersions('1.2.3', '1.2.4'), true)
+  assert.equal(compareVersions('1.2.3', '1.2.3'), false)
+  assert.equal(compareVersions('1.2.3', '1.2.2'), false)
+  assert.equal(compareVersions('v1.2.3', 'v1.2.4'), true)
+  assert.equal(compareVersions('1.0', '1.0.1'), true)
+  assert.equal(compareVersions('2.0.0', '1.99.99'), false)
 }
 
 // End-to-end: spawn `node server.mjs`, send a few requests, assert replies.
