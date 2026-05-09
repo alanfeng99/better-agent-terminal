@@ -2,7 +2,7 @@
 
 ## 進度紀錄（持續更新）
 
-最近一次更新：2026-05-09。（最新一輪：把 `profile.*` 13 個 commands single-window MVP stub port 到 Rust，永遠回一個固定的 `default` local profile；mutation 命令對應 ProfilePanel UI 流程接受 input 但只有 default slot 真實存在，等 multi-window/remote 重做時再展開；cargo test 89 測例。）
+最近一次更新：2026-05-09。（Phase 1 已完成 17 個命名空間：settings/shell/dialog/fs/clipboard/image/pty/workspace/update/debug/git/app/notification/system/github/snippet/profile。剩下 claude/openai/agent/worker/worktree/remote/tunnel 全綁 Phase 2 Node sidecar 設計，計畫文件已寫詳細 [Phase 2 設計筆記] 章節。Tauri release build 一路綠，cargo test 89 例 + host-api.test.ts 8 情境 + tauri-launch smoke test 全綠。）
 
 ### 已完成
 
@@ -237,6 +237,38 @@ Node sidecar for agent SDKs
 2. installer 與 updater 可用。
 3. secrets migration 有回滾或 fallback。
 4. Tauri 版完成主要平台驗證後，Electron 發佈流程與 runtime 依賴會被移除；不維持 Electron fallback。
+
+---
+
+## Phase 2 設計筆記（Agent SDK Node sidecar）
+
+剩下未 port 的命名空間幾乎全綁在 agent runtime：`claude`、`codex`（已從 preload 移除）、`openai`、`agent`、`worker`、`worktree`（agent-tied）。它們呼叫 `@anthropic-ai/claude-agent-sdk`、OpenAI SDK、以及自家 `claude-agent-manager.ts` / `codex-agent-manager.ts` / `openai-agent-manager.ts` 等 Node-only 模組。Rust 端沒有等價物，且這些 SDK 變動頻繁（每兩週一輪），用 Rust 重寫的 ROI 太低。
+
+**選項 A：Node sidecar process（推薦）**
+- 在 `src-tauri` 包一個 Node binary（透過 `pkg` 或 `bun build --compile`），啟動時由 Tauri spawn 並維持 lifetime。
+- Tauri ↔ sidecar 走 stdio 或 unix socket / named pipe + JSON-RPC（沿用 `claude-agent-manager` 既有的 message bus）。
+- Rust 端做：(a) 啟動/關閉/重啟 sidecar、(b) 把 invoke 轉 JSON-RPC、(c) 收 sidecar event 後 emit 到 renderer。
+- 成本：~1 MB sidecar 二進位，加 spawn 一個 Node process。對 12.x MB 的 Tauri exe 來說可接受。
+- 好處：agent SDK 升級只動 sidecar，不動 Rust；維持與 Electron 版本同步成本最低。
+
+**選項 B：把 Agent SDK rewrite 到 Rust**
+- 工作量大且 SDK 跟不上，每次 upstream 改都要 chase。否決。
+
+**選項 C：Tauri command 直接 spawn `node` + IPC**
+- 不打包 Node，要求使用者已安裝。對終端 / agent 工具的目標族群可能 OK，但部署 / cold-start 時間都不利。次佳。
+
+**首批 sidecar 命令**
+1. `claude.startSession` / `sendMessage` / `stopSession` / `abortSession`（最常用，22 + 6 + 6 + 6 個 callsite）。
+2. `claude.authStatus` / `accountList` / `accountSwitch`（auth UI 需要）。
+3. `claude.listSessions` / `resumeSession`（session 切換）。
+4. `claude.{getSupportedModels,getSupportedAgents,getSupportedCommands,getContextUsage,getAccountInfo}`（單純 read-only metadata）。
+5. `worktree.*`（沿用 sidecar 內部的 worktree-manager.ts）。
+6. `openai.*`（API key 管理 + session list / compact）。
+7. `agent.*` / `worker.*`（小量輔助命令）。
+
+**Phase 3 額外項目（remote/tunnel）**
+- `remote.*`（startServer / connect / listProfiles 等）綁定 mDNS + TLS pin，sidecar 也是合理的家。可以與 agent sidecar 共用 process，或拆成獨立 sidecar，但前期建議先共用。
+- `tunnel.getConnection` 同上。
 
 ---
 
