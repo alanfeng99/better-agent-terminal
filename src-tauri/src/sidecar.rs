@@ -874,15 +874,25 @@ mod tests {
         let accounts = state
             .call(&cfg, "claude.accountList", Value::Null, Duration::from_secs(5))
             .expect("accountList");
-        assert!(accounts.is_array());
+        // accountList wraps the array in `{accounts, activeAccountId,
+        // switchWarningShown}` to match Electron's preload contract —
+        // SettingsPanel reads result.accounts.length.
+        assert!(accounts.is_object(), "accountList should be wrapped object: {accounts:?}");
+        let arr = accounts
+            .get("accounts")
+            .expect("accounts field")
+            .as_array()
+            .expect("accounts is array");
         // The dev machine may have a claude-accounts.json with real entries.
         // Just verify the shape — array of objects with id+email — without
         // asserting on length.
-        for entry in accounts.as_array().unwrap() {
+        for entry in arr {
             assert!(entry.is_object(), "non-object account: {entry:?}");
             assert!(entry.get("id").and_then(|v| v.as_str()).is_some());
             assert!(entry.get("email").and_then(|v| v.as_str()).is_some());
         }
+        assert!(accounts.get("activeAccountId").is_some());
+        assert!(accounts.get("switchWarningShown").is_some());
         state.reset();
     }
 

@@ -1840,6 +1840,10 @@ function resolveDataDir() {
   return join(home, '.config', 'better-agent-terminal')
 }
 
+// Return shape mirrors Electron's claude:account-list handler:
+// `{accounts, activeAccountId, switchWarningShown}`. The renderer's
+// SettingsPanel reads `result.accounts.length` directly, so a bare
+// array would crash the panel — keep the wrapper even when empty.
 async function readAccountIndex() {
   const dir = resolveDataDir()
   const path = join(dir, 'claude-accounts.json')
@@ -1847,25 +1851,29 @@ async function readAccountIndex() {
   try {
     raw = await readFile(path, 'utf-8')
   } catch {
-    return [] // file doesn't exist yet — fresh install
+    return { accounts: [], activeAccountId: null, switchWarningShown: false }
   }
   let parsed
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return [] // corrupt — surface as empty rather than crash
+    return { accounts: [], activeAccountId: null, switchWarningShown: false }
   }
   const accounts = Array.isArray(parsed?.accounts) ? parsed.accounts : []
-  // Only return public fields. AccountManager may have written legacy
-  // fields like credentialSnapshot here; we strip everything except the
-  // documented shape.
-  return accounts.map(a => ({
+  // Strip to documented public shape — AccountManager may have written
+  // legacy/credential fields and we never surface those.
+  const sanitized = accounts.map(a => ({
     id: String(a?.id ?? ''),
     email: String(a?.email ?? ''),
     subscriptionType: a?.subscriptionType,
     isDefault: Boolean(a?.isDefault),
     createdAt: typeof a?.createdAt === 'number' ? a.createdAt : 0,
   })).filter(a => a.id && a.email)
+  return {
+    accounts: sanitized,
+    activeAccountId: typeof parsed?.activeAccountId === 'string' ? parsed.activeAccountId : null,
+    switchWarningShown: Boolean(parsed?.switchWarningShown),
+  }
 }
 
 // Exported for tests.

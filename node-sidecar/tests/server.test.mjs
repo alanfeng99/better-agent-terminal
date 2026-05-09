@@ -39,13 +39,15 @@ async function inProcess() {
   const auth = await dispatch({ jsonrpc: '2.0', id: 2, method: 'claude.authStatus' })
   assert.ok(auth.result === null || (typeof auth.result === 'object' && auth.result !== null),
     `unexpected authStatus shape: ${JSON.stringify(auth.result)}`)
-  // claude.accountList reads the on-disk index. With BAT_SIDECAR_DATA_DIR
-  // pointing nowhere it should return [] cleanly.
+  // claude.accountList reads the on-disk index. The renderer's
+  // SettingsPanel reads `.accounts.length` directly, so the shape must
+  // be `{accounts, activeAccountId, switchWarningShown}` — never a bare
+  // array — even when the index file is missing.
   const savedDataDir = process.env.BAT_SIDECAR_DATA_DIR
   process.env.BAT_SIDECAR_DATA_DIR = join(tmpdir(), `nonexistent-${Date.now()}`)
   try {
     const accounts = await dispatch({ jsonrpc: '2.0', id: 3, method: 'claude.accountList' })
-    assert.deepEqual(accounts.result, [])
+    assert.deepEqual(accounts.result, { accounts: [], activeAccountId: null, switchWarningShown: false })
   } finally {
     if (savedDataDir === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
     else process.env.BAT_SIDECAR_DATA_DIR = savedDataDir
@@ -201,7 +203,7 @@ async function inProcess() {
     process.env.BAT_SIDECAR_DATA_DIR = fakeData
     assert.equal(resolveDataDir(), fakeData)
     const empty = await readAccountIndex()
-    assert.deepEqual(empty, [])
+    assert.deepEqual(empty, { accounts: [], activeAccountId: null, switchWarningShown: false })
 
     // Branch 3: file exists with valid index — returns sanitized accounts.
     writeFileSync(join(fakeData, 'claude-accounts.json'), JSON.stringify({
@@ -212,22 +214,24 @@ async function inProcess() {
         { id: 'a3' }, // dropped — no email
       ],
       activeAccountId: 'a1',
-      switchWarningShown: false,
+      switchWarningShown: true,
     }))
-    const accounts = await readAccountIndex()
-    assert.equal(accounts.length, 2)
-    assert.equal(accounts[0].id, 'a1')
-    assert.equal(accounts[0].email, 'a1@example.com')
-    assert.equal(accounts[0].isDefault, true)
-    assert.equal(accounts[0].subscriptionType, 'pro')
-    assert.equal('credentialSnapshot' in accounts[0], false, 'leaked private field')
-    assert.equal(accounts[1].id, 'a2')
-    assert.equal(accounts[1].isDefault, false)
+    const idx = await readAccountIndex()
+    assert.equal(idx.accounts.length, 2)
+    assert.equal(idx.accounts[0].id, 'a1')
+    assert.equal(idx.accounts[0].email, 'a1@example.com')
+    assert.equal(idx.accounts[0].isDefault, true)
+    assert.equal(idx.accounts[0].subscriptionType, 'pro')
+    assert.equal('credentialSnapshot' in idx.accounts[0], false, 'leaked private field')
+    assert.equal(idx.accounts[1].id, 'a2')
+    assert.equal(idx.accounts[1].isDefault, false)
+    assert.equal(idx.activeAccountId, 'a1')
+    assert.equal(idx.switchWarningShown, true)
 
-    // Branch 4: corrupt file → []
+    // Branch 4: corrupt file → empty wrapper.
     writeFileSync(join(fakeData, 'claude-accounts.json'), '{ this is not json')
     const corrupt = await readAccountIndex()
-    assert.deepEqual(corrupt, [])
+    assert.deepEqual(corrupt, { accounts: [], activeAccountId: null, switchWarningShown: false })
   } finally {
     rmSync(fakeData, { recursive: true, force: true })
     if (savedDataDir2 === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
