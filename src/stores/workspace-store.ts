@@ -704,3 +704,9 @@ class WorkspaceStore {
 }
 
 export const workspaceStore = new WorkspaceStore()
+
+import { createSelectorHook } from './use-store'
+export const useWorkspace = createSelectorHook<AppState>({
+  subscribe: (l) => workspaceStore.subscribe(l),
+  getState: () => workspaceStore.getState(),
+})

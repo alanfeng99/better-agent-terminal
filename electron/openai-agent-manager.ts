@@ -44,6 +44,8 @@ interface SessionMetadata {
   callCacheRead: number
   callCacheWrite: number
   lastQueryCalls: number
+  lastTurnFirstTokenMs?: number
+  lastTurnDurationMs?: number
 }
 
 interface QueuedMessage {
@@ -85,6 +87,8 @@ interface OpenAISessionInstance {
   systemPrompt: string
   toolApprovedOnce: Set<string>
   skills: Map<string, SkillMeta>
+  turnStartTime?: number
+  turnFirstTokenSeen?: boolean
 }
 
 type ModelMessage = {
@@ -566,6 +570,8 @@ export class OpenAIAgentManager {
     session.modelMessages.push({ role: 'user', content: userContent })
 
     const turnStart = Date.now()
+    session.turnStartTime = turnStart
+    session.turnFirstTokenSeen = false
     let currentAssistantText = ''
     let currentThinkingText = ''
 
@@ -667,11 +673,21 @@ export class OpenAIAgentManager {
 
         switch (part.type) {
           case 'text-delta': {
+            if (!session.turnFirstTokenSeen && session.turnStartTime) {
+              session.turnFirstTokenSeen = true
+              session.metadata.lastTurnFirstTokenMs = Date.now() - session.turnStartTime
+              this.send('claude:status', sessionId, { ...session.metadata })
+            }
             currentAssistantText += part.text
             this.send('claude:stream', sessionId, { text: part.text })
             break
           }
           case 'reasoning-delta': {
+            if (!session.turnFirstTokenSeen && session.turnStartTime) {
+              session.turnFirstTokenSeen = true
+              session.metadata.lastTurnFirstTokenMs = Date.now() - session.turnStartTime
+              this.send('claude:status', sessionId, { ...session.metadata })
+            }
             currentThinkingText += part.text
             this.send('claude:stream', sessionId, { thinking: part.text })
             break
@@ -758,6 +774,7 @@ export class OpenAIAgentManager {
               })
             }
             session.metadata.durationMs = Date.now() - (session.startTime || turnStart)
+            session.metadata.lastTurnDurationMs = Date.now() - turnStart
             const totalTokens = session.metadata.inputTokens + session.metadata.outputTokens
             session.metadata.contextTokens = totalTokens
             this.send('claude:status', sessionId, { ...session.metadata })

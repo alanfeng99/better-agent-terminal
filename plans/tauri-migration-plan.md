@@ -1,0 +1,198 @@
+# Tauri 遷移短中長期計劃
+
+## 背景判斷
+
+目前 BetterAgentTerminal 的 React/Vite renderer 可以保留，但 Electron main process 不只是開視窗，而是承擔完整 host runtime：PTY、agent SDK、IPC、遠端 server、設定、profile、通知、更新與安全儲存。
+
+遷移策略不建議一次全 Rust 化。較務實的方向是：
+
+```text
+React / TypeScript renderer
+        |
+        | host API adapter
+        v
+Tauri Rust host
+        |
+        | JSON-RPC / stdio / WebSocket
+        v
+Node sidecar for agent SDKs
+```
+
+核心原則：
+
+1. React UI 保留。
+2. Agent SDK 與高變動 npm ecosystem 先保留 JS/Node。
+3. 穩定 OS 整合與 process/runtime core 逐步搬到 Rust。
+4. 先用 spike 驗證風險，再決定是否全面替換 Electron。
+
+---
+
+## 短期計劃：1-3 天
+
+### 目標
+
+確認 React 層能從 Electron API 切出來，並證明同一份 UI 可以跑在 Tauri shell 中。
+
+### 工作項目
+
+1. 新增 `src/host-api.ts` 或同等 adapter 層。
+   - 將目前 `window.electronAPI.*` 包成專案自己的 host API。
+   - React component 不再直接依賴 Electron preload API。
+2. 先挑低風險 API 做 adapter。
+   - `shell.openExternal`
+   - `dialog.confirm`
+   - `fs.readFile`
+   - `settings.load`
+   - `settings.save`
+3. 建立最小 Tauri shell。
+   - 使用現有 Vite/React build。
+   - 不碰 PTY、agent、remote server。
+4. 實作 1-2 個 Tauri Rust command。
+   - 例如 `fs_read_file`、`settings_load`。
+   - 驗證 `invoke` 與 event model。
+5. 先在 macOS 驗證，不急著做完整跨平台。
+
+### 完成標準
+
+1. Electron 版仍可透過 adapter 正常跑。
+2. Tauri shell 可載入現有 React UI。
+3. 至少一組 host API 在 Electron/Tauri 兩邊都可工作。
+
+---
+
+## 中期計劃：1-3 週
+
+### 目標
+
+決定核心 runtime 要 Rust 化到什麼程度，並讓 Tauri 版具備基本可用的 terminal 與 workspace 能力。
+
+### 工作項目
+
+1. 做 PTY prototype。
+   - 路線 A：Rust PTY 實作。
+   - 路線 B：保留 Node PTY sidecar。
+   - 必測：create/write/resize/kill、process tree、Windows PowerShell、macOS zsh、Linux shell。
+2. 保留 agent managers 在 Node sidecar。
+   - Claude Agent SDK
+   - OpenAI/Codex SDK
+   - stream parsing
+   - permission / ask-user flow
+   - session archive
+3. 設計 Rust host 與 Node sidecar 通訊。
+   - 優先考慮 JSON-RPC over stdio。
+   - 若要沿用現有 remote protocol，可評估 WebSocket。
+4. 逐步搬穩定 handler 到 Rust。
+   - `fs:*`
+   - `git:*`
+   - `worktree:*`
+   - `settings:*`
+   - `profile:*`
+   - `snippet:*`
+5. 建立 Tauri event 對應。
+   - `pty:output`
+   - `pty:exit`
+   - `claude:message`
+   - `claude:stream`
+   - `notification:update`
+   - `workspace:reload`
+6. 建立基本 regression checklist。
+   - 開 workspace。
+   - 建 terminal。
+   - terminal resize。
+   - workspace save/load。
+   - 啟動 agent session。
+   - agent streaming。
+   - 停止 agent。
+   - file tree read/search。
+
+### 完成標準
+
+1. Tauri 版可以開 workspace 並啟動 terminal。
+2. Agent 可以透過 Node sidecar 正常 streaming。
+3. 核心資料流不再直接依賴 Electron `ipcMain` / `webContents.send`。
+4. 可以判斷 PTY 應該 Rust 化或先保留 Node sidecar。
+
+---
+
+## 長期計劃：1-2 個月以上
+
+### 目標
+
+讓 Tauri build 成為正式版候選，而不是 demo。
+
+### 工作項目
+
+1. 重建 packaging pipeline。
+   - macOS dmg/sign/notarize。
+   - Windows installer。
+   - Linux AppImage 或其他發佈格式。
+   - 移除 Electron `asarUnpack` 假設。
+2. 重做 update flow。
+   - 取代目前 Electron release check/update 邏輯。
+   - 確認 GitHub Release artifact 命名與更新 metadata。
+3. 設計 secrets migration。
+   - Electron `safeStorage` 到 Tauri/Rust keyring。
+   - Claude account。
+   - OpenAI API key。
+   - remote server token/certificate。
+4. 移除 Electron-only API。
+   - `BrowserWindow`
+   - `webContents.send`
+   - `ipcMain`
+   - `ipcRenderer`
+   - `preload.ts`
+   - Electron menu/clipboard/dialog/shell wrappers
+5. 做跨平台 WebView 驗證。
+   - xterm rendering。
+   - keyboard shortcuts。
+   - drag/drop file path。
+   - clipboard image paste。
+   - Markdown/Mermaid rendering。
+   - context menu。
+   - high-output terminal performance。
+6. 評估 Node sidecar 收斂範圍。
+   - Agent SDK 保留 Node。
+   - 可穩定搬 Rust 的工具逐步移除 JS 實作。
+   - 不追求短期全 Rust。
+7. 發佈候選驗證。
+   - `pnpm exec tsc --noEmit --pretty false`
+   - `pnpm run compile`
+   - Tauri build。
+   - macOS 安裝測試。
+   - Windows terminal / PowerShell 測試。
+   - Linux shell 測試。
+
+### 完成標準
+
+1. Tauri build 功能等價於 Electron 版主要流程。
+2. installer 與 updater 可用。
+3. secrets migration 有回滾或 fallback。
+4. Electron 版可在過渡期保留，直到 Tauri 版完成主要平台驗證。
+
+---
+
+## 建議遷移順序
+
+1. Host API adapter。
+2. 最小 Tauri shell。
+3. 低風險 Rust commands。
+4. PTY prototype。
+5. Node sidecar for agents。
+6. Workspace/settings/fs/git/worktree Rust 化。
+7. Packaging/updater/secrets。
+8. Electron cleanup。
+
+---
+
+## 不建議的路線
+
+1. 一開始全 Rust 重寫 agent managers。
+   - Claude/OpenAI/Codex SDK 變動快，JS 保留較務實。
+2. Tauri 只包一個完整 Node backend。
+   - 這會增加 process 複雜度，但體積與架構收益有限。
+3. 先碰 packaging。
+   - 應先證明 runtime 可行，再投入 release pipeline。
+
+## 初步結論
+
+可行方向是混合式架構：React 保留，Agent JS 保留，host core 逐步 Rust 化。第一階段只需要證明 React 能透過 adapter 同時支援 Electron 與 Tauri；第二階段再用 PTY prototype 決定遷移成本是否值得投入。

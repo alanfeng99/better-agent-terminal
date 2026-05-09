@@ -123,6 +123,20 @@ function buildWorkerHeader(procfilePath: string, processCount: number): string {
     ansiColor('#555', '\u2500'.repeat(60) + '\r\n')
 }
 
+// Derive worktree-aware env vars for Procfile-spawned processes, so users can
+// allocate non-conflicting ports per worktree (e.g. `PORT=$((5173+$BAT_PORT_OFFSET))`).
+function getWorktreeProcessEnv(processCwd: string): Record<string, string> {
+  const m = /\.bat-worktrees[/\\]([0-9a-f]+)(?:[/\\]|$)/.exec(processCwd)
+  if (!m) return {}
+  const id = m[1]
+  const index = parseInt(id.slice(0, 6), 16) % 100
+  return {
+    BAT_WORKTREE_ID: id,
+    BAT_WORKTREE_INDEX: String(index),
+    BAT_PORT_OFFSET: String(index * 10),
+  }
+}
+
 interface WorkerPanelProps {
   terminalId: string
   procfilePath: string
@@ -330,6 +344,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       cwd: processCwd,
       type: 'terminal',
       shell: shellRef.current,
+      customEnv: getWorktreeProcessEnv(processCwd),
     })
 
     // Use exec to replace the shell — pty exits when command exits

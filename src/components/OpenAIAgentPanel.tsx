@@ -6,8 +6,9 @@ import { isToolCall } from '../types/claude-agent'
 import type { CodexEffortLevel, EffortLevel } from '../types'
 import { CODEX_EFFORT_LEVELS, EFFORT_LEVELS } from '../types'
 import { normalizeAgentParams } from '../types/agent-profiles'
-import { settingsStore } from '../stores/settings-store'
+import { settingsStore, useSettings } from '../stores/settings-store'
 import { workspaceStore } from '../stores/workspace-store'
+import { shallowEqual } from '../stores/use-store'
 import { getAgentPreset, type AgentPresetId } from '../types/agent-presets'
 import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
@@ -37,6 +38,8 @@ interface SessionMeta {
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }>
   cacheWrite5mTokens?: number
   cacheWrite1hTokens?: number
+  lastTurnFirstTokenMs?: number
+  lastTurnDurationMs?: number
 }
 
 interface ModelInfo {
@@ -236,14 +239,14 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     }).catch(() => setPlanFileTitle(null))
   }, [activePlanFile, planFileTrigger])
   // Cache efficiency history — last 20 readings for smoothed display
-  const cacheHistoryRef = useRef<{ pct: number; cacheRead: number; cacheCreate: number; totalInput: number; contextSize: number; callCacheRead: number; callCacheWrite: number; calls: number; isResult?: boolean; modelUsage?: SessionMeta['modelUsage']; model?: string; outputTokens?: number; cacheWrite5mTokens?: number; cacheWrite1hTokens?: number; timestamp?: number; messageCount?: number; turnStartMsgId?: string | null; apiTotalCost?: number }[]>([])
+  const cacheHistoryRef = useRef<{ pct: number; cacheRead: number; cacheCreate: number; totalInput: number; contextSize: number; callCacheRead: number; callCacheWrite: number; calls: number; isResult?: boolean; modelUsage?: SessionMeta['modelUsage']; model?: string; outputTokens?: number; cacheWrite5mTokens?: number; cacheWrite1hTokens?: number; timestamp?: number; messageCount?: number; turnStartMsgId?: string | null; apiTotalCost?: number; firstTokenMs?: number; durationMs?: number }[]>([])
   // Track last result for cache expiry warning (timestamp + total input tokens)
   const lastResultRef = useRef<{ timestamp: number; totalInput: number } | null>(null)
   const [showCacheHistory, setShowCacheHistory] = useState(false)
   const [cacheEntryModal, setCacheEntryModal] = useState<number | null>(null)
   const [cacheCountdown, setCacheCountdown] = useState<{ m5: number; h1: number } | null>(null)
-  const [cacheAlarmEnabled, setCacheAlarmEnabled] = useState(settingsStore.getSettings().cacheAlarmTimer === true)
-  const [statuslineConfig, setStatuslineConfig] = useState(settingsStore.getStatuslineItems())
+  const cacheAlarmEnabled = useSettings(s => s.cacheAlarmTimer === true)
+  const statuslineConfig = useSettings(() => settingsStore.getStatuslineItems(), shallowEqual)
   const [contextUsagePopup, setContextUsagePopup] = useState<{
     categories: { name: string; tokens: number; color: string; isDeferred?: boolean }[]
     totalTokens: number
@@ -320,7 +323,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const activeTasksRef = useRef<HTMLDivElement>(null)
   const [aboveViewportUserMsgIds, setAboveViewportUserMsgIds] = useState<Set<string>>(new Set())
-  const [claudeFontSize, setClaudeFontSize] = useState(settingsStore.getSettings().fontSize)
+  const claudeFontSize = useSettings(s => s.fontSize)
   const userMsgRefsMap = useRef<Map<string, HTMLDivElement>>(new Map())
   const observerRef = useRef<IntersectionObserver | null>(null)
 
@@ -914,7 +917,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           const isResult = !!hasModelUsage
           if (!lastEntry || lastEntry.cacheRead !== m.cacheReadTokens || lastEntry.totalInput !== m.inputTokens || (isResult !== lastEntry.isResult)) {
             const pct = Math.round((m.cacheReadTokens / m.inputTokens) * 100)
-            const entry = { pct, cacheRead: m.cacheReadTokens, cacheCreate: m.cacheCreationTokens || 0, totalInput: m.inputTokens, contextSize: m.contextTokens || 0, callCacheRead: m.callCacheRead || 0, callCacheWrite: m.callCacheWrite || 0, calls: isResult ? (m.lastQueryCalls || 0) : 1, isResult, modelUsage: m.modelUsage ? { ...m.modelUsage } : undefined, model: m.model, outputTokens: m.outputTokens || 0, cacheWrite5mTokens: m.cacheWrite5mTokens, cacheWrite1hTokens: m.cacheWrite1hTokens, timestamp: Date.now(), messageCount: messageCountRef.current, turnStartMsgId: currentTurnMsgIdRef.current, apiTotalCost: m.totalCost || 0 }
+            const entry = { pct, cacheRead: m.cacheReadTokens, cacheCreate: m.cacheCreationTokens || 0, totalInput: m.inputTokens, contextSize: m.contextTokens || 0, callCacheRead: m.callCacheRead || 0, callCacheWrite: m.callCacheWrite || 0, calls: isResult ? (m.lastQueryCalls || 0) : 1, isResult, modelUsage: m.modelUsage ? { ...m.modelUsage } : undefined, model: m.model, outputTokens: m.outputTokens || 0, cacheWrite5mTokens: m.cacheWrite5mTokens, cacheWrite1hTokens: m.cacheWrite1hTokens, timestamp: Date.now(), messageCount: messageCountRef.current, turnStartMsgId: currentTurnMsgIdRef.current, apiTotalCost: m.totalCost || 0, firstTokenMs: m.lastTurnFirstTokenMs, durationMs: m.lastTurnDurationMs }
             hist.push(entry)
             // Update last result ref for cache expiry warning
             if (isResult) {
@@ -1260,15 +1263,6 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }
     }).catch(() => {})
   }, [taskModal?.taskId]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Subscribe to settings changes (font size, statusline config, cache alarm)
-  useEffect(() => {
-    return settingsStore.subscribe(() => {
-      setClaudeFontSize(settingsStore.getSettings().fontSize)
-      setStatuslineConfig(settingsStore.getStatuslineItems())
-      setCacheAlarmEnabled(settingsStore.getSettings().cacheAlarmTimer === true)
-    })
-  }, [])
 
   // Cache alarm timer — update every 30s, only show after 1min idle
   useEffect(() => {
@@ -4384,6 +4378,8 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 <span className="claude-tool-badge" style={{ marginRight: 6 }}>{entry.calls} calls</span>
                 <span className="claude-plan-modal-title" style={{ fontSize: 12, color: '#999' }}>
                   {entry.pct}% cache · {fmtTokens(entry.totalInput)} input · {fmtTokens(entry.outputTokens || 0)} output
+                  {entry.firstTokenMs !== undefined ? ` · TTFT ${(entry.firstTokenMs / 1000).toFixed(2)}s` : ''}
+                  {entry.durationMs !== undefined ? ` · turn ${(entry.durationMs / 1000).toFixed(2)}s` : ''}
                 </span>
                 <span className="claude-subagent-meta">
                   {turnMsgs.length} messages

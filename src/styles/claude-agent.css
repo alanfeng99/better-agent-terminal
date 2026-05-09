@@ -386,7 +386,8 @@
 
 .claude-message-auto-continue {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
   max-width: 100%;
   padding: 5px 10px;
@@ -406,9 +407,9 @@
 
 .claude-auto-continue-prompt {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1 1 200px;
+  white-space: pre-wrap;
+  word-break: break-word;
   color: var(--text-primary);
 }
 

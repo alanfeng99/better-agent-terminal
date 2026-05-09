@@ -443,6 +443,12 @@ class SettingsStore {
 
 export const settingsStore = new SettingsStore()
 
+import { createSelectorHook } from './use-store'
+export const useSettings = createSelectorHook<AppSettings>({
+  subscribe: (l) => settingsStore.subscribe(l),
+  getState: () => settingsStore.getSettings(),
+})
+
 // Parse a single token like "sessionId(#e06c75)" → { id: "sessionId", color: "#e06c75" }
 function parseToken(token: string): { id: string; color?: string } {
   const match = token.match(/^(\w+)\(([^)]+)\)$/)

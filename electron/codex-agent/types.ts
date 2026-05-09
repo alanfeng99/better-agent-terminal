@@ -22,6 +22,8 @@ export interface SessionMetadata {
   callCacheRead: number
   callCacheWrite: number
   lastQueryCalls: number
+  lastTurnFirstTokenMs?: number
+  lastTurnDurationMs?: number
 }
 
 export interface QueuedMessage {
@@ -50,6 +52,8 @@ export interface CodexSessionInstance {
   isRunning?: boolean
   startTime?: number
   lastEventAt?: number
+  turnStartTime?: number
+  turnFirstTokenSeen?: boolean
 }
 
 export type HistoryItem = ClaudeMessage | ClaudeToolCall
