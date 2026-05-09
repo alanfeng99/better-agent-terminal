@@ -207,10 +207,62 @@ registerHandler('claude.resetSession', async (params) => {
 // mount, so they need to return shapes that don't throw at the type level.
 // Real impls will land when @anthropic-ai/claude-agent-sdk + the keychain
 // integration move into the sidecar.
+// Lazy SDK loader. Tries to import @anthropic-ai/claude-agent-sdk once;
+// caches the resolved module or null if the import fails (e.g. release
+// build without bundled node_modules). Subsequent calls return the
+// cached value instantly. This lets feature handlers opportunistically
+// use real SDK calls when available and fall back to stubs otherwise.
+//
+// We expose loadAnthropicSdk for tests so they can stub a fake module
+// and verify augmentation paths without depending on the real SDK
+// (which spawns the claude CLI on first call).
+let _sdkLoadAttempted = false
+let _sdkModule = null
+let _sdkOverrideSet = false
+let _sdkOverride = null
+
+async function loadAnthropicSdk() {
+  if (_sdkOverrideSet) return _sdkOverride
+  if (_sdkLoadAttempted) return _sdkModule
+  _sdkLoadAttempted = true
+  try {
+    _sdkModule = await import('@anthropic-ai/claude-agent-sdk')
+    return _sdkModule
+  } catch {
+    _sdkModule = null
+    return null
+  }
+}
+
+// Test-only setter — pass an object to swap in a fake SDK, null to
+// force the "SDK unavailable" path, undefined to clear the override
+// and let normal lazy loading resume.
+function __setSdkOverrideForTests(value) {
+  if (value === undefined) {
+    _sdkOverrideSet = false
+    _sdkOverride = null
+  } else {
+    _sdkOverrideSet = true
+    _sdkOverride = value
+  }
+}
+export { loadAnthropicSdk, __setSdkOverrideForTests }
+
 const STUB_AUTH_ERR = 'claude account ops not yet wired through Tauri sidecar'
 
 registerHandler('claude.authLogin', async () => ({ success: false, error: STUB_AUTH_ERR }))
-registerHandler('claude.authLogout', async () => ({ success: true }))
+// authLogout shells out to `claude auth logout` and reports the result.
+// 10s timeout — the CLI exits ~immediately on success. Failure usually
+// means the CLI isn't installed or auth state is corrupt; surface the
+// error message so the renderer can show it.
+registerHandler('claude.authLogout', async () => {
+  return new Promise((resolve) => {
+    execFile('claude', ['auth', 'logout'], { timeout: AUTH_STATUS_TIMEOUT_MS }, (err) => {
+      if (err) resolve({ success: false, error: err.message })
+      else resolve({ success: true })
+    })
+  })
+})
 registerHandler('claude.accountImportCurrent', async () => null)
 registerHandler('claude.accountLoginNew', async () => ({ success: false, error: STUB_AUTH_ERR }))
 registerHandler('claude.accountSwitch', async (params) => {
@@ -240,15 +292,34 @@ registerHandler('claude.listSessions', async (params) => {
   if (!cwd) return []
   return listSessionsFallback(cwd)
 })
-// Returns the builtin claude model list. Mirrors the renderer-side
-// CLAUDE_BUILTIN_MODELS constant from src/utils/claude-model-presets.ts;
-// a drift-guard test re-reads the TS file and asserts these stay in
-// sync. The Electron version augments this with SDK-discovered models —
-// that lands when @anthropic-ai/claude-agent-sdk moves into the sidecar.
-// For now returning builtins keeps the renderer's model picker populated.
-registerHandler('claude.getSupportedModels', async () =>
-  CLAUDE_BUILTIN_MODELS.map(m => ({ ...m, source: 'builtin' }))
-)
+// Returns the builtin claude model list, optionally augmented with
+// SDK-discovered models when @anthropic-ai/claude-agent-sdk is
+// importable. Builtin entries are always present and tagged source:
+// 'builtin'; SDK entries are tagged source: 'sdk' and de-duped against
+// the builtin values (including [1m] variants). Mirrors the Electron
+// claudeAgentManager.getSupportedModels() behaviour, including the
+// "SDK fails → builtins-only" fallback.
+//
+// In release builds without bundled node_modules, the SDK import will
+// fail and we silently return builtins. Drift guard test still applies.
+registerHandler('claude.getSupportedModels', async () => {
+  const builtins = CLAUDE_BUILTIN_MODELS.map(m => ({ ...m, source: 'builtin' }))
+  try {
+    const sdk = await loadAnthropicSdk()
+    if (!sdk) return builtins
+    const dedupKeys = new Set(CLAUDE_BUILTIN_DEDUP_KEYS)
+    const instance = sdk.query({ prompt: '', options: { cwd: '/' } })
+    const sdkModels = await instance.supportedModels()
+    const sdkFiltered = (Array.isArray(sdkModels) ? sdkModels : [])
+      .filter(m => m && typeof m.value === 'string'
+        && !dedupKeys.has(m.value)
+        && !dedupKeys.has(`${m.value}[1m]`))
+      .map(m => ({ ...m, source: 'sdk' }))
+    return [...builtins, ...sdkFiltered]
+  } catch {
+    return builtins
+  }
+})
 registerHandler('claude.getSupportedCommands', async () => [])
 registerHandler('claude.getSupportedAgents', async () => [])
 registerHandler('claude.getAccountInfo', async () => null)
@@ -427,7 +498,22 @@ const CLAUDE_BUILTIN_MODELS = [
   { value: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6 (1M)', description: 'claude-sonnet-4-6 · 1M context' },
   { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'claude-haiku-4-5 · fast & lightweight' },
 ]
-export { CLAUDE_BUILTIN_MODELS }
+// Mirror of src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
+// keys. This is the dedup set for SDK-discovered models — note it
+// includes [1m] variants of base IDs (which the builtin model list
+// itself doesn't carry, but the SDK does emit), so SDK results that
+// duplicate a builtin via either form get filtered. Drift guard test
+// validates this stays in sync with the renderer-side TS source.
+const CLAUDE_BUILTIN_DEDUP_KEYS = [
+  'claude-opus-4-7',
+  'claude-opus-4-7[1m]',
+  'claude-opus-4-6',
+  'claude-opus-4-6[1m]',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6[1m]',
+  'claude-haiku-4-5-20251001',
+]
+export { CLAUDE_BUILTIN_MODELS, CLAUDE_BUILTIN_DEDUP_KEYS }
 
 // --- remote.* / tunnel.* stubs --------------------------------------------
 //

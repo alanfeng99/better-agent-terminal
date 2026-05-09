@@ -351,17 +351,110 @@ async function inProcess() {
     [...tsValues].sort(),
     `sidecar CLAUDE_BUILTIN_MODELS drifted from src/utils/claude-model-presets.ts (sidecar=${sidecarValues}, ts=${tsValues})`,
   )
-  // Round-trip the handler: source: 'builtin' must be tagged on every entry.
+
+  // Drift guard for the SDK-result dedup set: sidecar's
+  // CLAUDE_BUILTIN_DEDUP_KEYS must match the keys of the renderer-side
+  // CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS map. Mismatch means
+  // getSupportedModels would either leak duplicate entries from the SDK
+  // or hide a legitimate SDK-only model from the picker.
+  const { CLAUDE_BUILTIN_DEDUP_KEYS } = mod
+  const ctxMatch = presetsFile.match(
+    /CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS[^=]*=\s*new Map[^[]*\[([\s\S]*?)\n\]\)/m,
+  )
+  assert.ok(ctxMatch, 'could not locate CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS in source')
+  const ctxKeys = [...ctxMatch[1].matchAll(/\[\s*'([^']+)'/g)].map(m => m[1])
+  assert.deepEqual(
+    [...CLAUDE_BUILTIN_DEDUP_KEYS].sort(),
+    [...ctxKeys].sort(),
+    `sidecar CLAUDE_BUILTIN_DEDUP_KEYS drifted from CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS (sidecar=${CLAUDE_BUILTIN_DEDUP_KEYS}, ts=${ctxKeys})`,
+  )
+  // Round-trip the handler. Result may include SDK-discovered entries
+  // when @anthropic-ai/claude-agent-sdk is importable (dev), or only
+  // builtins when it isn't (release without bundled node_modules).
+  // Either way: every builtin must be present + tagged source:'builtin',
+  // and every additional entry must be tagged source:'sdk'.
+  const { __setSdkOverrideForTests } = mod
   const modelsReply = await dispatch({
     jsonrpc: '2.0', id: 60, method: 'claude.getSupportedModels',
     params: { sessionId: 'irrelevant' },
   })
   assert.ok(Array.isArray(modelsReply.result))
-  assert.equal(modelsReply.result.length, CLAUDE_BUILTIN_MODELS.length)
+  assert.ok(modelsReply.result.length >= CLAUDE_BUILTIN_MODELS.length,
+    `expected at least ${CLAUDE_BUILTIN_MODELS.length} models, got ${modelsReply.result.length}`)
+  const builtinValues = new Set(CLAUDE_BUILTIN_MODELS.map(m => m.value))
+  const seenBuiltins = new Set()
   for (const m of modelsReply.result) {
-    assert.equal(m.source, 'builtin', `expected source=builtin for ${m.value}`)
     assert.equal(typeof m.displayName, 'string')
     assert.equal(typeof m.description, 'string')
+    if (builtinValues.has(m.value)) {
+      assert.equal(m.source, 'builtin', `expected source=builtin for ${m.value}`)
+      seenBuiltins.add(m.value)
+    } else {
+      assert.equal(m.source, 'sdk', `expected source=sdk for non-builtin ${m.value}`)
+    }
+  }
+  assert.equal(seenBuiltins.size, CLAUDE_BUILTIN_MODELS.length,
+    'not all builtin models present in result')
+
+  // Explicit fallback contract: when SDK is unavailable (release build
+  // without node_modules), getSupportedModels MUST return exactly the
+  // builtins. Pin this with the override hook so dev passing can never
+  // mask a release regression.
+  __setSdkOverrideForTests(null)
+  try {
+    const fallbackReply = await dispatch({
+      jsonrpc: '2.0', id: 61, method: 'claude.getSupportedModels',
+    })
+    assert.equal(fallbackReply.result.length, CLAUDE_BUILTIN_MODELS.length,
+      'SDK-unavailable path must return exactly builtin count')
+    for (const m of fallbackReply.result) {
+      assert.equal(m.source, 'builtin')
+    }
+  } finally {
+    __setSdkOverrideForTests(undefined)
+  }
+
+  // Positive augmentation contract with a fake SDK: one model dupes a
+  // builtin base id (must be filtered), one is a [1m] variant of a
+  // base id (must be filtered — base+[1m] form is in the dedup set),
+  // one is genuinely new (must appear tagged 'sdk').
+  // Note: dedup operates on CLAUDE_BUILTIN_DEDUP_KEYS (base ids and
+  // [1m] variants), not on CLAUDE_BUILTIN_MODELS.value (which contains
+  // preset suffixes like :auto-compact-200k that the SDK never emits).
+  const fakeSdk = {
+    query() {
+      return {
+        async supportedModels() {
+          return [
+            { value: 'claude-opus-4-6', displayName: 'dup', description: 'dup' },
+            { value: 'claude-sonnet-4-6[1m]', displayName: '1m variant', description: '1m' },
+            { value: 'fake-sdk-only-model', displayName: 'fake', description: 'fake-only' },
+          ]
+        },
+      }
+    },
+  }
+  __setSdkOverrideForTests(fakeSdk)
+  try {
+    const augReply = await dispatch({
+      jsonrpc: '2.0', id: 62, method: 'claude.getSupportedModels',
+    })
+    assert.equal(augReply.result.length, CLAUDE_BUILTIN_MODELS.length + 1,
+      'expected exactly one new SDK-only entry after dedup')
+    const fake = augReply.result.find(m => m.value === 'fake-sdk-only-model')
+    assert.ok(fake, 'fake SDK-only model missing from result')
+    assert.equal(fake.source, 'sdk')
+    // Duped builtin still present and tagged 'builtin' (not overwritten).
+    const dupBase = augReply.result.find(m => m.value === 'claude-opus-4-6')
+    assert.equal(dupBase.source, 'builtin')
+    // [1m] variant of a base id should NOT appear at all (no builtin
+    // entry uses that value, and SDK entry was filtered).
+    assert.ok(
+      !augReply.result.some(m => m.value === 'claude-sonnet-4-6[1m]'),
+      '[1m] variant of base builtin id leaked through dedup',
+    )
+  } finally {
+    __setSdkOverrideForTests(undefined)
   }
 
   // Per-session state round-trip via dispatch. Verifies setters mutate
