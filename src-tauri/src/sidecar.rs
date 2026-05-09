@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -28,6 +28,11 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+
+// Cap stderr tail buffer at this many lines. Enough to capture a typical
+// Node startup error trace (import failure, syntax error, etc.) while
+// keeping memory bounded if something starts spamming stderr.
+const STDERR_TAIL_LIMIT: usize = 100;
 
 #[derive(Debug, Serialize)]
 pub struct BridgeError {
@@ -71,6 +76,24 @@ struct SidecarHandle {
     // We hold the Child here so dropping the bridge kills the sidecar.
     // The reader thread joins automatically when stdout closes (= child exits).
     child: Mutex<Child>,
+    // Last STDERR_TAIL_LIMIT lines emitted by the sidecar's stderr,
+    // captured by a reader thread. Surfaced in error messages when the
+    // child exits unexpectedly so users see Node's own error trace
+    // (e.g. "Cannot find module '@anthropic-ai/claude-agent-sdk'")
+    // instead of an opaque "child exited" / Win32 ERROR_NO_DATA.
+    // We hold an Arc here so the field outlives the spawn closures;
+    // the working clones live in the stderr / stdout reader threads.
+    #[allow(dead_code)]
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+}
+
+fn snapshot_stderr_tail(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
+    let guard = tail.lock().expect("stderr tail lock");
+    if guard.is_empty() {
+        return String::new();
+    }
+    let joined: Vec<String> = guard.iter().cloned().collect();
+    joined.join("\n")
 }
 
 impl SidecarHandle {
@@ -247,9 +270,37 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
     let stdout = child.stdout.take().ok_or_else(|| BridgeError {
         message: "sidecar: failed to capture stdout".into(),
     })?;
+    let stderr = child.stderr.take().ok_or_else(|| BridgeError {
+        message: "sidecar: failed to capture stderr".into(),
+    })?;
 
     let pending: Arc<PendingTable> = Arc::new(PendingTable::default());
     let pending_for_reader = Arc::clone(&pending);
+    let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LIMIT)));
+    let stderr_tail_for_stdout_reader = Arc::clone(&stderr_tail);
+    let stderr_tail_for_stderr_reader = Arc::clone(&stderr_tail);
+    let emit_for_stderr = emit.clone();
+
+    // Stderr reader: append to the tail buffer (capped) and fan out as
+    // a `sidecar:stderr` event so the renderer / DevTools can show
+    // diagnostic output in real time. The tail is also surfaced in the
+    // `child exited` error message below.
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            {
+                let mut guard = stderr_tail_for_stderr_reader.lock().expect("stderr tail lock");
+                if guard.len() >= STDERR_TAIL_LIMIT {
+                    guard.pop_front();
+                }
+                guard.push_back(line.clone());
+            }
+            if let Some(sink) = emit_for_stderr.as_ref() {
+                sink("sidecar:stderr", &Value::String(line));
+            }
+        }
+    });
 
     // Reader thread: parse line-delimited JSON, route by id, fan out events.
     let emit_for_reader = emit.clone();
@@ -291,9 +342,16 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
             }
         }
         // stdout closed => child exited. Wake all pending callers so they
-        // don't hang forever.
+        // don't hang forever, and include any captured stderr so the
+        // failure mode is actionable instead of a generic "child exited".
+        let tail = snapshot_stderr_tail(&stderr_tail_for_stdout_reader);
+        let err_message = if tail.is_empty() {
+            "sidecar: child exited".to_string()
+        } else {
+            format!("sidecar: child exited; stderr tail:\n{tail}")
+        };
         for tx in pending_for_reader.drain_all() {
-            let _ = tx.send(Err("sidecar: child exited".into()));
+            let _ = tx.send(Err(err_message.clone()));
         }
     });
 
@@ -302,6 +360,7 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
         next_id: AtomicU64::new(0),
         pending,
         child: Mutex::new(child),
+        stderr_tail,
     })
 }
 
@@ -728,6 +787,49 @@ mod tests {
         assert_eq!(result["echo"]["hello"], "world");
         // Tear down.
         state.reset();
+    }
+
+    #[test]
+    fn end_to_end_stderr_tail_surfaces_in_child_exited_error() {
+        // Spawn a script that writes a recognizable line to stderr and
+        // then exits without responding to stdin. The first call must
+        // come back with an error whose message includes the stderr
+        // line — that's the diagnostic path users will hit when the
+        // sidecar dies during startup (e.g. missing node_modules,
+        // ESM parse error, etc.).
+        let Some(node_path) = require_node() else {
+            eprintln!("skipped: node not on PATH");
+            return;
+        };
+        let script_dir = std::env::temp_dir().join(format!("bat-stderr-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&script_dir).unwrap();
+        let script_path = script_dir.join("crash.mjs");
+        std::fs::write(
+            &script_path,
+            "process.stderr.write('SYNTHETIC_STDERR_LINE_FOR_TEST\\n');\nprocess.exit(1);\n",
+        ).unwrap();
+        let cfg = SpawnConfig {
+            node_path,
+            script_path: script_path.clone(),
+            data_dir: None,
+            extra_env: Vec::new(),
+        };
+        let state = SidecarState::new();
+        let err = state
+            .call(&cfg, "ping", Value::Null, Duration::from_secs(5))
+            .expect_err("expected error from crashing sidecar");
+        assert!(
+            err.message.contains("SYNTHETIC_STDERR_LINE_FOR_TEST"),
+            "expected stderr tail in error message, got: {}",
+            err.message,
+        );
+        assert!(
+            err.message.contains("child exited"),
+            "expected 'child exited' marker, got: {}",
+            err.message,
+        );
+        state.reset();
+        let _ = std::fs::remove_dir_all(&script_dir);
     }
 
     #[test]
