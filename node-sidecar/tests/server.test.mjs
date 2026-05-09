@@ -31,11 +31,24 @@ async function inProcess() {
   assert.deepEqual(pingReply.result.echo, { hi: 'there' })
   assert.equal(typeof pingReply.result.pid, 'number')
 
-  // claude.authStatus and claude.accountList return MVP stubs.
+  // claude.authStatus shells out to `claude auth status`. Result is either
+  // null (CLI missing / not logged in / parse error) or the parsed JSON
+  // object — we accept both so the test passes regardless of the dev
+  // machine's auth state.
   const auth = await dispatch({ jsonrpc: '2.0', id: 2, method: 'claude.authStatus' })
-  assert.equal(auth.result, null)
-  const accounts = await dispatch({ jsonrpc: '2.0', id: 3, method: 'claude.accountList' })
-  assert.deepEqual(accounts.result, [])
+  assert.ok(auth.result === null || (typeof auth.result === 'object' && auth.result !== null),
+    `unexpected authStatus shape: ${JSON.stringify(auth.result)}`)
+  // claude.accountList reads the on-disk index. With BAT_SIDECAR_DATA_DIR
+  // pointing nowhere it should return [] cleanly.
+  const savedDataDir = process.env.BAT_SIDECAR_DATA_DIR
+  process.env.BAT_SIDECAR_DATA_DIR = join(tmpdir(), `nonexistent-${Date.now()}`)
+  try {
+    const accounts = await dispatch({ jsonrpc: '2.0', id: 3, method: 'claude.accountList' })
+    assert.deepEqual(accounts.result, [])
+  } finally {
+    if (savedDataDir === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
+    else process.env.BAT_SIDECAR_DATA_DIR = savedDataDir
+  }
 
   // Unknown methods produce a -32601 error and preserve the request id.
   const unknown = await dispatch({ jsonrpc: '2.0', id: 7, method: 'no.such.method' })
@@ -168,6 +181,57 @@ async function inProcess() {
   } finally {
     rmSync(fakeHome, { recursive: true, force: true })
   }
+
+  // readAccountIndex — point BAT_SIDECAR_DATA_DIR at a temp dir, drop a
+  // claude-accounts.json shaped like the Electron AccountManager writes,
+  // confirm only public fields come back. Also covers the missing-file
+  // and corrupt-file branches.
+  const { resolveDataDir, readAccountIndex } = mod
+  const savedDataDir2 = process.env.BAT_SIDECAR_DATA_DIR
+  // Branch 1: env not set — resolveDataDir falls back to a platform default.
+  delete process.env.BAT_SIDECAR_DATA_DIR
+  const fallback = resolveDataDir()
+  assert.ok(fallback.includes('better-agent-terminal') || fallback.includes('BetterAgentTerminal'),
+    `unexpected fallback data dir: ${fallback}`)
+
+  // Branch 2: env set, file missing → []
+  const fakeData = mkdtempSync(join(tmpdir(), 'sidecar-data-'))
+  try {
+    process.env.BAT_SIDECAR_DATA_DIR = fakeData
+    assert.equal(resolveDataDir(), fakeData)
+    const empty = await readAccountIndex()
+    assert.deepEqual(empty, [])
+
+    // Branch 3: file exists with valid index — returns sanitized accounts.
+    writeFileSync(join(fakeData, 'claude-accounts.json'), JSON.stringify({
+      accounts: [
+        { id: 'a1', email: 'a1@example.com', subscriptionType: 'pro', isDefault: true, createdAt: 1000, credentialSnapshot: 'should-be-stripped' },
+        { id: 'a2', email: 'a2@example.com', isDefault: false, createdAt: 2000 },
+        { id: '', email: 'no-id@example.com' }, // dropped — invalid
+        { id: 'a3' }, // dropped — no email
+      ],
+      activeAccountId: 'a1',
+      switchWarningShown: false,
+    }))
+    const accounts = await readAccountIndex()
+    assert.equal(accounts.length, 2)
+    assert.equal(accounts[0].id, 'a1')
+    assert.equal(accounts[0].email, 'a1@example.com')
+    assert.equal(accounts[0].isDefault, true)
+    assert.equal(accounts[0].subscriptionType, 'pro')
+    assert.equal('credentialSnapshot' in accounts[0], false, 'leaked private field')
+    assert.equal(accounts[1].id, 'a2')
+    assert.equal(accounts[1].isDefault, false)
+
+    // Branch 4: corrupt file → []
+    writeFileSync(join(fakeData, 'claude-accounts.json'), '{ this is not json')
+    const corrupt = await readAccountIndex()
+    assert.deepEqual(corrupt, [])
+  } finally {
+    rmSync(fakeData, { recursive: true, force: true })
+    if (savedDataDir2 === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
+    else process.env.BAT_SIDECAR_DATA_DIR = savedDataDir2
+  }
 }
 
 // End-to-end: spawn `node server.mjs`, send a few requests, assert replies.
@@ -225,7 +289,11 @@ async function endToEnd() {
   const byId = new Map(idReplies.map(r => [r.id, r]))
   assert.equal(byId.get(1).result.ok, true)
   assert.deepEqual(byId.get(1).result.echo, { x: 1 })
-  assert.equal(byId.get(2).result, null)
+  // authStatus result is null OR a parsed CLI JSON object (depends on
+  // whether the dev machine has `claude` on PATH and is logged in).
+  const authResult = byId.get(2).result
+  assert.ok(authResult === null || typeof authResult === 'object',
+    `unexpected authStatus shape: ${JSON.stringify(authResult)}`)
   assert.equal(byId.get(3).error.code, -32601)
   assert.equal(byId.get(4).result.ok, true)
   assert.equal(byId.get(4).result.sessionId, 'e2e-1')

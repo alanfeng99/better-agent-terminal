@@ -91,6 +91,11 @@ pub struct SidecarState {
 pub struct SpawnConfig {
     pub node_path: PathBuf,
     pub script_path: PathBuf,
+    /// Optional app data directory. When set, the sidecar receives it via
+    /// the `BAT_SIDECAR_DATA_DIR` env var so file-backed handlers
+    /// (claude.accountList, snippets-by-sidecar, etc.) read/write to the
+    /// same on-disk location as the Rust host.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl SidecarState {
@@ -220,6 +225,9 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(dir) = &cfg.data_dir {
+        command.env("BAT_SIDECAR_DATA_DIR", dir);
+    }
     let mut child = command.spawn().map_err(|e| BridgeError {
         message: format!(
             "sidecar: failed to spawn {}: {e}",
@@ -324,25 +332,29 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     let node_path = which_node().ok_or_else(|| BridgeError {
         message: "sidecar: could not find `node` on PATH".into(),
     })?;
+    // Tauri app data dir, if available. We pass it to the sidecar via env
+    // so file-backed handlers land in the same directory the Rust side
+    // uses (e.g. claude-accounts.json written by the Electron build).
+    let data_dir = app.path().app_data_dir().ok();
 
     if let Ok(env_script) = std::env::var("BAT_SIDECAR_SCRIPT") {
         let p = PathBuf::from(env_script);
         if p.is_file() {
-            return Ok(SpawnConfig { node_path, script_path: p });
+            return Ok(SpawnConfig { node_path, script_path: p, data_dir });
         }
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         let candidate = resource_dir.join("node-sidecar").join("src").join("server.mjs");
         if candidate.is_file() {
-            return Ok(SpawnConfig { node_path, script_path: candidate });
+            return Ok(SpawnConfig { node_path, script_path: candidate, data_dir });
         }
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let dev = cwd.join("node-sidecar").join("src").join("server.mjs");
     if dev.is_file() {
-        return Ok(SpawnConfig { node_path, script_path: dev });
+        return Ok(SpawnConfig { node_path, script_path: dev, data_dir });
     }
 
     Err(BridgeError {
@@ -468,7 +480,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
         let state = SidecarState::new();
         let result = state
             .call(&cfg, "ping", json!({"hello":"world"}), Duration::from_secs(5))
@@ -490,7 +502,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
         let state = SidecarState::new();
         let err = state
             .call(&cfg, "no.such.method", Value::Null, Duration::from_secs(5))
@@ -510,17 +522,26 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
         let state = SidecarState::new();
         let auth = state
-            .call(&cfg, "claude.authStatus", Value::Null, Duration::from_secs(5))
+            .call(&cfg, "claude.authStatus", Value::Null, Duration::from_secs(15))
             .expect("authStatus");
-        assert!(auth.is_null());
+        // authStatus is null OR an object (depends on whether `claude` is
+        // installed and logged-in on the dev machine). Both are valid.
+        assert!(auth.is_null() || auth.is_object(), "unexpected authStatus: {auth:?}");
         let accounts = state
             .call(&cfg, "claude.accountList", Value::Null, Duration::from_secs(5))
             .expect("accountList");
         assert!(accounts.is_array());
-        assert_eq!(accounts.as_array().unwrap().len(), 0);
+        // The dev machine may have a claude-accounts.json with real entries.
+        // Just verify the shape — array of objects with id+email — without
+        // asserting on length.
+        for entry in accounts.as_array().unwrap() {
+            assert!(entry.is_object(), "non-object account: {entry:?}");
+            assert!(entry.get("id").and_then(|v| v.as_str()).is_some());
+            assert!(entry.get("email").and_then(|v| v.as_str()).is_some());
+        }
         state.reset();
     }
 
@@ -535,7 +556,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = SpawnConfig { node_path, script_path: script };
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
         let state = SidecarState::new();
         // Collector sink — captures (event_name, payload) pairs from the
         // bridge's reader thread. Equivalent to Tauri's Emitter::emit, but
@@ -592,7 +613,7 @@ mod tests {
             eprintln!("skipped: missing {}", script.display());
             return;
         }
-        let cfg = Arc::new(SpawnConfig { node_path, script_path: script });
+        let cfg = Arc::new(SpawnConfig { node_path, script_path: script, data_dir: None });
         let state = Arc::new(SidecarState::new());
         // Warm the bridge so all threads share the same child.
         state.call(&cfg, "ping", Value::Null, Duration::from_secs(5)).unwrap();

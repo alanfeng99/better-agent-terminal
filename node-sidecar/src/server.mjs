@@ -19,10 +19,11 @@
 // Tests live in node-sidecar/tests/server.test.mjs.
 
 import { createInterface } from 'node:readline'
-import { readdir, stat } from 'node:fs/promises'
+import { readdir, stat, readFile } from 'node:fs/promises'
 import { createReadStream, accessSync, constants as fsConstants } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join, basename } from 'node:path'
+import { execFile } from 'node:child_process'
 
 // Handler registry. Each handler receives `params` (any JSON value) and
 // returns either a value or a Promise resolving to one. Throw to signal an
@@ -47,8 +48,17 @@ registerHandler('ping', async (params) => {
 // Electron-side claudeAccount API so the renderer can render an empty
 // "no accounts" state without throwing. Real implementations land
 // later when we move @anthropic-ai/claude-agent-sdk into the sidecar.
-registerHandler('claude.authStatus', async () => null)
-registerHandler('claude.accountList', async () => [])
+// authStatus shells out to `claude auth status`, parses the JSON output,
+// returns null on any failure (CLI missing, not logged in, parse error).
+// This matches the Electron-side handler verbatim.
+registerHandler('claude.authStatus', async () => fetchAuthStatus())
+// accountList reads the unencrypted account index file written by
+// the Electron-side AccountManager. The encrypted credentials live in
+// a separate file; this handler never touches them. Until the Tauri
+// side has a parallel writer, the list will be empty on a fresh
+// install — and that's fine: the renderer's auth UI handles empty
+// state correctly.
+registerHandler('claude.accountList', async () => readAccountIndex())
 
 // Session lifecycle stubs. Until the agent SDK actually moves into the
 // sidecar, these just acknowledge the call and synthesise a minimal
@@ -387,6 +397,86 @@ async function readSessionPreview(filePath) {
 
 // Exported for tests.
 export { findClaudeCliPath, listSessionsFallback }
+
+// --- claude.authStatus / claude.accountList helpers ----------------------
+//
+// authStatus shells out to `claude auth status`. The CLI prints JSON on
+// stdout when logged in, exits non-zero with a stderr message otherwise.
+// Treat both error paths as null so the renderer's auth UI can render
+// the "not logged in" state without throwing.
+//
+// accountList reads the on-disk account index written by the
+// Electron-side AccountManager. The path is taken from
+// BAT_SIDECAR_DATA_DIR (set by Tauri at spawn) and falls back to a
+// platform-default user-data dir. The index file contains only public
+// account metadata — never credentials, which live in a separate
+// safeStorage-encrypted file the sidecar deliberately does not touch.
+
+const AUTH_STATUS_TIMEOUT_MS = 10_000
+
+function fetchAuthStatus() {
+  return new Promise((resolve) => {
+    execFile('claude', ['auth', 'status'], { timeout: AUTH_STATUS_TIMEOUT_MS }, (err, stdout) => {
+      if (err) {
+        resolve(null)
+        return
+      }
+      try {
+        resolve(JSON.parse(stdout))
+      } catch {
+        resolve(null)
+      }
+    })
+  })
+}
+
+function resolveDataDir() {
+  // 1) Honour the env var Tauri sets at spawn.
+  const fromEnv = process.env.BAT_SIDECAR_DATA_DIR
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim()
+  // 2) Platform defaults — match what Electron's app.getPath('userData')
+  //    resolves to so a returning user keeps their accounts.
+  const home = homedir()
+  if (platform() === 'win32') {
+    const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming')
+    return join(appData, 'BetterAgentTerminal')
+  }
+  if (platform() === 'darwin') {
+    return join(home, 'Library', 'Application Support', 'better-agent-terminal')
+  }
+  return join(home, '.config', 'better-agent-terminal')
+}
+
+async function readAccountIndex() {
+  const dir = resolveDataDir()
+  const path = join(dir, 'claude-accounts.json')
+  let raw
+  try {
+    raw = await readFile(path, 'utf-8')
+  } catch {
+    return [] // file doesn't exist yet — fresh install
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return [] // corrupt — surface as empty rather than crash
+  }
+  const accounts = Array.isArray(parsed?.accounts) ? parsed.accounts : []
+  // Only return public fields. AccountManager may have written legacy
+  // fields like credentialSnapshot here; we strip everything except the
+  // documented shape.
+  return accounts.map(a => ({
+    id: String(a?.id ?? ''),
+    email: String(a?.email ?? ''),
+    subscriptionType: a?.subscriptionType,
+    isDefault: Boolean(a?.isDefault),
+    createdAt: typeof a?.createdAt === 'number' ? a.createdAt : 0,
+  })).filter(a => a.id && a.email)
+}
+
+// Exported for tests.
+export { fetchAuthStatus, resolveDataDir, readAccountIndex }
 
 // --- protocol ---------------------------------------------------------------
 
