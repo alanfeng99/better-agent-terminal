@@ -113,6 +113,23 @@ pub fn run() {
             claude_cmd::claude_send_message,
             claude_cmd::claude_stop_session,
             claude_cmd::claude_abort_session,
+            claude_cmd::claude_auth_login,
+            claude_cmd::claude_auth_logout,
+            claude_cmd::claude_account_import_current,
+            claude_cmd::claude_account_login_new,
+            claude_cmd::claude_account_switch,
+            claude_cmd::claude_account_remove,
+            claude_cmd::claude_account_mark_warning_shown,
+            claude_cmd::claude_get_cli_path,
+            claude_cmd::claude_list_sessions,
+            claude_cmd::claude_get_supported_models,
+            claude_cmd::claude_get_supported_commands,
+            claude_cmd::claude_get_supported_agents,
+            claude_cmd::claude_get_account_info,
+            claude_cmd::claude_get_session_state,
+            claude_cmd::claude_get_session_meta,
+            claude_cmd::claude_get_context_usage,
+            claude_cmd::claude_get_worktree_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

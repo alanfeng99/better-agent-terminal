@@ -97,6 +97,43 @@ registerHandler('claude.abortSession', async (params) => {
   return { ok: true }
 })
 
+// Auth + account stubs. The renderer's auth UI calls these on every panel
+// mount, so they need to return shapes that don't throw at the type level.
+// Real impls will land when @anthropic-ai/claude-agent-sdk + the keychain
+// integration move into the sidecar.
+const STUB_AUTH_ERR = 'claude account ops not yet wired through Tauri sidecar'
+
+registerHandler('claude.authLogin', async () => ({ success: false, error: STUB_AUTH_ERR }))
+registerHandler('claude.authLogout', async () => ({ success: true }))
+registerHandler('claude.accountImportCurrent', async () => null)
+registerHandler('claude.accountLoginNew', async () => ({ success: false, error: STUB_AUTH_ERR }))
+registerHandler('claude.accountSwitch', async (params) => {
+  if (typeof params?.accountId !== 'string') {
+    throw new Error('claude.accountSwitch: missing accountId')
+  }
+  return false
+})
+registerHandler('claude.accountRemove', async (params) => {
+  if (typeof params?.accountId !== 'string') {
+    throw new Error('claude.accountRemove: missing accountId')
+  }
+  return false
+})
+registerHandler('claude.accountMarkWarningShown', async () => true)
+
+// Read-only metadata stubs. All return inert defaults so the renderer
+// renders empty rather than crashing.
+registerHandler('claude.getCliPath', async () => '')
+registerHandler('claude.listSessions', async () => [])
+registerHandler('claude.getSupportedModels', async () => [])
+registerHandler('claude.getSupportedCommands', async () => [])
+registerHandler('claude.getSupportedAgents', async () => [])
+registerHandler('claude.getAccountInfo', async () => null)
+registerHandler('claude.getSessionState', async () => null)
+registerHandler('claude.getSessionMeta', async () => null)
+registerHandler('claude.getContextUsage', async () => null)
+registerHandler('claude.getWorktreeStatus', async () => null)
+
 // --- protocol ---------------------------------------------------------------
 
 function writeMessage(obj) {

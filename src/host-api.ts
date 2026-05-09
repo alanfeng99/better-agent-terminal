@@ -418,6 +418,45 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string) =>
             getInvoke()<unknown>('claude_abort_session', { sessionId })
         }
+        // Account / auth ops.
+        if (key === 'authLogin') return () => getInvoke()<unknown>('claude_auth_login')
+        if (key === 'authLogout') return () => getInvoke()<unknown>('claude_auth_logout')
+        if (key === 'accountImportCurrent') {
+          return () => getInvoke()<unknown>('claude_account_import_current')
+        }
+        if (key === 'accountLoginNew') {
+          return () => getInvoke()<unknown>('claude_account_login_new')
+        }
+        if (key === 'accountSwitch') {
+          return (accountId: string) =>
+            getInvoke()<unknown>('claude_account_switch', { accountId })
+        }
+        if (key === 'accountRemove') {
+          return (accountId: string) =>
+            getInvoke()<unknown>('claude_account_remove', { accountId })
+        }
+        if (key === 'accountMarkWarningShown') {
+          return () => getInvoke()<unknown>('claude_account_mark_warning_shown')
+        }
+        // Read-only metadata.
+        if (key === 'getCliPath') return () => getInvoke()<unknown>('claude_get_cli_path')
+        if (key === 'listSessions') {
+          return (cwd: string) => getInvoke()<unknown>('claude_list_sessions', { cwd })
+        }
+        const sessionReadCommands: Record<string, string> = {
+          getSupportedModels: 'claude_get_supported_models',
+          getSupportedCommands: 'claude_get_supported_commands',
+          getSupportedAgents: 'claude_get_supported_agents',
+          getAccountInfo: 'claude_get_account_info',
+          getSessionState: 'claude_get_session_state',
+          getSessionMeta: 'claude_get_session_meta',
+          getContextUsage: 'claude_get_context_usage',
+          getWorktreeStatus: 'claude_get_worktree_status',
+        }
+        if (sessionReadCommands[key]) {
+          const cmd = sessionReadCommands[key]
+          return (sessionId: string) => getInvoke()<unknown>(cmd, { sessionId })
+        }
         // Listener registrations — the sidecar emits id-less notifications
         // like {"method":"event:claude:message","params":{sessionId,...}}.
         // The Rust bridge strips the "event:" prefix and forwards via
@@ -430,6 +469,9 @@ function createTauriHost(): BatAppAPI {
           onResult: 'claude:result',
           onTurnEnd: 'claude:turn-end',
           onError: 'claude:error',
+          onStream: 'claude:stream',
+          onStatus: 'claude:status',
+          onModeChange: 'claude:modeChange',
         }
         if (eventListeners[key]) {
           const evName = eventListeners[key]
@@ -444,7 +486,11 @@ function createTauriHost(): BatAppAPI {
                 : key === 'onToolResult' ? 'result'
                 : key === 'onResult' ? 'result'
                 : key === 'onTurnEnd' ? 'payload'
-                : 'error'
+                : key === 'onError' ? 'error'
+                : key === 'onStream' ? 'data'
+                : key === 'onStatus' ? 'meta'
+                : key === 'onModeChange' ? 'mode'
+                : 'payload'
               cb(p.sessionId, (p as Record<string, unknown>)[payloadKey])
             })
         }

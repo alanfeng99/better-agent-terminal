@@ -161,6 +161,23 @@ async function run() {
       if (cmd === 'claude_send_message') return { ok: true } as unknown as T
       if (cmd === 'claude_stop_session') return { ok: true, existed: true } as unknown as T
       if (cmd === 'claude_abort_session') return { ok: true } as unknown as T
+      if (cmd === 'claude_auth_login') return { success: false, error: 'stub' } as unknown as T
+      if (cmd === 'claude_auth_logout') return { success: true } as unknown as T
+      if (cmd === 'claude_account_import_current') return null as unknown as T
+      if (cmd === 'claude_account_login_new') return { success: false, error: 'stub' } as unknown as T
+      if (cmd === 'claude_account_switch') return false as unknown as T
+      if (cmd === 'claude_account_remove') return false as unknown as T
+      if (cmd === 'claude_account_mark_warning_shown') return true as unknown as T
+      if (cmd === 'claude_get_cli_path') return '' as unknown as T
+      if (cmd === 'claude_list_sessions') return [] as unknown as T
+      if (cmd === 'claude_get_supported_models') return [] as unknown as T
+      if (cmd === 'claude_get_supported_commands') return [] as unknown as T
+      if (cmd === 'claude_get_supported_agents') return [] as unknown as T
+      if (cmd === 'claude_get_account_info') return null as unknown as T
+      if (cmd === 'claude_get_session_state') return null as unknown as T
+      if (cmd === 'claude_get_session_meta') return null as unknown as T
+      if (cmd === 'claude_get_context_usage') return null as unknown as T
+      if (cmd === 'claude_get_worktree_status') return null as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -359,6 +376,29 @@ async function run() {
     const unsubMsg = mod.host.claude.onMessage(() => {})
     assert.equal(typeof unsubMsg, 'function')
     unsubMsg()
+    // Three more event listeners added in slice 3.
+    mod.host.claude.onStream(() => {})()
+    mod.host.claude.onStatus(() => {})()
+    mod.host.claude.onModeChange(() => {})()
+    // Account / auth ops.
+    assert.deepEqual(await mod.host.claude.authLogin(), { success: false, error: 'stub' })
+    assert.deepEqual(await mod.host.claude.authLogout(), { success: true })
+    assert.equal(await mod.host.claude.accountImportCurrent(), null)
+    assert.deepEqual(await mod.host.claude.accountLoginNew(), { success: false, error: 'stub' })
+    assert.equal(await mod.host.claude.accountSwitch('a-1'), false)
+    assert.equal(await mod.host.claude.accountRemove('a-1'), false)
+    assert.equal(await mod.host.claude.accountMarkWarningShown(), true)
+    // Read-only metadata reaches the sidecar through stub returns.
+    assert.equal(await mod.host.claude.getCliPath(), '')
+    assert.deepEqual(await mod.host.claude.listSessions('/cwd'), [])
+    assert.deepEqual(await mod.host.claude.getSupportedModels('s-1'), [])
+    assert.deepEqual(await mod.host.claude.getSupportedCommands('s-1'), [])
+    assert.deepEqual(await mod.host.claude.getSupportedAgents('s-1'), [])
+    assert.equal(await mod.host.claude.getAccountInfo('s-1'), null)
+    assert.equal(await mod.host.claude.getSessionState('s-1'), null)
+    assert.equal(await mod.host.claude.getSessionMeta('s-1'), null)
+    assert.equal(await mod.host.claude.getContextUsage('s-1'), null)
+    assert.equal(await mod.host.claude.getWorktreeStatus('s-1'), null)
 
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
@@ -453,6 +493,23 @@ async function run() {
       { cmd: 'claude_send_message', args: { sessionId: 's-1', prompt: 'with images', images: ['/img.png'], autoCompactWindow: 4000 } },
       { cmd: 'claude_stop_session', args: { sessionId: 's-1' } },
       { cmd: 'claude_abort_session', args: { sessionId: 's-1' } },
+      { cmd: 'claude_auth_login', args: undefined },
+      { cmd: 'claude_auth_logout', args: undefined },
+      { cmd: 'claude_account_import_current', args: undefined },
+      { cmd: 'claude_account_login_new', args: undefined },
+      { cmd: 'claude_account_switch', args: { accountId: 'a-1' } },
+      { cmd: 'claude_account_remove', args: { accountId: 'a-1' } },
+      { cmd: 'claude_account_mark_warning_shown', args: undefined },
+      { cmd: 'claude_get_cli_path', args: undefined },
+      { cmd: 'claude_list_sessions', args: { cwd: '/cwd' } },
+      { cmd: 'claude_get_supported_models', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_supported_commands', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_supported_agents', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_account_info', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_session_state', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_session_meta', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_context_usage', args: { sessionId: 's-1' } },
+      { cmd: 'claude_get_worktree_status', args: { sessionId: 's-1' } },
     ])
   }
 
