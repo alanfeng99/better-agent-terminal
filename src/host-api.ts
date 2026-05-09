@@ -123,23 +123,46 @@ function createTauriHost(): BatAppAPI {
       writeImage: () => notImplemented('clipboard.writeImage'),
       onCopyShortcut: () => notImplemented('clipboard.onCopyShortcut'),
     },
+    image: {
+      readAsDataUrl: (filePath: string) =>
+        getInvoke()<string>('image_read_as_data_url', { path: filePath }),
+      // saveDataUrl needs a save-file picker + raw bytes write; pending.
+      saveDataUrl: () => notImplemented('image.saveDataUrl'),
+    },
     fs: {
       readFile: (filePath: string) =>
         getInvoke()<{ content?: string; error?: string; size?: number }>(
           'fs_read_file',
           { path: filePath },
         ),
-      // Other fs surface (readdir, search, mkdir, watch, …) is not yet
-      // ported — they need stricter design (event streaming, workspace
-      // scoping) before crossing the bridge.
-      readdir: () => notImplemented('fs.readdir'),
+      readdir: (dirPath: string) =>
+        getInvoke()<{ name: string; path: string; isDirectory: boolean }[]>(
+          'fs_readdir',
+          { dirPath },
+        ),
+      home: () => getInvoke()<string>('fs_home'),
+      listDirs: (dirPath: string, includeHidden: boolean) =>
+        getInvoke()<
+          | { current: string; parent: string | null; entries: { name: string; path: string }[] }
+          | { error: string }
+        >('fs_list_dirs', { dirPath, includeHidden }),
+      mkdir: (parentPath: string, name: string) =>
+        getInvoke()<{ path: string } | { error: string }>('fs_mkdir', { parentPath, name }),
+      deletePath: (targetPath: string) =>
+        getInvoke()<{ path: string } | { error: string }>('fs_delete_path', { targetPath }),
+      quickLocations: () =>
+        getInvoke()<{ name: string; path: string; kind: 'home' | 'drive' | 'volume' | 'root' }[]>(
+          'fs_quick_locations',
+        ),
+      search: (dirPath: string, query: string) =>
+        getInvoke()<{ name: string; path: string; isDirectory: boolean }[]>(
+          'fs_search',
+          { dirPath, query },
+        ),
+      // Watcher + path-link resolution are not ported yet — they need an
+      // event-streaming bridge and language-aware path heuristics
+      // respectively.
       resolvePathLinks: () => notImplemented('fs.resolvePathLinks'),
-      search: () => notImplemented('fs.search'),
-      home: () => notImplemented('fs.home'),
-      quickLocations: () => notImplemented('fs.quickLocations'),
-      listDirs: () => notImplemented('fs.listDirs'),
-      mkdir: () => notImplemented('fs.mkdir'),
-      deletePath: () => notImplemented('fs.deletePath'),
       watch: () => notImplemented('fs.watch'),
       unwatch: () => notImplemented('fs.unwatch'),
       onChanged: () => notImplemented('fs.onChanged'),
@@ -204,7 +227,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 
 // Namespaces whose methods are routed through Tauri invoke. Listed here so
 // the permissive shim can prefer the real impl when present.
-const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs', 'clipboard'])
+const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs', 'clipboard', 'image'])
 
 export function installTauriShim(): void {
   if (getHostKind() !== 'tauri') return

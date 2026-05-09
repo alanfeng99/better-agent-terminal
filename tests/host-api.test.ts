@@ -73,6 +73,14 @@ async function run() {
       if (cmd === 'dialog_select_files') return ['C:/picked/a.txt', 'C:/picked/b.txt'] as unknown as T
       if (cmd === 'dialog_select_images') return ['C:/picked/a.png'] as unknown as T
       if (cmd === 'clipboard_write_text') return true as unknown as T
+      if (cmd === 'fs_home') return '/home/me' as unknown as T
+      if (cmd === 'fs_readdir') return [{ name: 'src', path: '/x/src', isDirectory: true }] as unknown as T
+      if (cmd === 'fs_list_dirs') return { current: '/x', parent: null, entries: [] } as unknown as T
+      if (cmd === 'fs_mkdir') return { path: '/x/foo' } as unknown as T
+      if (cmd === 'fs_delete_path') return { path: '/x/foo' } as unknown as T
+      if (cmd === 'fs_quick_locations') return [{ name: 'Home', path: '/home/me', kind: 'home' }] as unknown as T
+      if (cmd === 'fs_search') return [{ name: 'hit.txt', path: '/x/hit.txt', isDirectory: false }] as unknown as T
+      if (cmd === 'image_read_as_data_url') return 'data:image/png;base64,xx' as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -108,6 +116,24 @@ async function run() {
     const wrote = await mod.host.clipboard.writeText('hello clipboard')
     assert.equal(wrote, true)
 
+    const home = await mod.host.fs.home()
+    assert.equal(home, '/home/me')
+    const dirs = await mod.host.fs.readdir('/x')
+    assert.deepEqual(dirs, [{ name: 'src', path: '/x/src', isDirectory: true }])
+    const ls = await mod.host.fs.listDirs('/x', true)
+    assert.deepEqual(ls, { current: '/x', parent: null, entries: [] })
+    const made = await mod.host.fs.mkdir('/x', 'foo')
+    assert.deepEqual(made, { path: '/x/foo' })
+    const removed = await mod.host.fs.deletePath('/x/foo')
+    assert.deepEqual(removed, { path: '/x/foo' })
+    const ql = await mod.host.fs.quickLocations()
+    assert.deepEqual(ql, [{ name: 'Home', path: '/home/me', kind: 'home' }])
+    const found = await mod.host.fs.search('/x', 'hit')
+    assert.deepEqual(found, [{ name: 'hit.txt', path: '/x/hit.txt', isDirectory: false }])
+
+    const dataUrl = await mod.host.image.readAsDataUrl('/x/img.png')
+    assert.equal(dataUrl, 'data:image/png;base64,xx')
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -121,6 +147,14 @@ async function run() {
       { cmd: 'dialog_select_files', args: undefined },
       { cmd: 'dialog_select_images', args: undefined },
       { cmd: 'clipboard_write_text', args: { text: 'hello clipboard' } },
+      { cmd: 'fs_home', args: undefined },
+      { cmd: 'fs_readdir', args: { dirPath: '/x' } },
+      { cmd: 'fs_list_dirs', args: { dirPath: '/x', includeHidden: true } },
+      { cmd: 'fs_mkdir', args: { parentPath: '/x', name: 'foo' } },
+      { cmd: 'fs_delete_path', args: { targetPath: '/x/foo' } },
+      { cmd: 'fs_quick_locations', args: undefined },
+      { cmd: 'fs_search', args: { dirPath: '/x', query: 'hit' } },
+      { cmd: 'image_read_as_data_url', args: { path: '/x/img.png' } },
     ])
   }
 

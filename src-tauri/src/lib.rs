@@ -9,7 +9,8 @@ mod commands;
 mod path_guard;
 
 use commands::{
-    clipboard as clipboard_cmd, dialog as dialog_cmd, fs as fs_cmd, settings, shell as shell_cmd,
+    clipboard as clipboard_cmd, dialog as dialog_cmd, fs as fs_cmd, image as image_cmd, settings,
+    shell as shell_cmd,
 };
 
 pub fn run() {
@@ -28,7 +29,15 @@ pub fn run() {
             dialog_cmd::dialog_select_files,
             dialog_cmd::dialog_select_images,
             fs_cmd::fs_read_file,
+            fs_cmd::fs_home,
+            fs_cmd::fs_readdir,
+            fs_cmd::fs_list_dirs,
+            fs_cmd::fs_mkdir,
+            fs_cmd::fs_delete_path,
+            fs_cmd::fs_quick_locations,
+            fs_cmd::fs_search,
             clipboard_cmd::clipboard_write_text,
+            image_cmd::image_read_as_data_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

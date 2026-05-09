@@ -9,5 +9,6 @@
 pub mod clipboard;
 pub mod dialog;
 pub mod fs;
+pub mod image;
 pub mod settings;
 pub mod shell;
