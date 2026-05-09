@@ -202,6 +202,9 @@ interface SessionMetadata {
   // Ephemeral cache write breakdown (aggregate, not per-model)
   cacheWrite5mTokens?: number
   cacheWrite1hTokens?: number
+  // Per-turn timing
+  lastTurnFirstTokenMs?: number  // TTFT of most recent turn (ms)
+  lastTurnDurationMs?: number    // Total duration of most recent turn (ms)
 }
 
 interface PendingRequest {
@@ -252,6 +255,8 @@ interface SessionInstance {
   // up to `max` times. `used` resets when the user manually sends a message.
   autoContinue?: { enabled: boolean; max: number; used: number; prompt: string }
   lastResultSubtype?: string   // Subtype of the most recent result message
+  turnStartTime?: number       // Wall-clock when current turn started (for TTFT)
+  turnFirstTokenSeen?: boolean // True after first token of current turn observed
 }
 
 // Persists SDK session IDs across stop/restart so we can resume conversations
@@ -918,6 +923,10 @@ export class ClaudeAgentManager {
       session.metadata.cacheWrite5mTokens = undefined
       session.metadata.cacheWrite1hTokens = undefined
 
+      // Per-turn timing — reset before query starts
+      session.turnStartTime = Date.now()
+      session.turnFirstTokenSeen = false
+
       const generator = query({
         prompt: promptArg as Parameters<typeof query>[0]['prompt'],
         options: queryOptions as Parameters<typeof query>[0]['options'],
@@ -1231,6 +1240,12 @@ export class ClaudeAgentManager {
             parentToolUseId: message.parent_tool_use_id,
           })
         }
+        // Capture TTFT on the first text/thinking token of the turn (ignore sub-agent tokens)
+        if (!message.parent_tool_use_id && !session.turnFirstTokenSeen && (event.delta?.text || event.delta?.thinking) && session.turnStartTime) {
+          session.turnFirstTokenSeen = true
+          session.metadata.lastTurnFirstTokenMs = Date.now() - session.turnStartTime
+          this.send('claude:status', sessionId, { ...session.metadata })
+        }
         if (message.parent_tool_use_id && (event.delta?.text || event.delta?.thinking)) {
           const parentTask = Array.from(session.activeTasks.values())
             .find(t => t.toolUseId === message.parent_tool_use_id)
@@ -1451,6 +1466,7 @@ export class ClaudeAgentManager {
 
       session.metadata.totalCost = resultMsg.total_cost_usd ?? session.metadata.totalCost
       session.metadata.durationMs += resultMsg.duration_ms || 0
+      session.metadata.lastTurnDurationMs = resultMsg.duration_ms || (session.turnStartTime ? Date.now() - session.turnStartTime : undefined)
       session.metadata.lastQueryCalls = resultMsg.num_turns || 0
       session.metadata.numTurns += resultMsg.num_turns || 0
 

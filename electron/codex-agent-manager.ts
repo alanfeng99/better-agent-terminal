@@ -540,6 +540,8 @@ export class CodexAgentManager {
     }
 
     const turnStart = Date.now()
+    session.turnStartTime = turnStart
+    session.turnFirstTokenSeen = false
     const itemState: CodexStreamItemState = {
       currentAssistantText: '',
       currentThinkingText: '',
@@ -653,6 +655,12 @@ export class CodexAgentManager {
 
           case 'item.updated': {
             const item = event.item as Record<string, unknown>
+            const itemType = item?.type as string | undefined
+            if (!session.turnFirstTokenSeen && session.turnStartTime && (itemType === 'agent_message' || itemType === 'reasoning')) {
+              session.turnFirstTokenSeen = true
+              session.metadata.lastTurnFirstTokenMs = Date.now() - session.turnStartTime
+              this.send('claude:status', sessionId, { ...session.metadata })
+            }
             handleItemUpdated(sessionId, item, itemState, itemSink)
             break
           }
@@ -684,6 +692,7 @@ export class CodexAgentManager {
               await this.flushImageGenFromSessionLog(sessionId, turnStart)
             }
             session.metadata.durationMs = Date.now() - (session.startTime || turnStart)
+            session.metadata.lastTurnDurationMs = Date.now() - turnStart
             this.send('claude:status', sessionId, { ...session.metadata })
 
             this.send('claude:result', sessionId, {

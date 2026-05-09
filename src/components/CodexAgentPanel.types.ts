@@ -21,6 +21,8 @@ export interface SessionMeta {
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }>
   cacheWrite5mTokens?: number
   cacheWrite1hTokens?: number
+  lastTurnFirstTokenMs?: number
+  lastTurnDurationMs?: number
 }
 
 export interface ModelInfo {

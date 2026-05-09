@@ -79,3 +79,9 @@ class NotificationStore {
 }
 
 export const notificationStore = new NotificationStore()
+
+import { createSelectorHook } from './use-store'
+export const useNotifications = createSelectorHook<NotificationEntry[]>({
+  subscribe: (l) => notificationStore.subscribe(l),
+  getState: () => notificationStore.getEntries(),
+})
