@@ -125,8 +125,53 @@ registerHandler('claude.startSession', async (params) => {
     if (typeof s.options.permissionMode === 'string') s.permissionMode = s.options.permissionMode
     if (typeof s.options.effort === 'string') s.effort = s.options.effort
     if (typeof s.options.autoCompactWindow === 'number') s.autoCompactWindow = s.options.autoCompactWindow
+    // startSession can also pre-populate sdkSessionId for the resume
+    // path. The renderer's reload-from-history flow goes through
+    // claude.resumeSession (below), but the underlying mechanism is
+    // identical: stash the SDK id so the next sendMessage uses
+    // `resume: <id>` and the SDK reconstructs the conversation.
+    if (typeof s.options.sdkSessionId === 'string') s.sdkSessionId = s.options.sdkSessionId
   }
   return { ok: true, sessionId }
+})
+
+// claude.resumeSession: rewire a session to an existing SDK session id.
+// Mirror of electron/claude-agent-manager.ts:2461. Aborts any in-flight
+// query, swaps the session record, and pre-populates sdkSessionId so
+// the next sendMessage passes `resume: <id>` — the SDK then rehydrates
+// the conversation from its own session store. We default the
+// permissionMode to 'bypassPermissions' to match Electron's resume
+// contract (resumed sessions don't re-prompt for prior approvals).
+registerHandler('claude.resumeSession', async (params) => {
+  const sessionId = params?.sessionId
+  const sdkSessionIdToResume = params?.sdkSessionId
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('claude.resumeSession: missing sessionId')
+  }
+  if (typeof sdkSessionIdToResume !== 'string' || !sdkSessionIdToResume) {
+    throw new Error('claude.resumeSession: missing sdkSessionId')
+  }
+  const existing = sessions.get(sessionId)
+  if (existing?.abortController) {
+    try { existing.abortController.abort() } catch { /* already aborted */ }
+  }
+  // Drop the prior record (if any) and rebuild from the resume options.
+  sessions.delete(sessionId)
+  const s = ensureSession(sessionId)
+  s.active = true
+  s.options = params?.options ?? null
+  s.sdkSessionId = sdkSessionIdToResume
+  s.permissionMode = 'bypassPermissions'
+  if (s.options && typeof s.options === 'object') {
+    if (typeof s.options.cwd === 'string') {
+      // Keep cwd in options so sendMessage's queryOptions picks it up.
+    }
+    if (typeof s.options.model === 'string') s.model = s.options.model
+    if (typeof s.options.permissionMode === 'string') s.permissionMode = s.options.permissionMode
+    if (typeof s.options.effort === 'string') s.effort = s.options.effort
+    if (typeof s.options.autoCompactWindow === 'number') s.autoCompactWindow = s.options.autoCompactWindow
+  }
+  return { ok: true, sessionId, sdkSessionId: sdkSessionIdToResume }
 })
 
 // Real SDK-driven sendMessage. Each call kicks off a fresh single-shot

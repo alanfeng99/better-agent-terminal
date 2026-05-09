@@ -419,6 +419,31 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string) =>
             getInvoke()<unknown>('claude_abort_session', { sessionId })
         }
+        // resumeSession: rehydrate an existing SDK session id so the next
+        // sendMessage continues that conversation instead of starting
+        // fresh. Renderer panels call this on remount when they have a
+        // savedSdkSessionId from a prior run.
+        if (key === 'resumeSession') {
+          return (
+            sessionId: string,
+            sdkSessionId: string,
+            cwd: string,
+            model?: string,
+            apiVersion?: string,
+            useWorktree?: boolean,
+            worktreePath?: string,
+            worktreeBranch?: string,
+            agentPreset?: string,
+          ) => getInvoke()<unknown>('claude_resume_session', {
+            sessionId,
+            sdkSessionId,
+            options: {
+              cwd, model, apiVersion,
+              ...(useWorktree ? { useWorktree, worktreePath, worktreeBranch } : {}),
+              ...(agentPreset ? { agentPreset } : {}),
+            },
+          })
+        }
         // Account / auth ops.
         if (key === 'authLogin') return () => getInvoke()<unknown>('claude_auth_login')
         if (key === 'authLogout') return () => getInvoke()<unknown>('claude_auth_logout')

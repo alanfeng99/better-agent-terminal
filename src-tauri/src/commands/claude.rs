@@ -364,6 +364,21 @@ pub fn claude_reset_session(
 }
 
 #[tauri::command]
+pub fn claude_resume_session(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    sdk_session_id: String,
+    options: Option<Value>,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.resumeSession", json!({
+        "sessionId": session_id,
+        "sdkSessionId": sdk_session_id,
+        "options": options,
+    }))
+}
+
+#[tauri::command]
 pub fn claude_resolve_permission(
     app: AppHandle,
     state: State<'_, SidecarState>,

@@ -572,6 +572,61 @@ async function inProcess() {
     restoreSendEvent()
   }
 
+  // claude.resumeSession: rehydrates an existing SDK session id so the
+  // next sendMessage carries `resume: <id>`. Aborts any in-flight query
+  // first; defaults permissionMode to bypassPermissions; respects
+  // overrides supplied via options.
+  const resumeCaptured = []
+  const restoreResumeSend = mod.__setSendEventForTests(() => {})
+  const fakeSdkResume = {
+    query({ options }) {
+      resumeCaptured.push({ options })
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: options.resume || 'fresh-sdk' },
+        { type: 'result', subtype: 'success', session_id: options.resume || 'fresh-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 },
+      ]
+      return (async function*() { for (const m of messages) yield m })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkResume)
+  try {
+    // Resume a session that the renderer just restored from history.
+    const resumeReply = await dispatch({ jsonrpc: '2.0', id: 295, method: 'claude.resumeSession',
+      params: { sessionId: 'resume-1', sdkSessionId: 'sdk-historic-xyz',
+        options: { cwd: '/r', model: 'claude-sonnet-4-6' } } })
+    assert.equal(resumeReply.result.ok, true)
+    assert.equal(resumeReply.result.sdkSessionId, 'sdk-historic-xyz')
+    // Default permissionMode must be bypassPermissions for resumed sessions.
+    const resumed = mod.sessions.get('resume-1')
+    assert.equal(resumed.permissionMode, 'bypassPermissions')
+    assert.equal(resumed.sdkSessionId, 'sdk-historic-xyz')
+    assert.equal(resumed.model, 'claude-sonnet-4-6')
+    // Next sendMessage must include the resumed sdkSessionId on
+    // queryOptions.resume — that's what makes the SDK reconstruct the
+    // historical conversation context.
+    await dispatch({ jsonrpc: '2.0', id: 296, method: 'claude.sendMessage',
+      params: { sessionId: 'resume-1', prompt: 'continue' } })
+    assert.equal(resumeCaptured.length, 1)
+    assert.equal(resumeCaptured[0].options.resume, 'sdk-historic-xyz')
+
+    // Resume must reject missing sdkSessionId or sessionId.
+    const noSdkReply = await dispatch({ jsonrpc: '2.0', id: 297, method: 'claude.resumeSession',
+      params: { sessionId: 'r2' } })
+    assert.match(noSdkReply.error?.message || '', /missing sdkSessionId/)
+    const noSidReply = await dispatch({ jsonrpc: '2.0', id: 298, method: 'claude.resumeSession',
+      params: { sdkSessionId: 'x' } })
+    assert.match(noSidReply.error?.message || '', /missing sessionId/)
+
+    // Override default permissionMode via options.
+    await dispatch({ jsonrpc: '2.0', id: 299, method: 'claude.resumeSession',
+      params: { sessionId: 'resume-2', sdkSessionId: 'sdk-2',
+        options: { cwd: '/r', permissionMode: 'plan' } } })
+    assert.equal(mod.sessions.get('resume-2').permissionMode, 'plan')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreResumeSend()
+  }
+
   // Parity test: queryOptions must include the same keys Electron sets.
   // Without these, the sidecar session loses the claude_code system
   // prompt + tool preset → no Bash/Read/Edit etc. Capture the raw
