@@ -175,6 +175,12 @@ async function run() {
       if (cmd === 'claude_list_sessions') return [] as unknown as T
       if (cmd === 'claude_scan_skills') return [] as unknown as T
       if (cmd === 'claude_cleanup_worktree') return true as unknown as T
+      if (cmd === 'claude_set_auto_continue') return true as unknown as T
+      if (cmd === 'claude_get_auto_continue') return { enabled: false, max: 0, used: 0, prompt: '' } as unknown as T
+      if (cmd === 'claude_set_permission_mode') return true as unknown as T
+      if (cmd === 'claude_set_model') return true as unknown as T
+      if (cmd === 'claude_set_effort') return true as unknown as T
+      if (cmd === 'claude_reset_session') return true as unknown as T
       if (cmd === 'claude_get_supported_models') return [] as unknown as T
       if (cmd === 'claude_get_supported_commands') return [] as unknown as T
       if (cmd === 'claude_get_supported_agents') return [] as unknown as T
@@ -427,6 +433,12 @@ async function run() {
     assert.deepEqual(await mod.host.claude.listSessions('/cwd'), [])
     assert.deepEqual(await mod.host.claude.scanSkills('/cwd'), [])
     assert.equal(await mod.host.claude.cleanupWorktree('s-1', true), true)
+    assert.equal(await mod.host.claude.setAutoContinue('s-1', { enabled: true }), true)
+    assert.deepEqual(await mod.host.claude.getAutoContinue('s-1'), { enabled: false, max: 0, used: 0, prompt: '' })
+    assert.equal(await mod.host.claude.setPermissionMode('s-1', 'acceptEdits'), true)
+    assert.equal(await mod.host.claude.setModel('s-1', 'claude-opus-4-7'), true)
+    assert.equal(await mod.host.claude.setEffort('s-1', 'high'), true)
+    assert.equal(await mod.host.claude.resetSession('s-1'), true)
     assert.deepEqual(await mod.host.claude.getSupportedModels('s-1'), [])
     assert.deepEqual(await mod.host.claude.getSupportedCommands('s-1'), [])
     assert.deepEqual(await mod.host.claude.getSupportedAgents('s-1'), [])
@@ -591,6 +603,12 @@ async function run() {
       { cmd: 'claude_list_sessions', args: { cwd: '/cwd' } },
       { cmd: 'claude_scan_skills', args: { cwd: '/cwd' } },
       { cmd: 'claude_cleanup_worktree', args: { sessionId: 's-1', deleteBranch: true } },
+      { cmd: 'claude_set_auto_continue', args: { sessionId: 's-1', opts: { enabled: true } } },
+      { cmd: 'claude_get_auto_continue', args: { sessionId: 's-1' } },
+      { cmd: 'claude_set_permission_mode', args: { sessionId: 's-1', mode: 'acceptEdits' } },
+      { cmd: 'claude_set_model', args: { sessionId: 's-1', model: 'claude-opus-4-7', autoCompactWindow: undefined } },
+      { cmd: 'claude_set_effort', args: { sessionId: 's-1', effort: 'high' } },
+      { cmd: 'claude_reset_session', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_supported_models', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_supported_commands', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_supported_agents', args: { sessionId: 's-1' } },
@@ -640,12 +658,13 @@ async function run() {
     // pty.restart) still throw the same way.
     assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),
       /pty\.restart is not yet implemented under Tauri/)
-    // claude.* unported methods (e.g. setAutoContinue) used to throw,
-    // but the surface is too large for that to be useful — they now
-    // return Promise.resolve(null) with a one-time console.warn so panel
+    // claude.* unported methods used to throw, but the surface is too
+    // large for that to be useful — unrecognized keys now return
+    // Promise.resolve(null) with a one-time console.warn so panel
     // mounts don't crash. Same applies to openai.* / worktree.* keys
-    // that aren't in the explicit map.
-    const setRes = await (mod.host as { claude: { setAutoContinue: (...a: unknown[]) => Promise<unknown> } }).claude.setAutoContinue('s-1', { enabled: true })
+    // that aren't in the explicit map. claude.setAutoContinue is now
+    // explicitly routed (see scenario 3), so use a synthetic key here.
+    const setRes = await (mod.host as { claude: { unknownMethodXyz: () => Promise<unknown> } }).claude.unknownMethodXyz()
     assert.equal(setRes, null)
     const oxRes = await (mod.host as { openai: { unknownMethod: () => Promise<unknown> } }).openai.unknownMethod()
     assert.equal(oxRes, null)

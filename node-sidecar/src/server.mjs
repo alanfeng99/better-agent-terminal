@@ -63,16 +63,46 @@ registerHandler('claude.accountList', async () => readAccountIndex())
 // Session lifecycle stubs. Until the agent SDK actually moves into the
 // sidecar, these just acknowledge the call and synthesise a minimal
 // "turn-end" event so the renderer's lifecycle wiring can be exercised
-// end-to-end without a real model. They keep an in-memory map of
-// known sessionIds purely so stop/abort can return useful flags.
+// end-to-end without a real model. The session map also holds the
+// configuration the renderer pushes via setAutoContinue / setModel /
+// setPermissionMode / setEffort so getters return consistent values.
 const sessions = new Map()
+
+function ensureSession(sessionId) {
+  let s = sessions.get(sessionId)
+  if (!s) {
+    s = {
+      active: false,
+      options: null,
+      // Renderer-controlled config; defaults match Electron's session
+      // defaults so getters before any setter calls don't surprise the UI.
+      model: undefined,
+      autoCompactWindow: null,
+      effort: undefined,
+      permissionMode: 'default',
+      autoContinue: { enabled: false, max: 0, used: 0, prompt: '' },
+    }
+    sessions.set(sessionId, s)
+  }
+  return s
+}
 
 registerHandler('claude.startSession', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.startSession: missing sessionId')
   }
-  sessions.set(sessionId, { active: true, options: params?.options ?? null })
+  const s = ensureSession(sessionId)
+  s.active = true
+  s.options = params?.options ?? null
+  // Some options carry per-session config the renderer expects to read
+  // back via getSessionMeta — capture them now.
+  if (s.options && typeof s.options === 'object') {
+    if (typeof s.options.model === 'string') s.model = s.options.model
+    if (typeof s.options.permissionMode === 'string') s.permissionMode = s.options.permissionMode
+    if (typeof s.options.effort === 'string') s.effort = s.options.effort
+    if (typeof s.options.autoCompactWindow === 'number') s.autoCompactWindow = s.options.autoCompactWindow
+  }
   return { ok: true, sessionId }
 })
 
@@ -109,6 +139,68 @@ registerHandler('claude.abortSession', async (params) => {
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'aborted' } })
   }
   return { ok: true }
+})
+
+// Per-session state setters. These persist values into the session map
+// so getters return what the renderer last set. When the SDK lands,
+// these hooks will additionally push the change into the live query
+// instance (e.g. set the model on a streaming session). For now they
+// just maintain the visible state contract.
+
+registerHandler('claude.setAutoContinue', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  const opts = params?.opts || params?.options || {}
+  const s = ensureSession(sessionId)
+  if (typeof opts.enabled === 'boolean') s.autoContinue.enabled = opts.enabled
+  if (typeof opts.max === 'number') s.autoContinue.max = opts.max
+  if (typeof opts.prompt === 'string') s.autoContinue.prompt = opts.prompt
+  // Reset usage counter when toggling, matches Electron behaviour.
+  s.autoContinue.used = 0
+  return true
+})
+
+registerHandler('claude.getAutoContinue', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return null
+  const s = sessions.get(sessionId)
+  return s ? { ...s.autoContinue } : null
+})
+
+registerHandler('claude.setPermissionMode', async (params) => {
+  const sessionId = params?.sessionId
+  const mode = params?.mode
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  if (typeof mode !== 'string') return false
+  const s = ensureSession(sessionId)
+  s.permissionMode = mode
+  // Mirror Electron's claude:modeChange event so listeners refresh.
+  sendEvent('claude:modeChange', { sessionId, mode })
+  return true
+})
+
+registerHandler('claude.setModel', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  const s = ensureSession(sessionId)
+  if (typeof params?.model === 'string') s.model = params.model
+  if (typeof params?.autoCompactWindow === 'number') s.autoCompactWindow = params.autoCompactWindow
+  return true
+})
+
+registerHandler('claude.setEffort', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  const s = ensureSession(sessionId)
+  if (typeof params?.effort === 'string') s.effort = params.effort
+  return true
+})
+
+registerHandler('claude.resetSession', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  // Drop the session record entirely. Next startSession recreates it.
+  return sessions.delete(sessionId)
 })
 
 // Auth + account stubs. The renderer's auth UI calls these on every panel
@@ -160,10 +252,41 @@ registerHandler('claude.getSupportedModels', async () =>
 registerHandler('claude.getSupportedCommands', async () => [])
 registerHandler('claude.getSupportedAgents', async () => [])
 registerHandler('claude.getAccountInfo', async () => null)
-registerHandler('claude.getSessionState', async () => null)
-registerHandler('claude.getSessionMeta', async () => null)
+// Session state lookups read from the per-session map populated by
+// startSession + the various setters above. When no session exists for
+// the given id we return null to match Electron's behaviour.
+registerHandler('claude.getSessionState', async (params) => {
+  const s = sessions.get(String(params?.sessionId ?? ''))
+  if (!s) return null
+  return {
+    active: s.active,
+    permissionMode: s.permissionMode,
+    model: s.model,
+    effort: s.effort,
+    autoCompactWindow: s.autoCompactWindow,
+  }
+})
+registerHandler('claude.getSessionMeta', async (params) => {
+  const s = sessions.get(String(params?.sessionId ?? ''))
+  if (!s) return null
+  // Match the Electron getSessionMeta shape: spread metadata plus
+  // permissionMode. We don't store agent metadata yet, so the return
+  // is just the visible knobs.
+  return {
+    permissionMode: s.permissionMode,
+    model: s.model,
+    effort: s.effort,
+    autoCompactWindow: s.autoCompactWindow,
+  }
+})
 registerHandler('claude.getContextUsage', async () => null)
-registerHandler('claude.getWorktreeStatus', async () => null)
+registerHandler('claude.getWorktreeStatus', async (params) => {
+  const sessionId = String(params?.sessionId ?? '')
+  if (!sessionId) return null
+  const info = activeWorktrees.get(sessionId)
+  if (!info) return null
+  return worktreeStatus(sessionId)
+})
 // claude.scanSkills walks <cwd>/.claude/skills + ~/.claude/skills and
 // returns SkillMeta entries. No SDK dep — pure fs walk + YAML
 // frontmatter parsing. Mirrors electron/openai-agent/skills-scanner.ts.

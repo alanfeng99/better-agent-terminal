@@ -603,6 +603,52 @@ mod tests {
     }
 
     #[test]
+    fn end_to_end_session_state_round_trip() {
+        // Verifies the sidecar's per-session state map round-trips through
+        // the JSON-RPC bridge — startSession sets defaults, setters
+        // mutate, getters read back, resetSession drops the entry.
+        let Some(node_path) = require_node() else {
+            eprintln!("skipped: node not on PATH");
+            return;
+        };
+        let script = sidecar_script();
+        if !script.is_file() {
+            eprintln!("skipped: missing {}", script.display());
+            return;
+        }
+        let cfg = SpawnConfig { node_path, script_path: script, data_dir: None };
+        let state = SidecarState::new();
+        let timeout = Duration::from_secs(5);
+        let sid = "rt-state-1";
+        // start with options that pre-populate model + permissionMode.
+        state.call(&cfg, "claude.startSession", json!({
+            "sessionId": sid, "options": { "cwd": "/x", "model": "claude-sonnet-4-6", "permissionMode": "acceptEdits" }
+        }), timeout).expect("startSession");
+        // setters return true.
+        let r = state.call(&cfg, "claude.setAutoContinue", json!({
+            "sessionId": sid, "opts": { "enabled": true, "max": 7, "prompt": "go on" }
+        }), timeout).expect("setAutoContinue");
+        assert_eq!(r, Value::Bool(true));
+        // getters reflect the writes.
+        let ac = state.call(&cfg, "claude.getAutoContinue", json!({"sessionId": sid}), timeout).expect("getAutoContinue");
+        assert_eq!(ac["enabled"], true);
+        assert_eq!(ac["max"], 7);
+        assert_eq!(ac["used"], 0);
+        assert_eq!(ac["prompt"], "go on");
+        // permissionMode change.
+        state.call(&cfg, "claude.setPermissionMode", json!({"sessionId": sid, "mode": "plan"}), timeout).expect("setPermissionMode");
+        let meta = state.call(&cfg, "claude.getSessionMeta", json!({"sessionId": sid}), timeout).expect("meta");
+        assert_eq!(meta["permissionMode"], "plan");
+        assert_eq!(meta["model"], "claude-sonnet-4-6");
+        // reset drops the entry.
+        let reset = state.call(&cfg, "claude.resetSession", json!({"sessionId": sid}), timeout).expect("reset");
+        assert_eq!(reset, Value::Bool(true));
+        let after = state.call(&cfg, "claude.getSessionState", json!({"sessionId": sid}), timeout).expect("getSessionState");
+        assert!(after.is_null());
+        state.reset();
+    }
+
+    #[test]
     fn end_to_end_concurrent_calls_correlate_by_id() {
         let Some(node_path) = require_node() else {
             eprintln!("skipped: node not on PATH");

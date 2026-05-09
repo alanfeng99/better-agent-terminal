@@ -451,6 +451,32 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string, deleteBranch: boolean) =>
             getInvoke()<unknown>('claude_cleanup_worktree', { sessionId, deleteBranch })
         }
+        // Per-session state setters/getters. Sidecar holds the values
+        // until the SDK lands; getters read back exactly what was set.
+        if (key === 'setAutoContinue') {
+          return (sessionId: string, opts: unknown) =>
+            getInvoke()<unknown>('claude_set_auto_continue', { sessionId, opts })
+        }
+        if (key === 'getAutoContinue') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_get_auto_continue', { sessionId })
+        }
+        if (key === 'setPermissionMode') {
+          return (sessionId: string, mode: string) =>
+            getInvoke()<unknown>('claude_set_permission_mode', { sessionId, mode })
+        }
+        if (key === 'setModel') {
+          return (sessionId: string, model: string, autoCompactWindow?: number) =>
+            getInvoke()<unknown>('claude_set_model', { sessionId, model, autoCompactWindow })
+        }
+        if (key === 'setEffort') {
+          return (sessionId: string, effort: string) =>
+            getInvoke()<unknown>('claude_set_effort', { sessionId, effort })
+        }
+        if (key === 'resetSession') {
+          return (sessionId: string) =>
+            getInvoke()<unknown>('claude_reset_session', { sessionId })
+        }
         const sessionReadCommands: Record<string, string> = {
           getSupportedModels: 'claude_get_supported_models',
           getSupportedCommands: 'claude_get_supported_commands',

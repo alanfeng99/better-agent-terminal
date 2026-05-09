@@ -364,6 +364,57 @@ async function inProcess() {
     assert.equal(typeof m.description, 'string')
   }
 
+  // Per-session state round-trip via dispatch. Verifies setters mutate
+  // the session map and getters read back exactly what was written.
+  // This is the "stub stays consistent" contract — when SDK lands the
+  // setters will additionally push into the live query instance.
+  await dispatch({ jsonrpc: '2.0', id: 200, method: 'claude.startSession',
+    params: { sessionId: 'state-1', options: { cwd: '/x', model: 'claude-sonnet-4-6', permissionMode: 'acceptEdits' } } })
+  // Initial state from startSession options.
+  const initState = await dispatch({ jsonrpc: '2.0', id: 201, method: 'claude.getSessionState', params: { sessionId: 'state-1' } })
+  assert.equal(initState.result.active, true)
+  assert.equal(initState.result.permissionMode, 'acceptEdits')
+  assert.equal(initState.result.model, 'claude-sonnet-4-6')
+
+  // setAutoContinue persists; usage counter resets.
+  await dispatch({ jsonrpc: '2.0', id: 202, method: 'claude.setAutoContinue',
+    params: { sessionId: 'state-1', opts: { enabled: true, max: 5, prompt: 'continue' } } })
+  const ac = await dispatch({ jsonrpc: '2.0', id: 203, method: 'claude.getAutoContinue', params: { sessionId: 'state-1' } })
+  assert.deepEqual(ac.result, { enabled: true, max: 5, used: 0, prompt: 'continue' })
+
+  // setPermissionMode emits claude:modeChange — we can't assert that here
+  // without wiring an event collector, but we can at least verify the
+  // getter picks up the new value.
+  await dispatch({ jsonrpc: '2.0', id: 204, method: 'claude.setPermissionMode',
+    params: { sessionId: 'state-1', mode: 'plan' } })
+  const meta = await dispatch({ jsonrpc: '2.0', id: 205, method: 'claude.getSessionMeta', params: { sessionId: 'state-1' } })
+  assert.equal(meta.result.permissionMode, 'plan')
+
+  // setModel + setEffort.
+  await dispatch({ jsonrpc: '2.0', id: 206, method: 'claude.setModel',
+    params: { sessionId: 'state-1', model: 'claude-haiku-4-5-20251001', autoCompactWindow: 100000 } })
+  await dispatch({ jsonrpc: '2.0', id: 207, method: 'claude.setEffort',
+    params: { sessionId: 'state-1', effort: 'high' } })
+  const meta2 = await dispatch({ jsonrpc: '2.0', id: 208, method: 'claude.getSessionMeta', params: { sessionId: 'state-1' } })
+  assert.equal(meta2.result.model, 'claude-haiku-4-5-20251001')
+  assert.equal(meta2.result.effort, 'high')
+  assert.equal(meta2.result.autoCompactWindow, 100000)
+
+  // resetSession drops the entry; subsequent getSessionState returns null.
+  const reset = await dispatch({ jsonrpc: '2.0', id: 209, method: 'claude.resetSession', params: { sessionId: 'state-1' } })
+  assert.equal(reset.result, true)
+  const after = await dispatch({ jsonrpc: '2.0', id: 210, method: 'claude.getSessionState', params: { sessionId: 'state-1' } })
+  assert.equal(after.result, null)
+  // Reset of unknown session id returns false (not an error).
+  const reset2 = await dispatch({ jsonrpc: '2.0', id: 211, method: 'claude.resetSession', params: { sessionId: 'nope' } })
+  assert.equal(reset2.result, false)
+
+  // Setters with bad params return false rather than throwing.
+  const bad1 = await dispatch({ jsonrpc: '2.0', id: 212, method: 'claude.setAutoContinue', params: { opts: {} } })
+  assert.equal(bad1.result, false)
+  const bad2 = await dispatch({ jsonrpc: '2.0', id: 213, method: 'claude.setPermissionMode', params: { sessionId: 's', mode: 42 } })
+  assert.equal(bad2.result, false)
+
   // worktree.* — full create/status/remove/rehydrate round trip against a
   // real ephemeral git repo. Skipped if `git` isn't on PATH.
   const { worktreeCreate, worktreeRemove, worktreeStatus, worktreeRehydrate, worktreeGetGitRoot, activeWorktrees } = mod

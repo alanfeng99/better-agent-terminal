@@ -293,3 +293,72 @@ pub fn claude_cleanup_worktree(
         "deleteBranch": delete_branch,
     }))
 }
+
+// --- per-session state -----------------------------------------------------
+
+#[tauri::command]
+pub fn claude_set_auto_continue(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    opts: Value,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.setAutoContinue", json!({
+        "sessionId": session_id, "opts": opts,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_get_auto_continue(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.getAutoContinue", json!({ "sessionId": session_id }))
+}
+
+#[tauri::command]
+pub fn claude_set_permission_mode(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    mode: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.setPermissionMode", json!({
+        "sessionId": session_id, "mode": mode,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_set_model(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    model: String,
+    auto_compact_window: Option<i64>,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.setModel", json!({
+        "sessionId": session_id, "model": model, "autoCompactWindow": auto_compact_window,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_set_effort(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    effort: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.setEffort", json!({
+        "sessionId": session_id, "effort": effort,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_reset_session(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.resetSession", json!({ "sessionId": session_id }))
+}
