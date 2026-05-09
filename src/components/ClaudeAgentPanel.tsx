@@ -1496,6 +1496,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [isActive, setInputValue])
 
   const handleSend = useCallback(async () => {
+    const __sendT0 = performance.now()
     const trimmed = inputValueRef.current.trim()
     if (!trimmed && attachedImages.length === 0 && attachedFiles.length === 0) return
 
@@ -1844,7 +1845,18 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }])
     }
 
-    await window.batAppAPI.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+    const __sendT1 = performance.now()
+    try {
+      await window.batAppAPI.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+    } finally {
+      const __sendT2 = performance.now()
+      const sync = __sendT1 - __sendT0
+      const invoke = __sendT2 - __sendT1
+      const total = __sendT2 - __sendT0
+      if (total > 50) {
+        host.debug.log(`[handleSend] sync=${sync.toFixed(1)}ms invoke=${invoke.toFixed(1)}ms total=${total.toFixed(1)}ms sessionId=${sessionId} promptLen=${trimmed.length}`)
+      }
+    }
   }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput])
 
   const handleInterrupt = useCallback(() => {
