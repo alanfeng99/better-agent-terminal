@@ -367,7 +367,7 @@ export default function App() {
         dlog(`[init] getLaunchProfile: ${(performance.now() - t0).toFixed(0)}ms`)
 
         const t1 = performance.now()
-        const result = await window.batAppAPI.profile.list()
+        const result = await host.profile.list()
         dlog(`[init] profile.list: ${(performance.now() - t1).toFixed(0)}ms`)
 
         // Determine which profile this window should use:
@@ -385,7 +385,7 @@ export default function App() {
         // connection (e.g. launched with --profile=<local-remote-alias>).
         if (!active && profileId) {
           try {
-            const localResult = await window.batAppAPI.profile.listLocal()
+            const localResult = await host.profile.listLocal()
             active = localResult.profiles.find(p => p.id === profileId)
           } catch {
             // listLocal may not exist on older builds — fall through
@@ -412,7 +412,7 @@ export default function App() {
             // Main window: fall back to first local profile
             const localProfile = result.profiles.find(p => p.type !== 'remote')
             if (localProfile) {
-              await window.batAppAPI.profile.load(localProfile.id)
+              await host.profile.load(localProfile.id)
               const winIdx = await host.app.getWindowIndex()
               setActiveProfileName(`${localProfile.name}:${winIdx}`)
             }
@@ -430,7 +430,7 @@ export default function App() {
           }
           const localProfile = result.profiles.find(p => p.type !== 'remote')
           if (localProfile) {
-            await window.batAppAPI.profile.load(localProfile.id)
+            await host.profile.load(localProfile.id)
             const winIdx = await host.app.getWindowIndex()
             setActiveProfileName(`${localProfile.name}:${winIdx}`)
           }
@@ -438,7 +438,7 @@ export default function App() {
           // For local profiles opened in a new window, load the profile snapshot
           // so workspaces.json reflects this profile's data (not the previous profile's)
           if (launchProfileId) {
-            await window.batAppAPI.profile.load(active.id)
+            await host.profile.load(active.id)
           }
           const winIdx = await host.app.getWindowIndex()
           setActiveProfileName(`${active.name}:${winIdx}`)

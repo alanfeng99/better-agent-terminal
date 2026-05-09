@@ -15,6 +15,7 @@ pub mod git;
 pub mod github;
 pub mod image;
 pub mod notification;
+pub mod profile;
 pub mod pty;
 pub mod settings;
 pub mod shell;

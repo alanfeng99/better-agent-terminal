@@ -68,7 +68,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
   const [remoteActiveByLocalId, setRemoteActiveByLocalId] = useState<Record<string, boolean>>({})
 
   const loadProfiles = useCallback(async () => {
-    const result = await window.batAppAPI.profile.listLocal()
+    const result = await host.profile.listLocal()
     setProfiles(result.profiles)
     setActiveProfileIds(result.activeProfileIds)
     const wpId = await host.app.getWindowProfile()
@@ -178,7 +178,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
     if (creating === 'remote') {
       if (!remoteHost.trim() || !remoteToken.trim() || !remoteFingerprint.trim()) return
       if (!selectedRemoteProfileId) return
-      await window.batAppAPI.profile.create(trimmed, {
+      await host.profile.create(trimmed, {
         type: 'remote',
         remoteHost: remoteHost.trim(),
         remotePort: parseInt(remotePort) || 9876,
@@ -187,7 +187,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
         remoteProfileId: selectedRemoteProfileId,
       })
     } else {
-      await window.batAppAPI.profile.create(trimmed)
+      await host.profile.create(trimmed)
     }
     setCreating(false)
     setNewName('')
@@ -203,7 +203,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
   const handleRename = async (profileId: string) => {
     const trimmed = editValue.trim()
     if (!trimmed) { setEditingId(null); return }
-    await window.batAppAPI.profile.rename(profileId, trimmed)
+    await host.profile.rename(profileId, trimmed)
     setEditingId(null)
     setEditValue('')
     loadProfiles()
@@ -239,12 +239,12 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
   }
 
   const handleSaveRemote = async (profileId: string) => {
-    const host = editRemoteHost.trim()
+    const remoteHostValue = editRemoteHost.trim()
     const token = editRemoteToken.trim()
     const fingerprint = editRemoteFingerprint.trim()
-    if (!host || !token || !fingerprint) return
-    await window.batAppAPI.profile.update(profileId, {
-      remoteHost: host,
+    if (!remoteHostValue || !token || !fingerprint) return
+    await host.profile.update(profileId, {
+      remoteHost: remoteHostValue,
       remotePort: parseInt(editRemotePort) || 9876,
       remoteToken: token,
       remoteFingerprint: fingerprint,
@@ -256,7 +256,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
   }
 
   const handleDelete = async (profileId: string) => {
-    await window.batAppAPI.profile.delete(profileId)
+    await host.profile.delete(profileId)
     setConfirmDelete(null)
     loadProfiles()
   }
@@ -264,7 +264,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
   const handleDuplicate = async (profileId: string) => {
     const source = profiles.find(p => p.id === profileId)
     if (!source) return
-    await window.batAppAPI.profile.duplicate(profileId, `${source.name} (Copy)`)
+    await host.profile.duplicate(profileId, `${source.name} (Copy)`)
     loadProfiles()
   }
 
@@ -324,10 +324,10 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
     let targetProfileId = existing?.id
     if (existing) {
       if (existing.remoteToken !== source.remoteToken) {
-        await window.batAppAPI.profile.update(existing.id, { remoteToken: source.remoteToken })
+        await host.profile.update(existing.id, { remoteToken: source.remoteToken })
       }
     } else {
-      const entry = await window.batAppAPI.profile.create(`${remoteProfile.name} @ ${source.remoteHost}`, {
+      const entry = await host.profile.create(`${remoteProfile.name} @ ${source.remoteHost}`, {
         type: 'remote',
         remoteHost: source.remoteHost,
         remotePort: port,
@@ -347,7 +347,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
 
   const handleSaveCurrent = async () => {
     if (windowProfileId) {
-      await window.batAppAPI.profile.save(windowProfileId)
+      await host.profile.save(windowProfileId)
       loadProfiles()
     }
   }

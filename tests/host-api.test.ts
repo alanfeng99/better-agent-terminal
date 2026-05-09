@@ -136,6 +136,23 @@ async function run() {
       if (cmd === 'snippet_update') return { id: 1 } as unknown as T
       if (cmd === 'snippet_delete') return true as unknown as T
       if (cmd === 'snippet_toggle_favorite') return { id: 1 } as unknown as T
+      if (cmd === 'profile_list') {
+        return { profiles: [{ id: 'default', name: 'Default', type: 'local' }], activeProfileIds: ['default'] } as unknown as T
+      }
+      if (cmd === 'profile_list_local') {
+        return { profiles: [{ id: 'default', name: 'Default', type: 'local' }], activeProfileIds: ['default'] } as unknown as T
+      }
+      if (cmd === 'profile_get') return { id: 'default', name: 'Default' } as unknown as T
+      if (cmd === 'profile_get_active_ids') return ['default'] as unknown as T
+      if (cmd === 'profile_create') return { id: 'default', name: 'New' } as unknown as T
+      if (cmd === 'profile_save') return true as unknown as T
+      if (cmd === 'profile_load') return null as unknown as T
+      if (cmd === 'profile_delete') return false as unknown as T
+      if (cmd === 'profile_rename') return false as unknown as T
+      if (cmd === 'profile_update') return false as unknown as T
+      if (cmd === 'profile_duplicate') return null as unknown as T
+      if (cmd === 'profile_activate') return undefined as unknown as T
+      if (cmd === 'profile_deactivate') return undefined as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -294,6 +311,27 @@ async function run() {
     const toggled = await mod.host.snippet.toggleFavorite(1)
     assert.deepEqual(toggled, { id: 1 })
 
+    // profile.* — single-window MVP returns one default profile.
+    const plist = await mod.host.profile.list()
+    assert.deepEqual(plist, {
+      profiles: [{ id: 'default', name: 'Default', type: 'local' }],
+      activeProfileIds: ['default'],
+    })
+    await mod.host.profile.listLocal()
+    assert.deepEqual(await mod.host.profile.get('default'), { id: 'default', name: 'Default' })
+    assert.deepEqual(await mod.host.profile.getActiveIds(), ['default'])
+    await mod.host.profile.create('New')
+    // create with options
+    await mod.host.profile.create('Remote', { type: 'remote' })
+    assert.equal(await mod.host.profile.save('default'), true)
+    assert.equal(await mod.host.profile.load('default'), null)
+    assert.equal(await mod.host.profile.delete('default'), false)
+    assert.equal(await mod.host.profile.rename('default', 'X'), false)
+    await mod.host.profile.update('default', { remoteHost: 'h' })
+    assert.equal(await mod.host.profile.duplicate('default', 'Copy'), null)
+    await mod.host.profile.activate('default')
+    await mod.host.profile.deactivate('default')
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -366,6 +404,20 @@ async function run() {
       { cmd: 'snippet_update', args: { id: 1, updates: { title: 'new' } } },
       { cmd: 'snippet_delete', args: { id: 1 } },
       { cmd: 'snippet_toggle_favorite', args: { id: 1 } },
+      { cmd: 'profile_list', args: undefined },
+      { cmd: 'profile_list_local', args: undefined },
+      { cmd: 'profile_get', args: { profileId: 'default' } },
+      { cmd: 'profile_get_active_ids', args: undefined },
+      { cmd: 'profile_create', args: { name: 'New', options: undefined } },
+      { cmd: 'profile_create', args: { name: 'Remote', options: { type: 'remote' } } },
+      { cmd: 'profile_save', args: { profileId: 'default' } },
+      { cmd: 'profile_load', args: { profileId: 'default' } },
+      { cmd: 'profile_delete', args: { profileId: 'default' } },
+      { cmd: 'profile_rename', args: { profileId: 'default', newName: 'X' } },
+      { cmd: 'profile_update', args: { profileId: 'default', updates: { remoteHost: 'h' } } },
+      { cmd: 'profile_duplicate', args: { profileId: 'default', newName: 'Copy' } },
+      { cmd: 'profile_activate', args: { profileId: 'default' } },
+      { cmd: 'profile_deactivate', args: { profileId: 'default' } },
     ])
   }
 

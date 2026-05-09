@@ -11,8 +11,9 @@ mod path_guard;
 use commands::{
     app as app_cmd, clipboard as clipboard_cmd, debug as debug_cmd, dialog as dialog_cmd,
     fs as fs_cmd, git as git_cmd, github as github_cmd, image as image_cmd,
-    notification as notification_cmd, pty as pty_cmd, settings, shell as shell_cmd,
-    snippet as snippet_cmd, update as update_cmd, workspace as workspace_cmd,
+    notification as notification_cmd, profile as profile_cmd, pty as pty_cmd, settings,
+    shell as shell_cmd, snippet as snippet_cmd, update as update_cmd,
+    workspace as workspace_cmd,
 };
 
 pub fn run() {
@@ -90,6 +91,19 @@ pub fn run() {
             snippet_cmd::snippet_update,
             snippet_cmd::snippet_delete,
             snippet_cmd::snippet_toggle_favorite,
+            profile_cmd::profile_list,
+            profile_cmd::profile_list_local,
+            profile_cmd::profile_get,
+            profile_cmd::profile_get_active_ids,
+            profile_cmd::profile_create,
+            profile_cmd::profile_save,
+            profile_cmd::profile_load,
+            profile_cmd::profile_delete,
+            profile_cmd::profile_rename,
+            profile_cmd::profile_update,
+            profile_cmd::profile_duplicate,
+            profile_cmd::profile_activate,
+            profile_cmd::profile_deactivate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

@@ -258,6 +258,31 @@ function createTauriHost(): BatAppAPI {
       onDetached: () => () => {},
       onReattached: () => () => {},
     },
+    profile: {
+      // Single-window MVP — see src-tauri/src/commands/profile.rs.
+      // Always reports one default local profile; mutating
+      // commands accept input but only the default slot exists.
+      list: () => getInvoke()<unknown>('profile_list'),
+      listLocal: () => getInvoke()<unknown>('profile_list_local'),
+      get: (profileId: string) => getInvoke()<unknown>('profile_get', { profileId }),
+      getActiveIds: () => getInvoke()<string[]>('profile_get_active_ids'),
+      create: (name: string, options?: unknown) =>
+        getInvoke()<unknown>('profile_create', { name, options }),
+      save: (profileId: string) => getInvoke()<boolean>('profile_save', { profileId }),
+      load: (profileId: string) => getInvoke()<unknown>('profile_load', { profileId }),
+      delete: (profileId: string) =>
+        getInvoke()<boolean>('profile_delete', { profileId }),
+      rename: (profileId: string, newName: string) =>
+        getInvoke()<boolean>('profile_rename', { profileId, newName }),
+      update: (profileId: string, updates: unknown) =>
+        getInvoke()<boolean>('profile_update', { profileId, updates }),
+      duplicate: (profileId: string, newName: string) =>
+        getInvoke()<unknown>('profile_duplicate', { profileId, newName }),
+      activate: (profileId: string) =>
+        getInvoke()<void>('profile_activate', { profileId }),
+      deactivate: (profileId: string) =>
+        getInvoke()<void>('profile_deactivate', { profileId }),
+    },
     snippet: {
       // JSON-backed env snippet store. Mirrors
       // electron/snippet-db.ts. Tauri auto-camelCases struct field
@@ -440,7 +465,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 const PORTED_NAMESPACES = new Set([
   'settings', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
-  'notification', 'system', 'github', 'snippet',
+  'notification', 'system', 'github', 'snippet', 'profile',
 ])
 
 export function installTauriShim(): void {
