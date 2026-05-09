@@ -108,8 +108,8 @@ export function GitHubPanel({ workspaceFolderPath, onSendToClaude }: Readonly<Gi
     setError(null)
     try {
       const [prResult, issueResult] = await Promise.all([
-        window.batAppAPI.github.listPRs(workspaceFolderPath),
-        window.batAppAPI.github.listIssues(workspaceFolderPath),
+        host.github.listPRs(workspaceFolderPath),
+        host.github.listIssues(workspaceFolderPath),
       ])
       if (prResult && 'error' in prResult) {
         setError(prResult.error as string)
@@ -131,7 +131,7 @@ export function GitHubPanel({ workspaceFolderPath, onSendToClaude }: Readonly<Gi
   // Check CLI and load data on consent
   useEffect(() => {
     if (!consentGiven) return
-    window.batAppAPI.github.checkCli().then(status => {
+    host.github.checkCli().then(status => {
       setCliStatus(status)
       if (status.installed && status.authenticated) {
         loadData()
@@ -145,8 +145,8 @@ export function GitHubPanel({ workspaceFolderPath, onSendToClaude }: Readonly<Gi
     setCommentBody('')
     setDetailLoading(true)
     const promise = selectedItem.type === 'pr'
-      ? window.batAppAPI.github.viewPR(workspaceFolderPath, selectedItem.number)
-      : window.batAppAPI.github.viewIssue(workspaceFolderPath, selectedItem.number)
+      ? host.github.viewPR(workspaceFolderPath, selectedItem.number)
+      : host.github.viewIssue(workspaceFolderPath, selectedItem.number)
     promise.then(result => {
       if (result && 'error' in result) {
         setDetail(null)
@@ -215,8 +215,8 @@ export function GitHubPanel({ workspaceFolderPath, onSendToClaude }: Readonly<Gi
     setCommentPosting(true)
     try {
       const fn = selectedItem.type === 'pr'
-        ? window.batAppAPI.github.commentPR
-        : window.batAppAPI.github.commentIssue
+        ? host.github.commentPR
+        : host.github.commentIssue
       const result = await fn(workspaceFolderPath, selectedItem.number, commentBody.trim())
       if (result && 'error' in result) {
         setCommentStatus(t('github.commentError'))

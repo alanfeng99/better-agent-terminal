@@ -294,6 +294,29 @@ function createTauriHost(): BatAppAPI {
         getInvoke()<{ alreadyOpen: boolean }>('app_open_new_instance', { profileId }),
       setDockBadge: (count: number) => getInvoke()<void>('app_set_dock_badge', { count }),
     },
+    github: {
+      // gh CLI shell-out — see src-tauri/src/commands/github.rs.
+      // Read commands return either parsed JSON (Value passes through
+      // as `unknown`) or `{error: msg}` matching the Electron shape.
+      checkCli: () =>
+        getInvoke()<{ installed: boolean; authenticated: boolean }>('github_check_cli'),
+      listPRs: (cwd: string) => getInvoke()<unknown>('github_pr_list', { cwd }),
+      listIssues: (cwd: string) => getInvoke()<unknown>('github_issue_list', { cwd }),
+      viewPR: (cwd: string, number: number) =>
+        getInvoke()<unknown>('github_pr_view', { cwd, number }),
+      viewIssue: (cwd: string, number: number) =>
+        getInvoke()<unknown>('github_issue_view', { cwd, number }),
+      commentPR: (cwd: string, number: number, body: string) =>
+        getInvoke()<{ success: true } | { error: string }>(
+          'github_pr_comment',
+          { cwd, number, body },
+        ),
+      commentIssue: (cwd: string, number: number, body: string) =>
+        getInvoke()<{ success: true } | { error: string }>(
+          'github_issue_comment',
+          { cwd, number, body },
+        ),
+    },
     git: {
       // Read-only git wrappers — see src-tauri/src/commands/git.rs.
       // The Rust side returns safe defaults (None / empty Vec / empty String)
@@ -398,7 +421,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 const PORTED_NAMESPACES = new Set([
   'settings', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
-  'notification', 'system',
+  'notification', 'system', 'github',
 ])
 
 export function installTauriShim(): void {

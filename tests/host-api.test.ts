@@ -117,6 +117,15 @@ async function run() {
       if (cmd === 'notification_clear') return true as unknown as T
       if (cmd === 'notification_focus_latest_unread') return null as unknown as T
       if (cmd === 'notification_focus_entry') return null as unknown as T
+      if (cmd === 'github_check_cli') {
+        return { installed: true, authenticated: true } as unknown as T
+      }
+      if (cmd === 'github_pr_list') return [] as unknown as T
+      if (cmd === 'github_issue_list') return [] as unknown as T
+      if (cmd === 'github_pr_view') return { number: 1 } as unknown as T
+      if (cmd === 'github_issue_view') return { number: 2 } as unknown as T
+      if (cmd === 'github_pr_comment') return { success: true } as unknown as T
+      if (cmd === 'github_issue_comment') return { success: true } as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -242,6 +251,22 @@ async function run() {
     assert.equal(typeof unsubResume, 'function')
     assert.equal(unsubResume(), undefined)
 
+    // github.* — shells out to gh CLI on the Rust side.
+    const cli = await mod.host.github.checkCli()
+    assert.deepEqual(cli, { installed: true, authenticated: true })
+    assert.deepEqual(await mod.host.github.listPRs('/repo'), [])
+    assert.deepEqual(await mod.host.github.listIssues('/repo'), [])
+    assert.deepEqual(await mod.host.github.viewPR('/repo', 42), { number: 1 })
+    assert.deepEqual(await mod.host.github.viewIssue('/repo', 7), { number: 2 })
+    assert.deepEqual(
+      await mod.host.github.commentPR('/repo', 42, 'lgtm'),
+      { success: true },
+    )
+    assert.deepEqual(
+      await mod.host.github.commentIssue('/repo', 7, 'thx'),
+      { success: true },
+    )
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -296,6 +321,13 @@ async function run() {
       { cmd: 'notification_clear', args: undefined },
       { cmd: 'notification_focus_latest_unread', args: undefined },
       { cmd: 'notification_focus_entry', args: { id: 'n1' } },
+      { cmd: 'github_check_cli', args: undefined },
+      { cmd: 'github_pr_list', args: { cwd: '/repo' } },
+      { cmd: 'github_issue_list', args: { cwd: '/repo' } },
+      { cmd: 'github_pr_view', args: { cwd: '/repo', number: 42 } },
+      { cmd: 'github_issue_view', args: { cwd: '/repo', number: 7 } },
+      { cmd: 'github_pr_comment', args: { cwd: '/repo', number: 42, body: 'lgtm' } },
+      { cmd: 'github_issue_comment', args: { cwd: '/repo', number: 7, body: 'thx' } },
     ])
   }
 

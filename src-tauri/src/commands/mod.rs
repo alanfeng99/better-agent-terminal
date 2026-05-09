@@ -12,6 +12,7 @@ pub mod debug;
 pub mod dialog;
 pub mod fs;
 pub mod git;
+pub mod github;
 pub mod image;
 pub mod notification;
 pub mod pty;
