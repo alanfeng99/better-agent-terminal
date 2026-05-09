@@ -340,7 +340,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     ))
 
     ptyIdsRef.current.add(proc.ptyId)
-    await window.batAppAPI.pty.create({
+    await host.pty.create({
       id: proc.ptyId,
       cwd: processCwd,
       type: 'terminal',
@@ -351,7 +351,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     // Use exec to replace the shell — pty exits when command exits
     const launch = buildLaunchCommand(shellRef.current, proc.command)
     setTimeout(() => {
-      window.batAppAPI.pty.write(proc.ptyId, launch)
+      host.pty.write(proc.ptyId, launch)
       setProcesses(prev => prev.map(p =>
         p.ptyId === proc.ptyId && p.status === 'starting' ? { ...p, status: 'running' as const } : p
       ))
@@ -374,7 +374,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const proc of current) {
       if (!newNames.has(proc.name)) {
         if (proc.status === 'running' || proc.status === 'starting') {
-          window.batAppAPI.pty.kill(proc.ptyId)
+          host.pty.kill(proc.ptyId)
           ptyIdsRef.current.delete(proc.ptyId)
         }
         writeOutput(proc.name, proc.color, `\n\x1b[90mRemoved from Procfile\x1b[0m\n`)
@@ -415,7 +415,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const fresh = processesRef.current.find(p => p.name === proc.name)
     if (!fresh) return
     dlog(`[worker] stopping process: ${fresh.name}`)
-    window.batAppAPI.pty.kill(fresh.ptyId)
+    host.pty.kill(fresh.ptyId)
     ptyIdsRef.current.delete(fresh.ptyId)
   }, [reloadProcfile])
 
@@ -426,7 +426,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (!fresh) return // process was removed from Procfile
 
     dlog(`[worker] restarting process: ${fresh.name}`)
-    await window.batAppAPI.pty.kill(fresh.ptyId)
+    await host.pty.kill(fresh.ptyId)
     ptyIdsRef.current.delete(fresh.ptyId)
 
     midLineRef.current.set(fresh.name, false)
@@ -447,7 +447,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const p of processesRef.current) {
       if (p.status === 'running' || p.status === 'starting') {
         dlog(`[worker] stopping process: ${p.name}`)
-        window.batAppAPI.pty.kill(p.ptyId)
+        host.pty.kill(p.ptyId)
         ptyIdsRef.current.delete(p.ptyId)
       }
     }
@@ -459,7 +459,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const p of procs) {
       dlog(`[worker] restarting process: ${p.name}`)
       if (p.status === 'running' || p.status === 'starting') {
-        await window.batAppAPI.pty.kill(p.ptyId)
+        await host.pty.kill(p.ptyId)
         ptyIdsRef.current.delete(p.ptyId)
       }
       midLineRef.current.set(p.name, false)
@@ -571,7 +571,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
         lastCols = cols
         lastRows = rows
         for (const id of ptyIdsRef.current) {
-          window.batAppAPI.pty.resize(id, cols, rows)
+          host.pty.resize(id, cols, rows)
         }
       }
     }
@@ -590,7 +590,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     setTimeout(() => doResize(), 100)
 
     // Event listeners
-    const unsubOutput = window.batAppAPI.pty.onOutput((id, data) => {
+    const unsubOutput = host.pty.onOutput((id, data) => {
       const proc = processesRef.current.find(p => p.ptyId === id)
       if (proc) {
         if (proc.status !== 'running') {
@@ -602,7 +602,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       }
     })
 
-    const unsubExit = window.batAppAPI.pty.onExit((id, exitCode) => {
+    const unsubExit = host.pty.onExit((id, exitCode) => {
       const proc = processesRef.current.find(p => p.ptyId === id)
       if (!proc) return
       ptyIdsRef.current.delete(id)
@@ -672,7 +672,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       }))
 
       for (const proc of procs) {
-        const existingCwd = await window.batAppAPI.pty.getCwd(proc.ptyId).catch(() => null)
+        const existingCwd = await host.pty.getCwd(proc.ptyId).catch(() => null)
         if (existingCwd) {
           proc.status = 'running'
           ptyIdsRef.current.add(proc.ptyId)
@@ -718,7 +718,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       ])
       ptyIdsRef.current.clear()
       for (const id of idsToKill) {
-        window.batAppAPI.pty.kill(id)
+        host.pty.kill(id)
       }
     }
   }, [terminalId, procfilePath, processCwd, writeOutput, startProcess])

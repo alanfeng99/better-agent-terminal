@@ -1,3 +1,4 @@
+import { host } from './host-api'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
@@ -350,7 +351,7 @@ export default function App() {
 
     // Global listener for all terminal output - updates activity for ALL terminals
     // This is needed because WorkspaceView only renders terminals for the active workspace
-    const unsubscribeOutput = window.batAppAPI.pty.onOutput((id) => {
+    const unsubscribeOutput = host.pty.onOutput((id) => {
       workspaceStore.updateTerminalActivity(id)
     })
 
@@ -551,7 +552,7 @@ export default function App() {
     }
 
     if (terminalId) {
-      window.batAppAPI.pty.write(terminalId, content)
+      host.pty.write(terminalId, content)
     } else {
       console.warn('No terminal available to paste to')
     }

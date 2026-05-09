@@ -70,7 +70,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
       }
       const chunk = text.slice(offset, offset + CHUNK_SIZE)
       offset += CHUNK_SIZE
-      window.batAppAPI.pty.write(terminalId, chunk)
+      host.pty.write(terminalId, chunk)
       setTimeout(sendNext, DELAY)
     }
     sendNext()
@@ -103,7 +103,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
     if (text.length > 4000) {
       writeChunked(text)
     } else {
-      window.batAppAPI.pty.write(terminalId, text)
+      host.pty.write(terminalId, text)
     }
   }
 
@@ -112,7 +112,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
     if (!filePath) return false
     const written = await host.clipboard.writeImage(filePath)
     if (!written) return false
-    window.batAppAPI.pty.write(terminalId, '\x1bv')
+    host.pty.write(terminalId, '\x1bv')
     return true
   }
 
@@ -191,7 +191,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
                 setTimeout(() => {
                   const currentTerminal = workspaceStore.getState().terminals.find(t => t.id === terminalId)
                   if (isActiveRef.current && currentTerminal && !currentTerminal.hasUserInput && !currentTerminal.agentCommandSent) {
-                    window.batAppAPI.pty.write(terminalId, agentCommand + '\r')
+                    host.pty.write(terminalId, agentCommand + '\r')
                     workspaceStore.markAgentCommandSent(terminalId)
                   }
                 }, 3000)
@@ -325,7 +325,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
         lastSentCols = cols
         lastSentRows = rows
         dlog(`[resize] pty.resize cols=${cols} rows=${rows} terminal=${terminalId}`)
-        window.batAppAPI.pty.resize(terminalId, cols, rows)
+        host.pty.resize(terminalId, cols, rows)
       }
     }
     doResizeRef.current = doResize
@@ -367,7 +367,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
 
     // Handle terminal input
     terminal.onData((data) => {
-      window.batAppAPI.pty.write(terminalId, data)
+      host.pty.write(terminalId, data)
       // Mark terminal as having user input (for agent command tracking)
       if (terminalType === 'code-agent') {
         workspaceStore.markHasUserInput(terminalId)
@@ -402,7 +402,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
       if (event.shiftKey && event.key === 'Enter') {
         event.preventDefault()
         // Send newline character to allow multiline input
-        window.batAppAPI.pty.write(terminalId, '\n')
+        host.pty.write(terminalId, '\n')
         return false
       }
       // Ctrl+Shift+C for copy
@@ -451,7 +451,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
     containerEl.addEventListener('contextmenu', onContextMenu)
 
     // Handle terminal output
-    const unsubscribeOutput = window.batAppAPI.pty.onOutput((id, data) => {
+    const unsubscribeOutput = host.pty.onOutput((id, data) => {
       if (id === terminalId) {
         terminal.write(data)
         // Update activity time when there's output
@@ -460,7 +460,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
     })
 
     // Handle terminal exit
-    const unsubscribeExit = window.batAppAPI.pty.onExit((id, exitCode) => {
+    const unsubscribeExit = host.pty.onExit((id, exitCode) => {
       if (id === terminalId) {
         terminal.write(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m\r\n`)
         if (settingsStore.getCloseTerminalAfterProcessExit()) {

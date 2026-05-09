@@ -266,7 +266,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             startClaudeCliPty(terminal.id, terminal.cwd || workspace.folderPath, terminal.agentPreset === 'claude-cli-worktree')
             continue
           }
-          window.batAppAPI.pty.create({
+          host.pty.create({
             id: terminal.id,
             cwd: terminal.cwd || workspace.folderPath,
             type: 'terminal',
@@ -281,7 +281,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             const command = buildAgentAutoCommand(terminal.agentPreset, settings)
             if (command) {
               setTimeout(() => {
-                window.batAppAPI.pty.write(terminal.id, command + '\r')
+                host.pty.write(terminal.id, command + '\r')
               }, 500)
             }
           }
@@ -307,7 +307,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           if (defaultAgent === 'claude-cli' || defaultAgent === 'claude-cli-worktree') {
             startClaudeCliPty(agentTerminal.id, workspace.folderPath, defaultAgent === 'claude-cli-worktree')
           } else if (defaultAgent !== 'claude-code' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
-            window.batAppAPI.pty.create({
+            host.pty.create({
               id: agentTerminal.id,
               cwd: workspace.folderPath,
               type: 'terminal',
@@ -321,7 +321,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
               const command = buildAgentAutoCommand(defaultAgent, settings)
               if (command) {
                 setTimeout(() => {
-                  window.batAppAPI.pty.write(agentTerminal.id, command + '\r')
+                  host.pty.write(agentTerminal.id, command + '\r')
                 }, 500)
               }
             }
@@ -330,7 +330,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
         for (let i = 0; i < terminalCount; i++) {
           const terminal = workspaceStore.addTerminal(workspace.id)
-          window.batAppAPI.pty.create({
+          host.pty.create({
             id: terminal.id,
             cwd: workspace.folderPath,
             type: 'terminal',
@@ -365,7 +365,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const shell = await getShellFromSettings()
     const settings = settingsStore.getSettings()
     const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-    window.batAppAPI.pty.create({
+    host.pty.create({
       id: terminal.id,
       cwd: workspace.folderPath,
       type: 'terminal',
@@ -398,7 +398,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     workspaceStore.setTerminalWorktreeInfo(terminal.id, wtResult.worktreePath, wtResult.branchName)
     workspaceStore.setTerminalGeneratedTitle(terminal.id, 'Terminal (worktree)')
 
-    window.batAppAPI.pty.create({
+    host.pty.create({
       id: terminal.id,
       cwd: wtResult.worktreePath,
       type: 'terminal',
@@ -430,7 +430,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     }
 
     const termInst = workspaceStore.getState().terminals.find(t => t.id === terminalId)
-    window.batAppAPI.pty.create({
+    host.pty.create({
       id: terminalId,
       cwd: effectiveCwd,
       type: 'terminal',
@@ -469,7 +469,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const cmd = cmdParts.join(' ')
 
     setTimeout(() => {
-      window.batAppAPI.pty.write(terminalId, cmd + '\r')
+      host.pty.write(terminalId, cmd + '\r')
     }, 500)
   }, [workspace.folderPath, workspace.envVars])
 
@@ -505,7 +505,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       const shell = await getShellFromSettings()
       const settings = settingsStore.getSettings()
       const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-      window.batAppAPI.pty.create({
+      host.pty.create({
         id: terminal.id,
         cwd: workspace.folderPath,
         type: 'terminal',
@@ -518,7 +518,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       const command = buildAgentAutoCommand(presetId, settings)
       if (command && settings.agentAutoCommand) {
         setTimeout(() => {
-          window.batAppAPI.pty.write(terminal.id, command + '\r')
+          host.pty.write(terminal.id, command + '\r')
         }, 500)
       }
       workspaceStore.setFocusedTerminal(terminal.id)
@@ -575,7 +575,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       setShowCloseConfirm(id)
     } else {
       // Regular terminals always use PTY
-      window.batAppAPI.pty.kill(id)
+      host.pty.kill(id)
       workspaceStore.removeTerminal(id)
       workspaceStore.save()
     }
@@ -610,7 +610,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           window.batAppAPI.worktree.remove(showCloseConfirm, true)
         }
       } else {
-        window.batAppAPI.pty.kill(showCloseConfirm)
+        host.pty.kill(showCloseConfirm)
         // Clean up worktree for PTY-based worktree terminals
         if (cleanWorktree && terminal?.worktreePath) {
           window.batAppAPI.worktree.remove(showCloseConfirm, true)
@@ -635,12 +635,12 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
         })
       } else if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') {
         // Restart claude-cli PTY with bundled CLI
-        await window.batAppAPI.pty.kill(id)
+        await host.pty.kill(id)
         await startClaudeCliPty(id, terminal.cwd || workspace.folderPath, terminal.agentPreset === 'claude-cli-worktree')
       } else {
-        const cwd = await window.batAppAPI.pty.getCwd(id) || terminal.cwd
+        const cwd = await host.pty.getCwd(id) || terminal.cwd
         const shell = await getShellFromSettings()
-        await window.batAppAPI.pty.restart(id, cwd, shell)
+        await host.pty.restart(id, cwd, shell)
         workspaceStore.updateTerminalCwd(id, cwd)
       }
     }

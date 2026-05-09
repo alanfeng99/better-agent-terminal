@@ -46,18 +46,18 @@ export function PromptBox({ terminalId }: Readonly<PromptBoxProps>) {
 
     // Order: text first (no Enter) → attach image → Enter to submit
     if (content) {
-      await window.batAppAPI.pty.write(terminalId, content)
+      await host.pty.write(terminalId, content)
       await new Promise(resolve => setTimeout(resolve, 100))
     }
 
     if (imagePath) {
       await host.clipboard.writeImage(imagePath)
       await new Promise(resolve => setTimeout(resolve, 100))
-      await window.batAppAPI.pty.write(terminalId, '\x1bv')
+      await host.pty.write(terminalId, '\x1bv')
       await new Promise(resolve => setTimeout(resolve, 800))
     }
 
-    await window.batAppAPI.pty.write(terminalId, '\r')
+    await host.pty.write(terminalId, '\r')
 
     setText('')
     setImagePath(null)

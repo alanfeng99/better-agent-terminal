@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useEffect, useState, memo } from 'react'
 import type { TerminalInstance } from '../types'
 import { ActivityIndicator } from './ActivityIndicator'
@@ -72,7 +73,7 @@ const setupGlobalListener = () => {
   }
 
   // PTY output for regular terminals
-  window.batAppAPI.pty.onOutput((id, data) => {
+  host.pty.onOutput((id, data) => {
     const prev = previewCache.get(id) || ''
     const combined = prev + data
     // Keep last 8 lines, clean all ANSI escape sequences for readability
