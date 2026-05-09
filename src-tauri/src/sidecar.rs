@@ -329,9 +329,21 @@ struct SidecarReplyError {
 pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, BridgeError> {
     use tauri::Manager;
 
-    let node_path = which_node().ok_or_else(|| BridgeError {
-        message: "sidecar: could not find `node` on PATH".into(),
-    })?;
+    // Prefer a bundled Node runtime if present in resource_dir; that's
+    // the path a release build takes when the runtime was shipped via
+    // bundle.resources. Fall back to PATH lookup so `tauri dev` and
+    // unit tests still work without any bundled binary.
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .and_then(|dir| find_bundled_node(&dir));
+    let node_path = match bundled {
+        Some(p) => p,
+        None => which_node().ok_or_else(|| BridgeError {
+            message: "sidecar: could not find `node` (no bundled runtime, not on PATH)".into(),
+        })?,
+    };
     // Tauri app data dir, if available. We pass it to the sidecar via env
     // so file-backed handlers land in the same directory the Rust side
     // uses (e.g. claude-accounts.json written by the Electron build).
@@ -360,6 +372,56 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     Err(BridgeError {
         message: "sidecar: could not locate node-sidecar/src/server.mjs".into(),
     })
+}
+
+// Look for a bundled Node runtime under <resource_dir>/node-runtime.
+// The build-side fetch script (scripts/fetch-node-runtime.mjs) drops
+// platform-specific binaries here; resource_dir is the Tauri-managed
+// directory that bundle.resources is unpacked into at install time.
+//
+// Probe order:
+//   1) <resource>/node-runtime/<platform>-<arch>/node[.exe]
+//      (matches Node.org's portable archive layout — bin/node on
+//      darwin/linux, node.exe at root on windows)
+//   2) <resource>/node-runtime/node[.exe]  (flat fallback for when
+//      we ship a single platform's binary without subdirs)
+//
+// Returns None when no bundled binary is found; resolve_spawn_config
+// then falls back to PATH lookup. Keeping this resolver pure (no
+// network / no spawn) means the dev path stays predictable and tests
+// don't need fixtures unless they want to verify a specific layout.
+fn find_bundled_node(resource_dir: &std::path::Path) -> Option<PathBuf> {
+    let runtime = resource_dir.join("node-runtime");
+    if !runtime.is_dir() {
+        return None;
+    }
+    let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+    let arch = std::env::consts::ARCH;
+    let platform = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
+    // 1) platform-arch subdir, with optional bin/ layer
+    let sub = runtime.join(format!("{platform}-{arch}"));
+    if sub.is_dir() {
+        let direct = sub.join(exe_name);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        let in_bin = sub.join("bin").join(exe_name);
+        if in_bin.is_file() {
+            return Some(in_bin);
+        }
+    }
+    // 2) flat fallback at runtime root
+    let flat = runtime.join(exe_name);
+    if flat.is_file() {
+        return Some(flat);
+    }
+    None
 }
 
 fn which_node() -> Option<PathBuf> {
@@ -400,6 +462,81 @@ mod tests {
     }
 
     fn require_node() -> Option<PathBuf> { which_node() }
+
+    #[test]
+    fn find_bundled_node_returns_none_for_missing_dir() {
+        let tmp = std::env::temp_dir().join(format!("bat-bundled-node-test-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // No node-runtime/ subdir present.
+        assert!(find_bundled_node(&tmp).is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_bundled_node_finds_platform_arch_layout() {
+        // Layout matches Node.org portable archive: <runtime>/<plat>-<arch>/[bin/]node
+        let tmp = std::env::temp_dir().join(format!("bat-bundled-node-test-platarch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let arch = std::env::consts::ARCH;
+        let platform = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        };
+        let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+        // Use the bin/ layer so we exercise the secondary probe path too.
+        let bin_dir = tmp.join("node-runtime").join(format!("{platform}-{arch}")).join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let exe = bin_dir.join(exe_name);
+        std::fs::write(&exe, b"fake").unwrap();
+        let found = find_bundled_node(&tmp).expect("expected to find bundled node");
+        assert_eq!(found, exe);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_bundled_node_finds_flat_fallback() {
+        let tmp = std::env::temp_dir().join(format!("bat-bundled-node-test-flat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let runtime = tmp.join("node-runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let exe = runtime.join(exe_name);
+        std::fs::write(&exe, b"fake").unwrap();
+        let found = find_bundled_node(&tmp).expect("expected flat fallback to resolve");
+        assert_eq!(found, exe);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_bundled_node_prefers_platform_subdir_over_flat() {
+        // Both layouts present: platform-arch should win so we don't accidentally
+        // ship a wrong-arch flat binary on a multi-platform release.
+        let tmp = std::env::temp_dir().join(format!("bat-bundled-node-test-pref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let runtime = tmp.join("node-runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let arch = std::env::consts::ARCH;
+        let platform = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        };
+        let sub = runtime.join(format!("{platform}-{arch}"));
+        std::fs::create_dir_all(&sub).unwrap();
+        let preferred = sub.join(exe_name);
+        std::fs::write(&preferred, b"correct").unwrap();
+        let flat = runtime.join(exe_name);
+        std::fs::write(&flat, b"wrong").unwrap();
+        let found = find_bundled_node(&tmp).expect("expected to find bundled node");
+        assert_eq!(found, preferred);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn alloc_id_starts_at_one_and_increments() {
@@ -469,6 +606,65 @@ mod tests {
     // sidecar script to exist. We skip gracefully (returning early with a
     // log) on machines that don't have them — keeps `cargo test` green
     // in minimal dev shells.
+    // Resolve the bundled-node path the same way release would, but
+    // looking at the on-disk node-sidecar/runtime/ checkout instead of
+    // the Tauri resource_dir. Returns None when no runtime has been
+    // fetched yet (CI / fresh checkout) so the test gracefully skips
+    // rather than failing the whole suite.
+    fn bundled_node_path_for_test() -> Option<PathBuf> {
+        let runtime = repo_root().join("node-sidecar").join("runtime");
+        find_bundled_node(&runtime.parent().unwrap())
+            .or_else(|| {
+                // find_bundled_node expects node-runtime/ but our local
+                // checkout uses node-sidecar/runtime/. Probe directly.
+                let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+                let arch = std::env::consts::ARCH;
+                let platform = if cfg!(windows) {
+                    "windows"
+                } else if cfg!(target_os = "macos") {
+                    "darwin"
+                } else {
+                    "linux"
+                };
+                let sub = runtime.join(format!("{platform}-{arch}"));
+                if !sub.is_dir() { return None; }
+                let direct = sub.join(exe_name);
+                if direct.is_file() { return Some(direct); }
+                let in_bin = sub.join("bin").join(exe_name);
+                if in_bin.is_file() { return Some(in_bin); }
+                None
+            })
+    }
+
+    #[test]
+    fn end_to_end_bundled_node_runs_sidecar() {
+        // Verifies the bundled-Node code path by spawning the sidecar
+        // through node-sidecar/runtime/<plat>-<arch>/[bin/]node[.exe]
+        // and round-tripping a ping. Skips gracefully when no runtime
+        // has been fetched (fresh checkout / CI before fetch step).
+        let Some(node_path) = bundled_node_path_for_test() else {
+            eprintln!("skipped: no node-sidecar/runtime/<plat>-<arch> binary present (run `pnpm run fetch:node-runtime`)");
+            return;
+        };
+        let script = sidecar_script();
+        if !script.is_file() {
+            eprintln!("skipped: missing {}", script.display());
+            return;
+        }
+        let cfg = SpawnConfig { node_path: node_path.clone(), script_path: script, data_dir: None };
+        let state = SidecarState::new();
+        let result = state
+            .call(&cfg, "ping", json!({"via":"bundled"}), Duration::from_secs(10))
+            .expect("ping via bundled node");
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["echo"]["via"], "bundled");
+        // Sanity check: the spawned PID came from the bundled binary, not
+        // a system node — we can't introspect the path post-spawn but we
+        // CAN verify the binary we passed actually runs.
+        eprintln!("bundled-node test ok via {}", node_path.display());
+        state.reset();
+    }
+
     #[test]
     fn end_to_end_ping_round_trip() {
         let Some(node_path) = require_node() else {

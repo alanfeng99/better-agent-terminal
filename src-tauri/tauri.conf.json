@@ -31,7 +31,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../node-sidecar/src/server.mjs": "node-sidecar/src/server.mjs"
+      "../node-sidecar/src/server.mjs": "node-sidecar/src/server.mjs",
+      "../node-sidecar/runtime/": "node-runtime/"
     }
   }
 }

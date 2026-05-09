@@ -19,3 +19,10 @@ nul
 
 # Diagnosis reports
 tests/*.json
+
+# Bundled Node runtime (fetched per-platform via scripts/fetch-node-runtime.mjs).
+# We track the dir itself + its docs so the Tauri bundle.resources entry
+# resolves, but the actual binaries are too large + platform-specific to commit.
+node-sidecar/runtime/*
+!node-sidecar/runtime/.gitkeep
+!node-sidecar/runtime/README.md

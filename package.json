@@ -31,6 +31,7 @@
     "test:tauri-launch": "tsx tests/tauri-launch.test.ts",
     "test:tauri-rust": "cd src-tauri && cargo test --quiet",
     "test:sidecar": "node node-sidecar/tests/server.test.mjs",
+    "fetch:node-runtime": "node scripts/fetch-node-runtime.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
