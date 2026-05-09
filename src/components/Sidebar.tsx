@@ -126,7 +126,7 @@ export function Sidebar({
   }, [contextMenu])
 
   const moveWorkspaceToWindow = useCallback(async (sourceWindowId: string, targetWindowId: string, workspaceId: string, insertIndex: number) => {
-    const ok = await window.batAppAPI.workspace.moveToWindow(sourceWindowId, targetWindowId, workspaceId, insertIndex)
+    const ok = await host.workspace.moveToWindow(sourceWindowId, targetWindowId, workspaceId, insertIndex)
     if (!ok) window.alert('Workspace moves only work between host windows, or between remote windows on the same remote.')
   }, [])
 

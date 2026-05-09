@@ -217,6 +217,20 @@ function createTauriHost(): BatAppAPI {
       unwatch: () => notImplemented('fs.unwatch'),
       onChanged: () => notImplemented('fs.onChanged'),
     },
+    workspace: {
+      load: () => getInvoke()<string | null>('workspace_load'),
+      save: (data: string) => getInvoke()<boolean>('workspace_save', { data }),
+      // Multi-window features are intentionally unported — the Tauri MVP
+      // is single-window. They throw "not implemented" under Tauri.
+      detach: () => notImplemented('workspace.detach'),
+      reattach: () => notImplemented('workspace.reattach'),
+      moveToWindow: () => notImplemented('workspace.moveToWindow'),
+      // Synchronous query the renderer reads during initial render — the
+      // Tauri build never opens a detached child window, so always null.
+      getDetachedId: () => null,
+      onDetached: () => () => {},
+      onReattached: () => () => {},
+    },
     pty: {
       create: (options: unknown) =>
         getInvoke()<string>('pty_create', { options: options as Record<string, unknown> }),
@@ -293,7 +307,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 
 // Namespaces whose methods are routed through Tauri invoke. Listed here so
 // the permissive shim can prefer the real impl when present.
-const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs', 'clipboard', 'image', 'pty'])
+const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs', 'clipboard', 'image', 'pty', 'workspace'])
 
 export function installTauriShim(): void {
   if (getHostKind() !== 'tauri') return

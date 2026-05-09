@@ -85,6 +85,8 @@ async function run() {
       if (cmd === 'pty_write') return undefined as unknown as T
       if (cmd === 'pty_resize') return undefined as unknown as T
       if (cmd === 'pty_kill') return undefined as unknown as T
+      if (cmd === 'workspace_load') return null as unknown as T
+      if (cmd === 'workspace_save') return true as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -146,6 +148,13 @@ async function run() {
     await mod.host.pty.resize('term-1', 120, 32)
     await mod.host.pty.kill('term-1')
 
+    const wsLoaded = await mod.host.workspace.load()
+    assert.equal(wsLoaded, null)
+    const wsSaved = await mod.host.workspace.save('{"workspaces":[]}')
+    assert.equal(wsSaved, true)
+    // workspace.getDetachedId is synchronous and always null under Tauri.
+    assert.equal(mod.host.workspace.getDetachedId(), null)
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -171,6 +180,8 @@ async function run() {
       { cmd: 'pty_write', args: { id: 'term-1', data: 'echo hi\n' } },
       { cmd: 'pty_resize', args: { id: 'term-1', cols: 120, rows: 32 } },
       { cmd: 'pty_kill', args: { id: 'term-1' } },
+      { cmd: 'workspace_load', args: undefined },
+      { cmd: 'workspace_save', args: { data: '{"workspaces":[]}' } },
     ])
   }
 
@@ -179,10 +190,10 @@ async function run() {
     const invoke: TauriInvoke = async () => undefined as unknown as never
     setWindow({ __TAURI_INTERNALS__: { invoke } })
     const mod = await loadFreshAdapter()
-    // workspace is still unported — use it as the canary for "namespace
+    // git is still unported — use it as the canary for "namespace
     // not yet implemented" behaviour.
-    assert.throws(() => (mod.host as { workspace: { save: () => unknown } }).workspace.save(),
-      /workspace\.save is not yet implemented under Tauri/)
+    assert.throws(() => (mod.host as { git: { status: () => unknown } }).git.status(),
+      /git\.status is not yet implemented under Tauri/)
     // Within a ported namespace, individually unported entries (e.g.
     // pty.restart) still throw the same way.
     assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),

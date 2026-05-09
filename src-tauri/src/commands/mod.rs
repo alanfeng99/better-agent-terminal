@@ -13,3 +13,4 @@ pub mod image;
 pub mod pty;
 pub mod settings;
 pub mod shell;
+pub mod workspace;

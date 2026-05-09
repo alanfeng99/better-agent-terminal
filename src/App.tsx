@@ -101,7 +101,7 @@ export default function App() {
   // Panel settings for resizable panels
   const [panelSettings, setPanelSettings] = useState<PanelSettings>(loadPanelSettings)
   // Detached workspace support
-  const [detachedWorkspaceId] = useState(() => window.batAppAPI.workspace.getDetachedId())
+  const [detachedWorkspaceId] = useState(() => host.workspace.getDetachedId())
   const [detachedIds, setDetachedIds] = useState<Set<string>>(new Set())
   // Track workspaces that have been visited (for lazy mounting)
   const [mountedWorkspaces, setMountedWorkspaces] = useState<Set<string>>(new Set())
@@ -487,10 +487,10 @@ export default function App() {
     const unsubReload = workspaceStore.listenForReload()
 
     // Listen for workspace detach/reattach events (main window only)
-    const unsubDetach = window.batAppAPI.workspace.onDetached((wsId) => {
+    const unsubDetach = host.workspace.onDetached((wsId) => {
       setDetachedIds(prev => new Set(prev).add(wsId))
     })
-    const unsubReattach = window.batAppAPI.workspace.onReattached((wsId) => {
+    const unsubReattach = host.workspace.onReattached((wsId) => {
       setDetachedIds(prev => {
         const next = new Set(prev)
         next.delete(wsId)
@@ -536,7 +536,7 @@ export default function App() {
 
 
   const handleDetachWorkspace = useCallback(async (workspaceId: string) => {
-    await window.batAppAPI.workspace.detach(workspaceId)
+    await host.workspace.detach(workspaceId)
   }, [])
 
   // Paste content to focused PTY terminal

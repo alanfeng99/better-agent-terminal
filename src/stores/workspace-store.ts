@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { v4 as uuidv4 } from 'uuid'
 import type { Workspace, TerminalInstance, AppState } from '../types'
 import { AgentPresetId, getAgentPreset } from '../types/agent-presets'
@@ -574,7 +575,7 @@ class WorkspaceStore {
   getWindowId(): string | null { return this.windowId }
 
   listenForReload(): () => void {
-    return window.batAppAPI.workspace.onReload((data?: string) => {
+    return host.workspace.onReload((data?: string) => {
       if (data) {
         this.applySerializedData(data, { preserveActiveSelection: true })
         return
@@ -619,7 +620,7 @@ class WorkspaceStore {
         terminals: savedTerminals,
         activeTerminalId: this.state.activeTerminalId,
       })
-      await window.batAppAPI.workspace.save(data)
+      await host.workspace.save(data)
     }).catch(e => {
       console.error('Failed to save workspace data:', e)
     })
@@ -628,7 +629,7 @@ class WorkspaceStore {
   }
 
   async load(): Promise<void> {
-    const data = await window.batAppAPI.workspace.load()
+    const data = await host.workspace.load()
     if (data) {
       this.applySerializedData(data)
     }
