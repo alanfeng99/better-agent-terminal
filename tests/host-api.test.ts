@@ -193,6 +193,17 @@ async function run() {
       if (cmd === 'worker_buffer_append') return true as unknown as T
       if (cmd === 'worker_buffer_read_all') return '' as unknown as T
       if (cmd === 'worker_buffer_clear') return true as unknown as T
+      if (cmd === 'remote_start_server') return { error: 'stub' } as unknown as T
+      if (cmd === 'remote_stop_server') return false as unknown as T
+      if (cmd === 'remote_server_status') {
+        return { running: false, port: null, fingerprint: null, bindInterface: null, boundHost: null, clients: [] } as unknown as T
+      }
+      if (cmd === 'remote_connect') return { error: 'stub' } as unknown as T
+      if (cmd === 'remote_disconnect') return false as unknown as T
+      if (cmd === 'remote_client_status') return { connected: false, info: null } as unknown as T
+      if (cmd === 'remote_test_connection') return { ok: false, error: 'stub' } as unknown as T
+      if (cmd === 'remote_list_profiles') return { error: 'stub' } as unknown as T
+      if (cmd === 'tunnel_get_connection') return { error: 'stub' } as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -447,6 +458,24 @@ async function run() {
     assert.equal(await mod.host.workerBuffer.readAll('p1'), '')
     assert.equal(await mod.host.workerBuffer.clear('p1'), true)
 
+    // remote.* / tunnel.* — Phase 3 stubs returning shaped objects so the
+    // renderer's polling clientStatus / serverStatus doesn't crash on
+    // .connected / .running destructuring.
+    assert.deepEqual(await mod.host.remote.startServer({ port: 9876 }), { error: 'stub' })
+    assert.equal(await mod.host.remote.stopServer(), false)
+    const srvStatus = await mod.host.remote.serverStatus()
+    assert.equal((srvStatus as { running: boolean }).running, false)
+    assert.deepEqual(await mod.host.remote.connect('h', 9876, 't', 'fp'), { error: 'stub' })
+    // connect with optional label
+    await mod.host.remote.connect('h', 9876, 't', 'fp', 'lbl')
+    assert.equal(await mod.host.remote.disconnect(), false)
+    assert.deepEqual(await mod.host.remote.clientStatus(), { connected: false, info: null })
+    assert.deepEqual(await mod.host.remote.testConnection('h', 9876, 't', 'fp'), {
+      ok: false, error: 'stub',
+    })
+    assert.deepEqual(await mod.host.remote.listProfiles('h', 9876, 't', 'fp'), { error: 'stub' })
+    assert.deepEqual(await mod.host.tunnel.getConnection(), { error: 'stub' })
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -572,6 +601,16 @@ async function run() {
       { cmd: 'worker_buffer_append', args: { panelId: 'p1', lines: 'line\n' } },
       { cmd: 'worker_buffer_read_all', args: { panelId: 'p1' } },
       { cmd: 'worker_buffer_clear', args: { panelId: 'p1' } },
+      { cmd: 'remote_start_server', args: { options: { port: 9876 } } },
+      { cmd: 'remote_stop_server', args: undefined },
+      { cmd: 'remote_server_status', args: undefined },
+      { cmd: 'remote_connect', args: { host: 'h', port: 9876, token: 't', fingerprint: 'fp', label: undefined } },
+      { cmd: 'remote_connect', args: { host: 'h', port: 9876, token: 't', fingerprint: 'fp', label: 'lbl' } },
+      { cmd: 'remote_disconnect', args: undefined },
+      { cmd: 'remote_client_status', args: undefined },
+      { cmd: 'remote_test_connection', args: { host: 'h', port: 9876, token: 't', fingerprint: 'fp' } },
+      { cmd: 'remote_list_profiles', args: { host: 'h', port: 9876, token: 't', fingerprint: 'fp' } },
+      { cmd: 'tunnel_get_connection', args: undefined },
     ])
   }
 
@@ -580,10 +619,10 @@ async function run() {
     const invoke: TauriInvoke = async () => undefined as unknown as never
     setWindow({ __TAURI_INTERNALS__: { invoke } })
     const mod = await loadFreshAdapter()
-    // remote.* / tunnel.* are still unported (Phase 3) — use one as the
-    // canary for "namespace not yet implemented" behaviour.
-    assert.throws(() => (mod.host as { remote: { startServer: () => unknown } }).remote.startServer(),
-      /remote\.startServer is not yet implemented under Tauri/)
+    // remote/tunnel were ported as sidecar stubs in Phase 3 prep; pick a
+    // namespace that's still entirely unrouted (none right now — every
+    // preload namespace is at least stub-routed). We retain the per-method
+    // canaries below to cover that case explicitly.
     // Within a ported namespace, individually unported entries (e.g.
     // pty.restart) still throw the same way.
     assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),

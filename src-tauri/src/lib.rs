@@ -13,9 +13,10 @@ use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
     debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd,
     github as github_cmd, image as image_cmd, notification as notification_cmd,
-    openai as openai_cmd, profile as profile_cmd, pty as pty_cmd, settings,
-    shell as shell_cmd, snippet as snippet_cmd, update as update_cmd,
-    worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
+    openai as openai_cmd, profile as profile_cmd, pty as pty_cmd, remote as remote_cmd,
+    settings, shell as shell_cmd, snippet as snippet_cmd, tunnel as tunnel_cmd,
+    update as update_cmd, worker_buffer as worker_buffer_cmd, workspace as workspace_cmd,
+    worktree as worktree_cmd,
 };
 
 pub fn run() {
@@ -147,6 +148,15 @@ pub fn run() {
             worker_buffer_cmd::worker_buffer_append,
             worker_buffer_cmd::worker_buffer_read_all,
             worker_buffer_cmd::worker_buffer_clear,
+            remote_cmd::remote_start_server,
+            remote_cmd::remote_stop_server,
+            remote_cmd::remote_server_status,
+            remote_cmd::remote_connect,
+            remote_cmd::remote_disconnect,
+            remote_cmd::remote_client_status,
+            remote_cmd::remote_test_connection,
+            remote_cmd::remote_list_profiles,
+            tunnel_cmd::tunnel_get_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

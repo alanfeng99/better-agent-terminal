@@ -578,6 +578,29 @@ function createTauriHost(): BatAppAPI {
       clear: (panelId: string) =>
         getInvoke()<boolean>('worker_buffer_clear', { panelId }),
     },
+    remote: {
+      // Phase 3 namespace; sidecar stubs return shaped objects so the
+      // renderer's polling clientStatus() / serverStatus() doesn't crash
+      // when it destructures `.connected` / `.running`.
+      startServer: (options?: unknown) =>
+        getInvoke()<unknown>('remote_start_server', { options }),
+      stopServer: () => getInvoke()<unknown>('remote_stop_server'),
+      serverStatus: () => getInvoke()<unknown>('remote_server_status'),
+      connect: (host: string, port: number, token: string, fingerprint: string, label?: string) =>
+        getInvoke()<unknown>('remote_connect', { host, port, token, fingerprint, label }),
+      disconnect: () => getInvoke()<unknown>('remote_disconnect'),
+      clientStatus: () =>
+        getInvoke()<{ connected: boolean; info: { host: string; port: number } | null }>(
+          'remote_client_status',
+        ),
+      testConnection: (host: string, port: number, token: string, fingerprint: string) =>
+        getInvoke()<unknown>('remote_test_connection', { host, port, token, fingerprint }),
+      listProfiles: (host: string, port: number, token: string, fingerprint: string) =>
+        getInvoke()<unknown>('remote_list_profiles', { host, port, token, fingerprint }),
+    },
+    tunnel: {
+      getConnection: () => getInvoke()<unknown>('tunnel_get_connection'),
+    },
     pty: {
       create: (options: unknown) =>
         getInvoke()<string>('pty_create', { options: options as Record<string, unknown> }),
@@ -659,6 +682,7 @@ const PORTED_NAMESPACES = new Set([
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
   'notification', 'system', 'github', 'snippet', 'profile',
   'claude', 'openai', 'worktree', 'agent', 'workerBuffer',
+  'remote', 'tunnel',
 ])
 
 export function installTauriShim(): void {
