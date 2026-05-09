@@ -323,6 +323,93 @@ async function inProcess() {
   assert.ok(Array.isArray(presetsReply.result))
   assert.ok(presetsReply.result.length > 0, 'agent.listPresets returned empty list')
   assert.ok(presetsReply.result.includes('claude-cli'))
+
+  // worktree.* — full create/status/remove/rehydrate round trip against a
+  // real ephemeral git repo. Skipped if `git` isn't on PATH.
+  const { worktreeCreate, worktreeRemove, worktreeStatus, worktreeRehydrate, worktreeGetGitRoot, activeWorktrees } = mod
+  const gitAvailable = await new Promise(r => {
+    const cp = spawn('git', ['--version'], { stdio: 'ignore' })
+    cp.on('error', () => r(false))
+    cp.on('exit', code => r(code === 0))
+  })
+  if (gitAvailable) {
+    const repo = mkdtempSync(join(tmpdir(), 'sidecar-wt-'))
+    try {
+      await new Promise((res, rej) => {
+        const c = spawn('git', ['init', '-b', 'main'], { cwd: repo, stdio: 'ignore' })
+        c.on('exit', code => code === 0 ? res() : rej(new Error('git init failed')))
+      })
+      // Configure identity so commit works in CI shells without a global config.
+      for (const [k, v] of [['user.email', 'test@example.com'], ['user.name', 'Test']]) {
+        await new Promise(r => { const c = spawn('git', ['config', k, v], { cwd: repo, stdio: 'ignore' }); c.on('exit', r) })
+      }
+      writeFileSync(join(repo, 'README.md'), '# fixture\n')
+      await new Promise((res, rej) => {
+        const c = spawn('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+        c.on('exit', code => code === 0 ? res() : rej(new Error('git add failed')))
+      })
+      await new Promise((res, rej) => {
+        const c = spawn('git', ['commit', '-m', 'init'], { cwd: repo, stdio: 'ignore', env: { ...process.env, GIT_AUTHOR_DATE: '2024-01-01T00:00:00', GIT_COMMITTER_DATE: '2024-01-01T00:00:00' } })
+        c.on('exit', code => code === 0 ? res() : rej(new Error('git commit failed')))
+      })
+
+      // getGitRoot detection.
+      const root = await worktreeGetGitRoot(repo)
+      assert.ok(root, 'worktreeGetGitRoot returned null on real git repo')
+
+      // Create + verify the worktree exists on disk and in the active map.
+      const sessionId = `wt-test-${Date.now()}`
+      const info = await worktreeCreate(sessionId, repo)
+      assert.equal(info.sessionId, sessionId)
+      assert.ok(info.worktreePath.includes('.bat-worktrees'))
+      assert.ok(info.branchName.startsWith('bat/worktree-'))
+      assert.ok(activeWorktrees.has(sessionId))
+      const { existsSync, readFileSync } = await import('node:fs')
+      assert.ok(existsSync(info.worktreePath))
+      // .git/info/exclude has been updated.
+      const excludeContent = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8')
+      assert.ok(excludeContent.includes('/.bat-worktrees/'), 'exclude not updated')
+
+      // status returns the expected shape (empty diff because nothing changed).
+      const status = await worktreeStatus(sessionId)
+      assert.ok(status, 'status returned null')
+      assert.equal(status.branchName, info.branchName)
+      assert.equal(status.worktreePath, info.worktreePath)
+      assert.equal(status.sourceBranch, 'main')
+      assert.equal(typeof status.diff, 'string')
+
+      // status for unknown session is null.
+      assert.equal(await worktreeStatus('does-not-exist'), null)
+
+      // rehydrate same session id is idempotent (returns existing entry).
+      const rehydrated = worktreeRehydrate(sessionId, repo, info.worktreePath, info.branchName)
+      assert.equal(rehydrated.worktreePath, info.worktreePath)
+
+      // remove + branch deletion.
+      await worktreeRemove(sessionId, true)
+      assert.equal(activeWorktrees.has(sessionId), false)
+      assert.equal(existsSync(info.worktreePath), false, 'worktree path still exists after remove')
+
+      // Rehydrate a brand-new session against the now-deleted path —
+      // map gets an entry, source branch resolves async.
+      const rehydrateNew = worktreeRehydrate('rehydrate-only', repo, info.worktreePath, 'feat/x')
+      assert.equal(rehydrateNew.branchName, 'feat/x')
+      assert.equal(rehydrateNew.sessionId, 'rehydrate-only')
+      activeWorktrees.delete('rehydrate-only')
+      // Let any in-flight async git lookups settle so Windows doesn't
+      // EBUSY on the temp dir teardown.
+      await new Promise(r => setTimeout(r, 200))
+    } finally {
+      // Retry rm a couple of times — git can leave handles open briefly
+      // on Windows after fork/exec teardown.
+      for (let i = 0; i < 5; i++) {
+        try { rmSync(repo, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); break }
+        catch { await new Promise(r => setTimeout(r, 200)) }
+      }
+    }
+  } else {
+    console.log('worktree tests skipped: git not on PATH')
+  }
 }
 
 // End-to-end: spawn `node server.mjs`, send a few requests, assert replies.
