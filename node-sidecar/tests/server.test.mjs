@@ -2736,6 +2736,77 @@ async function inProcess() {
     assert.equal(fp.normalizeFingerprint(actual), fp.normalizeFingerprint(userPasted))
   }
 
+  // remote-certificate — TLS cert generation + persistence for the
+  // future WebSocket server. Generation uses 2048-bit RSA via the
+  // `selfsigned` package, which costs a few seconds, so we run one
+  // full generate + reload + corruption-recovery cycle.
+  {
+    const certMod = await import('../src/lib/remote-certificate.mjs')
+    const fpMod = await import('../src/lib/remote-fingerprint.mjs')
+    const { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'bat-remote-cert-'))
+    try {
+      // (1) Fresh dir → generate. Subdir auto-created when missing.
+      const dir = join(tmpRoot, 'config')
+      assert.equal(existsSync(dir), false)
+      const cert1 = await certMod.ensureCertificate(dir)
+      assert.equal(existsSync(dir), true, 'configDir auto-created')
+      assert.match(cert1.cert, /-----BEGIN CERTIFICATE-----/)
+      assert.match(cert1.cert, /-----END CERTIFICATE-----/)
+      assert.match(cert1.privateKey, /-----BEGIN (?:RSA |ENCRYPTED )?PRIVATE KEY-----/)
+      assert.equal(cert1.fingerprint256.length, 95)
+      assert.match(cert1.fingerprint256, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/)
+      // Fingerprint must match what we'd compute from the PEM directly.
+      assert.equal(cert1.fingerprint256, fpMod.computeFingerprint(cert1.cert))
+
+      // Cert file written with the secrets envelope.
+      const certPath = join(dir, certMod.__certFileNameForTests)
+      assert.equal(existsSync(certPath), true)
+      const onDisk = JSON.parse(readFileSync(certPath, 'utf-8'))
+      assert.equal(onDisk.enc, false)
+      assert.equal(typeof onDisk.data, 'string')
+
+      // (2) Reload — same dir, same cert + fingerprint, no regeneration.
+      // Stamp the file mtime by reading-then-comparing identity.
+      const cert2 = await certMod.ensureCertificate(dir)
+      assert.equal(cert2.cert, cert1.cert, 'reload must return identical cert PEM')
+      assert.equal(cert2.privateKey, cert1.privateKey, 'reload must return identical private key')
+      assert.equal(cert2.fingerprint256, cert1.fingerprint256)
+
+      // (3) Corruption recovery — overwrite the cert file with garbage,
+      // ensureCertificate regenerates rather than throwing. New cert
+      // gets a different fingerprint.
+      writeFileSync(certPath, 'not-json-at-all', 'utf-8')
+      // Silence the warn from remote-secrets parse failure.
+      const origWarn = console.warn
+      console.warn = () => {}
+      let cert3
+      try {
+        cert3 = await certMod.ensureCertificate(dir)
+      } finally {
+        console.warn = origWarn
+      }
+      assert.match(cert3.cert, /-----BEGIN CERTIFICATE-----/)
+      assert.notEqual(cert3.fingerprint256, cert1.fingerprint256, 'regenerated cert must differ from original')
+      assert.equal(cert3.fingerprint256, fpMod.computeFingerprint(cert3.cert))
+
+      // (4) Missing-fields envelope (someone wrote {enc:false, data:'{}'})
+      // is treated as missing → regenerate.
+      writeFileSync(certPath, JSON.stringify({ enc: false, data: '{}' }), 'utf-8')
+      const cert4 = await certMod.ensureCertificate(dir)
+      assert.match(cert4.cert, /-----BEGIN CERTIFICATE-----/)
+      // After this the file holds a fresh stored cert, fingerprint differs from cert3.
+      assert.notEqual(cert4.fingerprint256, cert3.fingerprint256)
+
+      // (5) Validation — empty/non-string configDir throws synchronously.
+      await assert.rejects(certMod.ensureCertificate(''), /non-empty string/)
+      await assert.rejects(certMod.ensureCertificate(null), /non-empty string/)
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  }
+
   // worktree.* — full create/status/remove/rehydrate round trip against a
   // real ephemeral git repo. Skipped if `git` isn't on PATH.
   const { worktreeCreate, worktreeRemove, worktreeStatus, worktreeRehydrate, worktreeGetGitRoot, activeWorktrees } = mod
