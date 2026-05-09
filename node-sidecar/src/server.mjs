@@ -19,6 +19,10 @@
 // Tests live in node-sidecar/tests/server.test.mjs.
 
 import { createInterface } from 'node:readline'
+import { readdir, stat } from 'node:fs/promises'
+import { createReadStream, accessSync, constants as fsConstants } from 'node:fs'
+import { homedir, platform } from 'node:os'
+import { join, basename } from 'node:path'
 
 // Handler registry. Each handler receives `params` (any JSON value) and
 // returns either a value or a Promise resolving to one. Throw to signal an
@@ -121,10 +125,19 @@ registerHandler('claude.accountRemove', async (params) => {
 })
 registerHandler('claude.accountMarkWarningShown', async () => true)
 
-// Read-only metadata stubs. All return inert defaults so the renderer
-// renders empty rather than crashing.
-registerHandler('claude.getCliPath', async () => '')
-registerHandler('claude.listSessions', async () => [])
+// Read-only metadata. Two of these are now real implementations:
+//   - claude.getCliPath: locate the `claude` binary on PATH (no SDK dep).
+//   - claude.listSessions: parse JSONL session files under
+//     ~/.claude/projects/<encoded-cwd>/, mirroring the fallback path
+//     of the Electron-side claude-agent-manager.listSessionsFallback().
+// The rest return inert defaults until @anthropic-ai/claude-agent-sdk
+// moves into the sidecar.
+registerHandler('claude.getCliPath', async () => findClaudeCliPath() ?? '')
+registerHandler('claude.listSessions', async (params) => {
+  const cwd = typeof params?.cwd === 'string' ? params.cwd : ''
+  if (!cwd) return []
+  return listSessionsFallback(cwd)
+})
 registerHandler('claude.getSupportedModels', async () => [])
 registerHandler('claude.getSupportedCommands', async () => [])
 registerHandler('claude.getSupportedAgents', async () => [])
@@ -256,6 +269,124 @@ registerHandler('update.check', async (params) => {
 
 // Exported for unit tests.
 export { compareVersions }
+
+// --- claude.getCliPath / claude.listSessions helpers ----------------------
+//
+// Both helpers run with no Anthropic SDK dependency. They mirror the
+// Electron implementations under electron/claude-agent-manager.ts so the
+// renderer sees the same shapes regardless of host.
+
+const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+const PREVIEW_LINE_LIMIT = 20
+const PREVIEW_CHARS = 120
+const SESSION_LIST_LIMIT = 50
+
+function findClaudeCliPath() {
+  // Walk PATH and look for "claude" (or claude.cmd / claude.exe / claude.bat
+  // on Windows). Returns the first match or null. We deliberately do not
+  // shell out to `which` / `where` — readdir-by-PATHEXT is cheaper and
+  // doesn't depend on platform tooling being present.
+  const PATH = process.env.PATH ?? ''
+  const sep = platform() === 'win32' ? ';' : ':'
+  const dirs = PATH.split(sep).filter(Boolean)
+  const exts = platform() === 'win32'
+    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map(e => e.toLowerCase())
+    : ['']
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = join(dir, `claude${ext}`)
+      try {
+        accessSync(candidate, fsConstants.F_OK)
+        return candidate
+      } catch { /* not here, try next */ }
+    }
+  }
+  return null
+}
+
+async function listSessionsFallback(cwd) {
+  // Sessions live under ~/.claude/projects/<encoded>/, where <encoded> is
+  // the cwd with all non-alphanumeric chars replaced by "-". Windows
+  // sometimes case-folds the first letter, so we probe a couple of
+  // alt-cased variants to be safe.
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const candidates = [join(CLAUDE_PROJECTS_DIR, encoded)]
+  if (platform() === 'win32' && encoded.length > 0) {
+    const lower = encoded[0].toLowerCase() + encoded.slice(1)
+    const upper = encoded[0].toUpperCase() + encoded.slice(1)
+    if (lower !== encoded) candidates.push(join(CLAUDE_PROJECTS_DIR, lower))
+    if (upper !== encoded) candidates.push(join(CLAUDE_PROJECTS_DIR, upper))
+  }
+
+  const results = []
+  for (const dir of candidates) {
+    let entries
+    try {
+      entries = (await readdir(dir)).filter(f => f.endsWith('.jsonl'))
+    } catch {
+      continue
+    }
+    for (const file of entries) {
+      const filePath = join(dir, file)
+      const sdkSessionId = basename(file, '.jsonl')
+      try {
+        const st = await stat(filePath)
+        const { preview, messageCount } = await readSessionPreview(filePath)
+        results.push({
+          sdkSessionId,
+          timestamp: st.mtimeMs,
+          preview: preview || '(no preview)',
+          messageCount,
+        })
+      } catch { /* skip unreadable */ }
+    }
+  }
+
+  const seen = new Set()
+  const deduped = results.filter(r => {
+    if (seen.has(r.sdkSessionId)) return false
+    seen.add(r.sdkSessionId)
+    return true
+  })
+  deduped.sort((a, b) => b.timestamp - a.timestamp)
+  return deduped.slice(0, SESSION_LIST_LIMIT)
+}
+
+async function readSessionPreview(filePath) {
+  // Stream up to PREVIEW_LINE_LIMIT lines and stop. We only need the
+  // first user message for the preview; any further reading is wasted I/O
+  // on JSONL files that can be hundreds of MB.
+  const stream = createReadStream(filePath, { encoding: 'utf-8' })
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  let preview = ''
+  let messageCount = 0
+  let lineCount = 0
+  try {
+    for await (const line of rl) {
+      lineCount++
+      if (lineCount > PREVIEW_LINE_LIMIT) break
+      try {
+        const obj = JSON.parse(line)
+        messageCount++
+        if (!preview && obj?.type === 'user') {
+          const content = obj?.message?.content
+          if (typeof content === 'string') {
+            preview = content.slice(0, PREVIEW_CHARS)
+          } else if (Array.isArray(content)) {
+            const textBlock = content.find(b => b?.type === 'text')
+            if (textBlock?.text) preview = String(textBlock.text).slice(0, PREVIEW_CHARS)
+          }
+        }
+      } catch { /* skip malformed */ }
+    }
+  } finally {
+    stream.destroy()
+  }
+  return { preview, messageCount }
+}
+
+// Exported for tests.
+export { findClaudeCliPath, listSessionsFallback }
 
 // --- protocol ---------------------------------------------------------------
 

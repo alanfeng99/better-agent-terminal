@@ -12,7 +12,9 @@ import * as assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve, join } from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const serverPath = resolve(here, '..', 'src', 'server.mjs')
@@ -77,6 +79,95 @@ async function inProcess() {
   assert.equal(compareVersions('v1.2.3', 'v1.2.4'), true)
   assert.equal(compareVersions('1.0', '1.0.1'), true)
   assert.equal(compareVersions('2.0.0', '1.99.99'), false)
+
+  // findClaudeCliPath — point PATH at a temp dir containing a fake claude
+  // binary and confirm the helper finds it. Cross-platform: on Windows we
+  // create claude.cmd, elsewhere a plain `claude` file.
+  const { findClaudeCliPath, listSessionsFallback } = mod
+  const fakeBinDir = mkdtempSync(join(tmpdir(), 'sidecar-bin-'))
+  try {
+    const isWin = process.platform === 'win32'
+    const exeName = isWin ? 'claude.cmd' : 'claude'
+    const exePath = join(fakeBinDir, exeName)
+    writeFileSync(exePath, isWin ? '@echo off\r\n' : '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const savedPath = process.env.PATH
+    process.env.PATH = fakeBinDir
+    try {
+      const found = findClaudeCliPath()
+      assert.equal(found, exePath)
+    } finally {
+      process.env.PATH = savedPath
+    }
+    // Empty PATH → returns null rather than throwing.
+    const savedPath2 = process.env.PATH
+    process.env.PATH = ''
+    try {
+      const found = findClaudeCliPath()
+      assert.equal(found, null)
+    } finally {
+      process.env.PATH = savedPath2
+    }
+  } finally {
+    rmSync(fakeBinDir, { recursive: true, force: true })
+  }
+
+  // listSessionsFallback — fabricate a fake ~/.claude/projects layout
+  // by overriding HOME to a temp dir, write a JSONL session, and assert
+  // the parsed shape matches the SessionSummary contract.
+  const fakeHome = mkdtempSync(join(tmpdir(), 'sidecar-home-'))
+  const cwd = '/test/project'
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const projectDir = join(fakeHome, '.claude', 'projects', encoded)
+  mkdirSync(projectDir, { recursive: true })
+  const jsonl = [
+    JSON.stringify({ type: 'user', message: { content: 'hello world from test' } }),
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'reply' }] } }),
+    'malformed line should be skipped',
+    JSON.stringify({ type: 'user', message: { content: 'second user msg' } }),
+  ].join('\n') + '\n'
+  writeFileSync(join(projectDir, 'sess-abc.jsonl'), jsonl)
+
+  const savedHome = process.env.HOME
+  const savedUserProfile = process.env.USERPROFILE
+  // Node's os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
+  // The helper captured CLAUDE_PROJECTS_DIR at module-load time so we
+  // can't override after the fact — instead run the helper with a
+  // forced cwd whose encoded form points at our fake home, then put
+  // the file under the *real* expected location. We do that by writing
+  // to the actual ~/.claude/projects under a unique cwd encoding so we
+  // don't collide with real sessions, and clean up afterward.
+  process.env.HOME = savedHome
+  process.env.USERPROFILE = savedUserProfile
+  try {
+    // Use a unique cwd that maps to a directory we own, located under
+    // the *real* CLAUDE_PROJECTS_DIR, so the helper finds it without
+    // needing module re-init.
+    const { homedir } = await import('node:os')
+    const realProjectsBase = join(homedir(), '.claude', 'projects')
+    const uniqueCwd = `/__sidecar_test__/${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const uniqueEncoded = uniqueCwd.replace(/[^a-zA-Z0-9]/g, '-')
+    const realDir = join(realProjectsBase, uniqueEncoded)
+    mkdirSync(realDir, { recursive: true })
+    try {
+      writeFileSync(join(realDir, 'sess-test.jsonl'), jsonl)
+      const sessions = await listSessionsFallback(uniqueCwd)
+      assert.equal(sessions.length, 1)
+      assert.equal(sessions[0].sdkSessionId, 'sess-test')
+      assert.equal(sessions[0].preview, 'hello world from test')
+      assert.equal(sessions[0].messageCount, 3) // 3 valid lines, 1 skipped
+      assert.equal(typeof sessions[0].timestamp, 'number')
+    } finally {
+      rmSync(realDir, { recursive: true, force: true })
+    }
+    // Empty cwd → returns []
+    const empty = await listSessionsFallback('')
+    assert.deepEqual(empty, [])
+    // Non-existent project dir → returns []
+    const nonExistent = await listSessionsFallback('/this/does/not/exist/anywhere')
+    assert.deepEqual(nonExistent, [])
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true })
+  }
 }
 
 // End-to-end: spawn `node server.mjs`, send a few requests, assert replies.
