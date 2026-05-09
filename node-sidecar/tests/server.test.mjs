@@ -689,6 +689,179 @@ async function inProcess() {
     restoreImageSend()
   }
 
+  // canUseTool round-trip. Fake SDK calls the canUseTool callback with
+  // a Bash tool; sidecar must surface a claude:permission-request event
+  // and then resolve the SDK's promise when claude.resolvePermission
+  // arrives from the renderer. This is the wire that lets the Tauri
+  // permission UI actually approve / deny tool calls.
+  const permCaptured = []
+  const restorePermSend = mod.__setSendEventForTests((name, payload) => permCaptured.push({ name, payload }))
+  let canUseToolFn = null
+  const fakeSdkPerm = {
+    query({ options }) {
+      canUseToolFn = options.canUseTool
+      return (async function*() {
+        yield { type: 'system', subtype: 'init', session_id: 'perm-sdk' }
+        // We yield, then the test triggers canUseTool out-of-band.
+        // We need the message stream to "wait" for the resolution
+        // before yielding the result so the test ordering is stable.
+        await new Promise(r => setTimeout(r, 50))
+        yield { type: 'result', subtype: 'success', session_id: 'perm-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 }
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkPerm)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 260, method: 'claude.startSession',
+      params: { sessionId: 'perm-1', options: { cwd: '/p' } } })
+    // Kick off sendMessage but do not await — we'll trigger canUseTool
+    // mid-stream via the captured callback ref.
+    const sendPromise = dispatch({ jsonrpc: '2.0', id: 261, method: 'claude.sendMessage',
+      params: { sessionId: 'perm-1', prompt: 'run a tool' } })
+    // Wait for the sendMessage handler to enter the for-await loop and
+    // canUseTool to be wired up.
+    await new Promise(r => setTimeout(r, 10))
+    assert.ok(canUseToolFn, 'expected canUseTool to be set on queryOptions')
+    // Drive a Bash request through canUseTool.
+    const cuPromise = canUseToolFn('Bash', { command: 'ls' }, { toolUseID: 'tool-bash-1', suggestions: [], decisionReason: 'why?' })
+    // Wait long enough for the permission-request event to be emitted.
+    await new Promise(r => setTimeout(r, 5))
+    const permEvents = permCaptured.filter(e => e.name === 'claude:permission-request')
+    assert.equal(permEvents.length, 1)
+    assert.equal(permEvents[0].payload.sessionId, 'perm-1')
+    assert.equal(permEvents[0].payload.data.toolUseId, 'tool-bash-1')
+    assert.equal(permEvents[0].payload.data.toolName, 'Bash')
+    assert.deepEqual(permEvents[0].payload.data.input, { command: 'ls' })
+    // Renderer answers via claude.resolvePermission.
+    const resolveReply = await dispatch({ jsonrpc: '2.0', id: 262, method: 'claude.resolvePermission',
+      params: { sessionId: 'perm-1', toolUseId: 'tool-bash-1', result: { behavior: 'allow', updatedInput: { command: 'ls' } } } })
+    assert.equal(resolveReply.result, true)
+    const decision = await cuPromise
+    assert.equal(decision.behavior, 'allow')
+    assert.deepEqual(decision.updatedInput, { command: 'ls' })
+    // claude:permission-resolved event must have fired.
+    const resolvedEvents = permCaptured.filter(e => e.name === 'claude:permission-resolved')
+    assert.equal(resolvedEvents.length, 1)
+    assert.equal(resolvedEvents[0].payload.toolUseId, 'tool-bash-1')
+    // Drain sendMessage.
+    await sendPromise
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restorePermSend()
+    canUseToolFn = null
+  }
+
+  // bypassPermissions auto-allows without surfacing UI.
+  const bypassCaptured = []
+  const restoreBypassSend = mod.__setSendEventForTests((name, payload) => bypassCaptured.push({ name, payload }))
+  let bypassCanUse = null
+  const fakeSdkBypass = {
+    query({ options }) {
+      bypassCanUse = options.canUseTool
+      return (async function*() {
+        yield { type: 'system', subtype: 'init', session_id: 'bp-sdk' }
+        yield { type: 'result', subtype: 'success', session_id: 'bp-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 }
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkBypass)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 270, method: 'claude.startSession',
+      params: { sessionId: 'bp-1', options: { cwd: '/p', permissionMode: 'bypassPermissions' } } })
+    await dispatch({ jsonrpc: '2.0', id: 271, method: 'claude.sendMessage',
+      params: { sessionId: 'bp-1', prompt: 'go' } })
+    assert.ok(bypassCanUse)
+    const decision = bypassCanUse('Bash', { command: 'rm -rf /' }, { toolUseID: 'bp-tool' })
+    // Synchronous decision — not a Promise (or resolves immediately).
+    const result = await Promise.resolve(decision)
+    assert.equal(result.behavior, 'allow')
+    // No permission-request event fired.
+    const permEvents = bypassCaptured.filter(e => e.name === 'claude:permission-request')
+    assert.equal(permEvents.length, 0, 'bypassPermissions must not emit permission-request')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreBypassSend()
+    bypassCanUse = null
+  }
+
+  // acceptEdits auto-allows file/read tools but still prompts for Bash.
+  const acceptCaptured = []
+  const restoreAcceptSend = mod.__setSendEventForTests((name, payload) => acceptCaptured.push({ name, payload }))
+  let acceptCanUse = null
+  const fakeSdkAccept = {
+    query({ options }) {
+      acceptCanUse = options.canUseTool
+      return (async function*() {
+        yield { type: 'system', subtype: 'init', session_id: 'ae-sdk' }
+        yield { type: 'result', subtype: 'success', session_id: 'ae-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 }
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkAccept)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 280, method: 'claude.startSession',
+      params: { sessionId: 'ae-1', options: { cwd: '/p', permissionMode: 'acceptEdits' } } })
+    await dispatch({ jsonrpc: '2.0', id: 281, method: 'claude.sendMessage',
+      params: { sessionId: 'ae-1', prompt: 'go' } })
+    assert.ok(acceptCanUse)
+    const editDecision = await Promise.resolve(acceptCanUse('Edit', { path: '/x', diff: '...' }, { toolUseID: 'ae-edit' }))
+    assert.equal(editDecision.behavior, 'allow', 'Edit must auto-allow in acceptEdits')
+    // Bash still prompts.
+    const bashPromise = acceptCanUse('Bash', { command: 'ls' }, { toolUseID: 'ae-bash' })
+    await new Promise(r => setTimeout(r, 5))
+    const permEvents = acceptCaptured.filter(e => e.name === 'claude:permission-request')
+    assert.equal(permEvents.length, 1, 'acceptEdits Bash must prompt')
+    // Resolve so the promise settles cleanly.
+    await dispatch({ jsonrpc: '2.0', id: 282, method: 'claude.resolvePermission',
+      params: { sessionId: 'ae-1', toolUseId: 'ae-bash', result: { behavior: 'deny', message: 'no' } } })
+    const bashResult = await bashPromise
+    assert.equal(bashResult.behavior, 'deny')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreAcceptSend()
+    acceptCanUse = null
+  }
+
+  // AskUserQuestion: sidecar emits claude:ask-user, renderer answers via
+  // claude.resolveAskUser, and the SDK promise resolves to the answers.
+  const askCaptured = []
+  const restoreAskSend = mod.__setSendEventForTests((name, payload) => askCaptured.push({ name, payload }))
+  let askCanUse = null
+  const fakeSdkAsk = {
+    query({ options }) {
+      askCanUse = options.canUseTool
+      return (async function*() {
+        yield { type: 'system', subtype: 'init', session_id: 'ask-sdk' }
+        yield { type: 'result', subtype: 'success', session_id: 'ask-sdk', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 }
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkAsk)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 290, method: 'claude.startSession',
+      params: { sessionId: 'ask-1', options: { cwd: '/p' } } })
+    await dispatch({ jsonrpc: '2.0', id: 291, method: 'claude.sendMessage',
+      params: { sessionId: 'ask-1', prompt: 'q' } })
+    assert.ok(askCanUse)
+    const askPromise = askCanUse('AskUserQuestion', { questions: [{ id: 'q1', text: 'pick' }] }, { toolUseID: 'ask-tool' })
+    await new Promise(r => setTimeout(r, 5))
+    const askEvents = askCaptured.filter(e => e.name === 'claude:ask-user')
+    assert.equal(askEvents.length, 1)
+    assert.equal(askEvents[0].payload.data.toolUseId, 'ask-tool')
+    assert.deepEqual(askEvents[0].payload.data.questions, [{ id: 'q1', text: 'pick' }])
+    await dispatch({ jsonrpc: '2.0', id: 292, method: 'claude.resolveAskUser',
+      params: { sessionId: 'ask-1', toolUseId: 'ask-tool', answers: { q1: 'option-A' } } })
+    const answers = await askPromise
+    assert.deepEqual(answers, { q1: 'option-A' })
+    const resolved = askCaptured.filter(e => e.name === 'claude:ask-user-resolved')
+    assert.equal(resolved.length, 1)
+    assert.equal(resolved[0].payload.toolUseId, 'ask-tool')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreAskSend()
+    askCanUse = null
+  }
+
   // Plugin loading: when ~/.claude/plugins/installed_plugins.json
   // exists with valid entries, queryOptions.plugins is set to
   // [{ type: 'local', path }] for each installPath.
@@ -777,6 +950,25 @@ async function inProcess() {
     __setPluginsPathOverrideForTests(null)
     rmSync(tmpRoot, { recursive: true, force: true })
   }
+
+  // Regression: __normalizeMainPath must equate a Windows verbatim-
+  // prefixed path with its non-prefixed sibling. Tauri's resource_dir()
+  // returns `\\?\C:\...`-style paths on Windows, and a previous version
+  // of the isMain check naively compared `file://<argv[1]>` against
+  // import.meta.url — that comparison failed for verbatim paths, so
+  // main() never ran and the sidecar exited immediately on every spawn,
+  // surfacing as Win32 ERROR_NO_DATA (232) on the parent's stdin pipe.
+  const { __normalizeMainPath } = mod
+  if (process.platform === 'win32') {
+    const verbatim = '\\\\?\\C:\\foo\\BAR\\server.mjs'
+    const normal = 'C:\\foo\\BAR\\server.mjs'
+    assert.equal(__normalizeMainPath(verbatim), __normalizeMainPath(normal),
+      'verbatim and non-verbatim Windows paths must normalize equal')
+    // Case-insensitive (Windows fs is).
+    assert.equal(__normalizeMainPath('C:\\Foo\\Bar.mjs'), __normalizeMainPath('c:\\foo\\bar.mjs'))
+  }
+  assert.equal(__normalizeMainPath(''), '')
+  assert.equal(__normalizeMainPath(null), '')
 
   // Helpers (sdkModelForClaudeSelection + dataUrlToContentBlock) sanity.
   const { sdkModelForClaudeSelection, dataUrlToContentBlock } = mod

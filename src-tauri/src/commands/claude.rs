@@ -362,3 +362,29 @@ pub fn claude_reset_session(
 ) -> Result<Value, BridgeError> {
     call(&app, &state, "claude.resetSession", json!({ "sessionId": session_id }))
 }
+
+#[tauri::command]
+pub fn claude_resolve_permission(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    tool_use_id: String,
+    result: Value,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.resolvePermission", json!({
+        "sessionId": session_id, "toolUseId": tool_use_id, "result": result,
+    }))
+}
+
+#[tauri::command]
+pub fn claude_resolve_ask_user(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    tool_use_id: String,
+    answers: Value,
+) -> Result<Value, BridgeError> {
+    call(&app, &state, "claude.resolveAskUser", json!({
+        "sessionId": session_id, "toolUseId": tool_use_id, "answers": answers,
+    }))
+}

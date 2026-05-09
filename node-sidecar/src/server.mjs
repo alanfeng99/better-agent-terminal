@@ -97,6 +97,13 @@ function ensureSession(sessionId) {
       // the renderer via claude.getContextUsage between turns; null
       // until the first turn completes.
       lastUsage: null,
+      // Pending canUseTool / AskUserQuestion resolutions keyed by the
+      // tool_use_id the SDK supplies. Populated when the canUseTool
+      // callback emits a permission-request / ask-user event; the
+      // renderer answers via claude.resolvePermission /
+      // claude.resolveAskUser, which calls the stored resolve fn.
+      pendingPermissions: new Map(),
+      pendingAskUser: new Map(),
     }
     sessions.set(sessionId, s)
   }
@@ -198,6 +205,15 @@ registerHandler('claude.sendMessage', async (params) => {
   // Electron's `installedPlugins.length > 0 ? { plugins } : {}` spread.
   const installedPlugins = await loadInstalledPlugins()
   if (installedPlugins.length > 0) queryOptions.plugins = installedPlugins
+  // canUseTool: SDK calls this before each tool_use; we either auto-
+  // approve based on permissionMode + tool name, or surface a
+  // permission-request / ask-user event to the renderer and wait for
+  // the user's decision (resolved via claude.resolvePermission /
+  // claude.resolveAskUser handlers below). Mirrors Electron's
+  // claude-agent-manager.ts:745. ExitPlanMode in bypassPlan / plan
+  // mode also auto-promotes to bypassPermissions / acceptEdits when
+  // the user clicks "allow", emitting claude:modeChange.
+  queryOptions.canUseTool = (toolName, input, opts) => buildCanUseTool(s, sessionId, toolName, input, opts)
   // CLAUDE_CODE_AUTO_COMPACT_WINDOW gets read by the SDK-spawned claude
   // binary, so wire it via queryOptions.env (forwarded to the child).
   if (s.autoCompactWindow) {
@@ -442,6 +458,125 @@ registerHandler('claude.getAutoContinue', async (params) => {
   if (typeof sessionId !== 'string' || !sessionId) return null
   const s = sessions.get(sessionId)
   return s ? { ...s.autoContinue } : null
+})
+
+// Tools that acceptEdits mode auto-approves without surfacing a UI prompt.
+// Mirror of electron/claude-agent-manager.ts:793.
+const ACCEPT_EDITS_AUTO_APPROVED_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit', 'Read', 'Glob', 'Grep'])
+
+// canUseTool implementation. Returns either an immediate decision
+// (`{behavior:'allow'|'deny', ...}`) or a Promise that resolves when the
+// renderer answers the permission-request / ask-user event. The
+// per-mode auto-approval logic mirrors Electron exactly so users see
+// the same prompts/auto-approvals across hosts.
+function buildCanUseTool(session, sessionId, toolName, input, opts) {
+  const toolUseId = opts?.toolUseID
+  // AskUserQuestion is a special pseudo-tool the SDK uses to ask the
+  // user follow-up questions during a turn. Always surface UI for it.
+  if (toolName === 'AskUserQuestion') {
+    return new Promise((resolve) => {
+      if (toolUseId) session.pendingAskUser.set(toolUseId, { resolve, input })
+      sendEvent('claude:ask-user', {
+        sessionId,
+        data: { toolUseId, questions: input?.questions },
+      })
+    })
+  }
+  // bypassPlan: auto-approve everything except ExitPlanMode (which
+  // requires explicit confirmation to switch to bypass execution).
+  if (session.permissionMode === 'bypassPlan') {
+    if (toolName === 'ExitPlanMode') {
+      return new Promise((resolve) => {
+        if (toolUseId) {
+          session.pendingPermissions.set(toolUseId, {
+            resolve: (result) => {
+              if (result?.behavior === 'allow') {
+                session.permissionMode = 'bypassPermissions'
+                sendEvent('claude:modeChange', { sessionId, mode: 'bypassPermissions' })
+              }
+              resolve(result)
+            },
+          })
+        }
+        sendEvent('claude:permission-request', {
+          sessionId,
+          data: {
+            toolUseId, toolName, input,
+            suggestions: opts?.suggestions,
+            decisionReason: 'Exit plan mode and switch to bypass execution?',
+          },
+        })
+      })
+    }
+    return { behavior: 'allow', updatedInput: input || {} }
+  }
+  // bypassPermissions auto-allows everything. UI is bypassed entirely.
+  if (session.permissionMode === 'bypassPermissions') {
+    return { behavior: 'allow', updatedInput: input || {} }
+  }
+  // acceptEdits auto-allows safe file/read tools; everything else still
+  // prompts.
+  if (session.permissionMode === 'acceptEdits' && ACCEPT_EDITS_AUTO_APPROVED_TOOLS.has(toolName)) {
+    return { behavior: 'allow', updatedInput: input || {} }
+  }
+  // default / acceptEdits-not-listed / plan: surface UI and await user.
+  return new Promise((resolve) => {
+    const wrappedResolve = toolName === 'ExitPlanMode'
+      ? (result) => {
+          if (result?.behavior === 'allow') {
+            // dontAskAgain → acceptEdits, otherwise default. Matches
+            // Electron's exit-plan UX.
+            session.permissionMode = result.dontAskAgain ? 'acceptEdits' : 'default'
+            sendEvent('claude:modeChange', { sessionId, mode: session.permissionMode })
+          }
+          resolve(result)
+        }
+      : resolve
+    if (toolUseId) session.pendingPermissions.set(toolUseId, { resolve: wrappedResolve })
+    sendEvent('claude:permission-request', {
+      sessionId,
+      data: {
+        toolUseId, toolName, input,
+        suggestions: opts?.suggestions,
+        decisionReason: opts?.decisionReason,
+      },
+    })
+  })
+}
+
+// Renderer-side resolution for an outstanding permission request. Looks
+// up the pending entry by toolUseId, calls its resolve fn, and emits a
+// `claude:permission-resolved` notification so panels can clear their UI.
+registerHandler('claude.resolvePermission', async (params) => {
+  const sessionId = params?.sessionId
+  const toolUseId = params?.toolUseId
+  const result = params?.result
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  if (typeof toolUseId !== 'string' || !toolUseId) return false
+  const session = sessions.get(sessionId)
+  if (!session) return false
+  const pending = session.pendingPermissions.get(toolUseId)
+  if (!pending) return false
+  session.pendingPermissions.delete(toolUseId)
+  try { pending.resolve(result) } catch { /* swallow — caller already gave up */ }
+  sendEvent('claude:permission-resolved', { sessionId, toolUseId })
+  return true
+})
+
+registerHandler('claude.resolveAskUser', async (params) => {
+  const sessionId = params?.sessionId
+  const toolUseId = params?.toolUseId
+  const answers = params?.answers
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  if (typeof toolUseId !== 'string' || !toolUseId) return false
+  const session = sessions.get(sessionId)
+  if (!session) return false
+  const pending = session.pendingAskUser.get(toolUseId)
+  if (!pending) return false
+  session.pendingAskUser.delete(toolUseId)
+  try { pending.resolve(answers) } catch { /* swallow */ }
+  sendEvent('claude:ask-user-resolved', { sessionId, toolUseId })
+  return true
 })
 
 registerHandler('claude.setPermissionMode', async (params) => {
@@ -1774,16 +1909,36 @@ function main() {
 // import.meta.url comparison handles both `node server.mjs` and being
 // imported by tests. When imported, main() is not run and the test can
 // drive `dispatch` directly via the exported handlers.
+//
+// Windows quirk: Tauri's resource_dir() returns paths with the `\\?\`
+// (verbatim / extended-length) prefix, which breaks naive
+// `file://<argv[1]>` URL construction. Compare resolved fs paths
+// instead, with the verbatim prefix stripped on both sides and a
+// case-insensitive match (Windows fs is case-insensitive).
+function __normalizeMainPath(p) {
+  if (typeof p !== 'string' || !p) return ''
+  let out = p
+  if (process.platform === 'win32') {
+    out = out.replace(/^\\\\\?\\/, '')
+    out = out.toLowerCase()
+  }
+  return out.replace(/\\/g, '/')
+}
 const isMain = (() => {
   try {
-    const entry = process.argv[1] ? new URL(`file://${process.argv[1].replace(/\\/g, '/')}`).href : ''
-    return entry === import.meta.url
+    const meta = __normalizeMainPath(fileURLToPath(import.meta.url))
+    const argv = __normalizeMainPath(process.argv[1] || '')
+    return Boolean(meta) && meta === argv
   } catch {
     return false
   }
 })()
 
 if (isMain) main()
+
+// Test hook so the regression test can assert the normalization handles
+// the Windows verbatim prefix without spawning a real child process.
+export { __normalizeMainPath }
 
 // Exported for tests. Keep the surface tiny: handlers map, plus the
 // dispatcher used by in-process tests. Adding a new handler just means

@@ -142,6 +142,8 @@ pub fn run() {
             claude_cmd::claude_set_model,
             claude_cmd::claude_set_effort,
             claude_cmd::claude_reset_session,
+            claude_cmd::claude_resolve_permission,
+            claude_cmd::claude_resolve_ask_user,
             openai_cmd::openai_get_api_key_status,
             openai_cmd::openai_set_api_key,
             openai_cmd::openai_clear_api_key,

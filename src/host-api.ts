@@ -477,6 +477,17 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string) =>
             getInvoke()<unknown>('claude_reset_session', { sessionId })
         }
+        // canUseTool round-trip resolution. Renderer's permission UI calls
+        // these when the user clicks Allow/Deny on a permission prompt or
+        // submits answers to AskUserQuestion.
+        if (key === 'resolvePermission') {
+          return (sessionId: string, toolUseId: string, result: unknown) =>
+            getInvoke()<unknown>('claude_resolve_permission', { sessionId, toolUseId, result })
+        }
+        if (key === 'resolveAskUser') {
+          return (sessionId: string, toolUseId: string, answers: unknown) =>
+            getInvoke()<unknown>('claude_resolve_ask_user', { sessionId, toolUseId, answers })
+        }
         const sessionReadCommands: Record<string, string> = {
           getSupportedModels: 'claude_get_supported_models',
           getSupportedCommands: 'claude_get_supported_commands',
@@ -506,6 +517,15 @@ function createTauriHost(): BatAppAPI {
           onStream: 'claude:stream',
           onStatus: 'claude:status',
           onModeChange: 'claude:modeChange',
+          // canUseTool round-trip events. The sidecar emits permission-
+          // request / ask-user when the SDK is blocked on a tool call;
+          // the renderer's permission UI listens here and calls
+          // claude.resolvePermission / resolveAskUser to answer. Resolved
+          // events fire after the answer to let other panels clear state.
+          onPermissionRequest: 'claude:permission-request',
+          onAskUser: 'claude:ask-user',
+          onPermissionResolved: 'claude:permission-resolved',
+          onAskUserResolved: 'claude:ask-user-resolved',
         }
         if (eventListeners[key]) {
           const evName = eventListeners[key]
@@ -524,6 +544,10 @@ function createTauriHost(): BatAppAPI {
                 : key === 'onStream' ? 'data'
                 : key === 'onStatus' ? 'meta'
                 : key === 'onModeChange' ? 'mode'
+                : key === 'onPermissionRequest' ? 'data'
+                : key === 'onAskUser' ? 'data'
+                : key === 'onPermissionResolved' ? 'toolUseId'
+                : key === 'onAskUserResolved' ? 'toolUseId'
                 : 'payload'
               cb(p.sessionId, (p as Record<string, unknown>)[payloadKey])
             })
