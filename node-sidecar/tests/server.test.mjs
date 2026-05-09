@@ -2393,6 +2393,98 @@ async function inProcess() {
     __resetClaudeCliCacheForTests()
   }
 
+  // remote.* / tunnel.* — server lifecycle still stubs (TLS+WS port lands
+  // later); tunnel.getConnection now returns the real os.networkInterfaces()
+  // address list so SettingsPanel's QR view has usable IPs even before a
+  // server starts.
+  {
+    // remote.serverStatus — shape contract for renderer destructuring.
+    const ss = await dispatch({ jsonrpc: '2.0', id: 9001, method: 'remote.serverStatus' })
+    assert.equal(ss.result.running, false)
+    assert.equal(ss.result.port, null)
+    assert.equal(ss.result.fingerprint, null)
+    assert.equal(ss.result.bindInterface, null)
+    assert.equal(ss.result.boundHost, null)
+    assert.deepEqual(ss.result.clients, [])
+
+    // remote.clientStatus — same shape contract.
+    const cs = await dispatch({ jsonrpc: '2.0', id: 9002, method: 'remote.clientStatus' })
+    assert.equal(cs.result.connected, false)
+    assert.equal(cs.result.info, null)
+
+    // remote.startServer / connect / testConnection / listProfiles still
+    // return `{error}` until the real implementation lands. Renderer's
+    // SettingsPanel and ProfilePanel both branch on `'error' in result`.
+    const start = await dispatch({ jsonrpc: '2.0', id: 9003, method: 'remote.startServer', params: { options: {} } })
+    assert.equal(typeof start.result.error, 'string')
+    const conn = await dispatch({ jsonrpc: '2.0', id: 9004, method: 'remote.connect', params: { host: 'h', port: 1, token: 't', fingerprint: 'f' } })
+    assert.equal(typeof conn.result.error, 'string')
+    const test = await dispatch({ jsonrpc: '2.0', id: 9005, method: 'remote.testConnection', params: { host: 'h', port: 1, token: 't', fingerprint: 'f' } })
+    assert.equal(test.result.ok, false)
+    assert.equal(typeof test.result.error, 'string')
+    const lp = await dispatch({ jsonrpc: '2.0', id: 9006, method: 'remote.listProfiles', params: { host: 'h', port: 1, token: 't', fingerprint: 'f' } })
+    assert.equal(typeof lp.result.error, 'string')
+
+    // tunnel.getConnection — loopback `boundHost` short-circuits to a
+    // single 127.0.0.1 entry. The handler still returns `{error, addresses}`
+    // because no server is running, but the address list is real.
+    const localTun = await dispatch({ jsonrpc: '2.0', id: 9010, method: 'tunnel.getConnection', params: { boundHost: '127.0.0.1' } })
+    assert.equal(typeof localTun.result.error, 'string', 'expected error since server not running')
+    assert.ok(Array.isArray(localTun.result.addresses), 'addresses must be an array')
+    assert.equal(localTun.result.addresses.length, 1)
+    assert.equal(localTun.result.addresses[0].ip, '127.0.0.1')
+    assert.equal(localTun.result.addresses[0].mode, 'localhost')
+    assert.ok(localTun.result.addresses[0].label.includes('127.0.0.1'))
+
+    // boundHost='::1' / 'localhost' aliases also collapse to loopback-only.
+    for (const lh of ['::1', 'localhost']) {
+      const r = await dispatch({ jsonrpc: '2.0', id: 9011, method: 'tunnel.getConnection', params: { boundHost: lh } })
+      assert.equal(r.result.addresses.length, 1, `${lh} should yield 1 address`)
+      assert.equal(r.result.addresses[0].mode, 'localhost')
+    }
+
+    // boundHost='0.0.0.0' / missing param / 'all' — return real LAN+
+    // Tailscale addresses from os.networkInterfaces(). On CI/dev boxes
+    // this list may be empty (no external NICs); we just assert the
+    // shape and that no loopback leaks in. Each entry must have
+    // {ip, mode, label} with mode in {tailscale, lan}.
+    for (const params of [{ boundHost: '0.0.0.0' }, undefined, { boundHost: 'all' }]) {
+      const r = await dispatch({ jsonrpc: '2.0', id: 9012, method: 'tunnel.getConnection', params })
+      assert.equal(typeof r.result.error, 'string')
+      assert.ok(Array.isArray(r.result.addresses))
+      for (const addr of r.result.addresses) {
+        assert.equal(typeof addr.ip, 'string')
+        assert.ok(addr.mode === 'tailscale' || addr.mode === 'lan',
+          `unexpected mode ${addr.mode} from external boundHost`)
+        assert.equal(typeof addr.label, 'string')
+        assert.ok(addr.label.includes(addr.ip), 'label should embed ip')
+        // Tailscale mode entries should be 100.x; LAN mode entries should not.
+        if (addr.mode === 'tailscale') {
+          assert.ok(addr.ip.startsWith('100.'), `tailscale entry must be 100.x, got ${addr.ip}`)
+        } else {
+          assert.ok(!addr.ip.startsWith('100.'), `lan entry must not be 100.x, got ${addr.ip}`)
+        }
+      }
+    }
+
+    // Direct unit on the helper: synthesise a tailscale-only and a
+    // mixed-only check by calling getAllAddresses(boundHost).
+    const { getAllAddresses } = await import('../src/handlers/remote-tunnel.mjs')
+    const loopback = getAllAddresses('127.0.0.1')
+    assert.equal(loopback.length, 1)
+    assert.equal(loopback[0].mode, 'localhost')
+    // Helper called with a non-loopback boundHost returns [tailscale..., lan...]
+    // — tailscale entries (if any) sort before LAN. Verify ordering invariant.
+    const all = getAllAddresses('0.0.0.0')
+    let sawLan = false
+    for (const a of all) {
+      if (a.mode === 'lan') sawLan = true
+      else if (a.mode === 'tailscale' && sawLan) {
+        throw new Error('tailscale entry appeared after lan entry — ordering broken')
+      }
+    }
+  }
+
   // worktree.* — full create/status/remove/rehydrate round trip against a
   // real ephemeral git repo. Skipped if `git` isn't on PATH.
   const { worktreeCreate, worktreeRemove, worktreeStatus, worktreeRehydrate, worktreeGetGitRoot, activeWorktrees } = mod
