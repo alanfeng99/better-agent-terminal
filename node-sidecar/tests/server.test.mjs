@@ -572,6 +572,76 @@ async function inProcess() {
     restoreSendEvent()
   }
 
+  // Tool-use / tool-result event mapping. The SDK emits assistant
+  // messages whose content arrays carry tool_use blocks, and follow-up
+  // user messages whose content arrays carry tool_result blocks. We
+  // mirror Electron's contract: emit claude:tool-use per tool_use block
+  // and claude:tool-result per tool_result block, keyed by tool_use_id
+  // so the renderer can pair them up. Verify with a fake SDK that
+  // streams a Bash call + its result.
+  const tcCaptured = []
+  const restoreTcEmit = mod.__setSendEventForTests((n, p) => tcCaptured.push({ name: n, payload: p }))
+  const fakeSdkWithTools = {
+    query() {
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: 'sdk-tc', cwd: '/x' },
+        { type: 'assistant', session_id: 'sdk-tc', parent_tool_use_id: null, message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Running command' },
+            { type: 'tool_use', id: 'toolu_01', name: 'Bash', input: { command: 'ls' } },
+          ],
+        } },
+        { type: 'user', session_id: 'sdk-tc', parent_tool_use_id: null, message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_01', content: 'file1\nfile2', is_error: false },
+          ],
+        } },
+        { type: 'assistant', session_id: 'sdk-tc', parent_tool_use_id: null, message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'toolu_02', name: 'Read', input: { file_path: '/missing' } }],
+        } },
+        { type: 'user', session_id: 'sdk-tc', parent_tool_use_id: null, message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_02', content: 'ENOENT', is_error: true }],
+        } },
+        { type: 'result', subtype: 'success', session_id: 'sdk-tc', result: 'done', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 },
+      ]
+      return (async function*() { for (const m of messages) yield m })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkWithTools)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 240, method: 'claude.startSession',
+      params: { sessionId: 'tc-1', options: { cwd: '/x' } } })
+    await dispatch({ jsonrpc: '2.0', id: 241, method: 'claude.sendMessage',
+      params: { sessionId: 'tc-1', prompt: 'list files' } })
+    const toolUseEvents = tcCaptured.filter(e => e.name === 'claude:tool-use')
+    const toolResultEvents = tcCaptured.filter(e => e.name === 'claude:tool-result')
+    assert.equal(toolUseEvents.length, 2, `expected 2 tool-use events, got ${toolUseEvents.length}`)
+    assert.equal(toolResultEvents.length, 2, `expected 2 tool-result events, got ${toolResultEvents.length}`)
+    const tu1 = toolUseEvents[0].payload
+    assert.equal(tu1.sessionId, 'tc-1')
+    assert.equal(tu1.toolCall.id, 'toolu_01')
+    assert.equal(tu1.toolCall.toolName, 'Bash')
+    assert.deepEqual(tu1.toolCall.input, { command: 'ls' })
+    assert.equal(tu1.toolCall.status, 'running')
+    assert.equal(tu1.toolCall.parentToolUseId, null)
+    assert.equal(typeof tu1.toolCall.timestamp, 'number')
+    const tr1 = toolResultEvents[0].payload.result
+    assert.equal(tr1.id, 'toolu_01')
+    assert.equal(tr1.status, 'success')
+    assert.equal(tr1.result, 'file1\nfile2')
+    const tr2 = toolResultEvents[1].payload.result
+    assert.equal(tr2.id, 'toolu_02')
+    assert.equal(tr2.status, 'error')
+    assert.equal(tr2.result, 'ENOENT')
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreTcEmit()
+  }
+
   // SDK-unavailable fallback: claude.sendMessage stays usable as a stub
   // so renderer doesn't hang. Locks the release-without-bundle contract.
   __setSdkOverrideForTests(null)

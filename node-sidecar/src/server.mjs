@@ -197,6 +197,50 @@ registerHandler('claude.sendMessage', async (params) => {
         })
       } else if (t === 'assistant') {
         sendEvent('claude:message', { sessionId, message: msg })
+        // Mirror Electron's processMessage: also fire dedicated
+        // claude:tool-use events for each tool_use content block so the
+        // renderer's tool-call panel renders. The text payload comes
+        // through claude:message; this is purely additive.
+        const blocks = msg.message?.content
+        if (Array.isArray(blocks)) {
+          for (const block of blocks) {
+            if (block && block.type === 'tool_use' && typeof block.id === 'string') {
+              sendEvent('claude:tool-use', {
+                sessionId,
+                toolCall: {
+                  id: block.id,
+                  sessionId,
+                  toolName: block.name,
+                  input: block.input || {},
+                  status: 'running',
+                  parentToolUseId: msg.parent_tool_use_id ?? null,
+                  timestamp: Date.now(),
+                },
+              })
+            }
+          }
+        }
+      } else if (t === 'user') {
+        // SDK emits a user message mid-stream when it runs a tool on
+        // behalf of the model — content has tool_result blocks. Mirror
+        // Electron and turn each into a claude:tool-result event keyed
+        // by the originating tool_use_id so the renderer can mark the
+        // call complete + show the result.
+        const blocks = msg.message?.content
+        if (Array.isArray(blocks)) {
+          for (const block of blocks) {
+            if (block && block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+              sendEvent('claude:tool-result', {
+                sessionId,
+                result: {
+                  id: block.tool_use_id,
+                  status: block.is_error ? 'error' : 'success',
+                  result: block.content,
+                },
+              })
+            }
+          }
+        }
       } else if (t === 'result') {
         if (msg.subtype === 'success') {
           sendEvent('claude:result', { sessionId, result: msg })
