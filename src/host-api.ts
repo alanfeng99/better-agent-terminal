@@ -88,6 +88,56 @@ function getInvoke(): Invoke {
   throw new Error('host-api: tauri invoke not available; ensure window.__TAURI_INTERNALS__ is present')
 }
 
+// Tauri's event bus is async (`listen()` returns Promise<UnlistenFn>) but
+// the Electron preload contract is `onX(cb): () => void`. We adapt by
+// resolving listen() synchronously through the Tauri-injected globals,
+// which expose a `listen` helper alongside `invoke`. Returning an
+// unsubscribe function that awaits the underlying promise is enough — any
+// events that fire before the promise resolves will queue at Tauri's
+// dispatch layer, so callers don't need to await registration.
+type UnlistenFn = () => void
+type ListenEvent<T> = { event: string; payload: T; id: number }
+type ListenFn = <T>(
+  event: string,
+  handler: (event: ListenEvent<T>) => void,
+) => Promise<UnlistenFn>
+
+function getListen(): ListenFn {
+  type Win = { __TAURI_INTERNALS__?: unknown }
+  const g = (globalThis as unknown as { window?: Win }).window
+  if (!g?.__TAURI_INTERNALS__) {
+    throw new Error('host-api: tauri listen not available; ensure window.__TAURI_INTERNALS__ is present')
+  }
+  // Lazy import: the `@tauri-apps/api/event` module reads
+  // window.__TAURI_INTERNALS__ on call, so this only runs under Tauri.
+  // We wrap it in a thunk so the import isn't pulled into Electron bundles
+  // that never call host.pty.onOutput / onExit.
+  return ((event: string, handler: (e: ListenEvent<unknown>) => void) =>
+    import('@tauri-apps/api/event').then(m => m.listen(event, handler))
+  ) as ListenFn
+}
+
+function listenAdapter<T>(
+  event: string,
+  cb: (payload: T) => void,
+): UnlistenFn {
+  let unlisten: UnlistenFn | null = null
+  let cancelled = false
+  getListen()<T>(event, e => cb(e.payload))
+    .then(fn => {
+      if (cancelled) fn()
+      else unlisten = fn
+    })
+    .catch(() => { /* ignore — listen failed; caller already has noop */ })
+  return () => {
+    cancelled = true
+    if (unlisten) unlisten()
+  }
+}
+
+type PtyOutputPayload = { id: string; data: string }
+type PtyExitPayload = { id: string; exitCode: number }
+
 function createTauriHost(): BatAppAPI {
   // Build a partial implementation: only ported namespaces are real; the rest
   // throw via a Proxy so missing coverage fails loudly.
@@ -167,6 +217,22 @@ function createTauriHost(): BatAppAPI {
       unwatch: () => notImplemented('fs.unwatch'),
       onChanged: () => notImplemented('fs.onChanged'),
     },
+    pty: {
+      create: (options: unknown) =>
+        getInvoke()<string>('pty_create', { options: options as Record<string, unknown> }),
+      write: (id: string, data: string) => getInvoke()<void>('pty_write', { id, data }),
+      resize: (id: string, cols: number, rows: number) =>
+        getInvoke()<void>('pty_resize', { id, cols, rows }),
+      kill: (id: string) => getInvoke()<void>('pty_kill', { id }),
+      // restart / getCwd are not yet ported — they need child-process
+      // tracking that's substantially more involved on Windows ConPTY.
+      restart: () => notImplemented('pty.restart'),
+      getCwd: () => notImplemented('pty.getCwd'),
+      onOutput: (callback: (id: string, data: string) => void) =>
+        listenAdapter<PtyOutputPayload>('pty:output', p => callback(p.id, p.data)),
+      onExit: (callback: (id: string, exitCode: number) => void) =>
+        listenAdapter<PtyExitPayload>('pty:exit', p => callback(p.id, p.exitCode)),
+    },
   }
 
   return new Proxy({}, {
@@ -227,7 +293,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 
 // Namespaces whose methods are routed through Tauri invoke. Listed here so
 // the permissive shim can prefer the real impl when present.
-const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs', 'clipboard', 'image'])
+const PORTED_NAMESPACES = new Set(['settings', 'shell', 'dialog', 'fs', 'clipboard', 'image', 'pty'])
 
 export function installTauriShim(): void {
   if (getHostKind() !== 'tauri') return

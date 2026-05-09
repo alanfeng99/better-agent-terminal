@@ -81,6 +81,10 @@ async function run() {
       if (cmd === 'fs_quick_locations') return [{ name: 'Home', path: '/home/me', kind: 'home' }] as unknown as T
       if (cmd === 'fs_search') return [{ name: 'hit.txt', path: '/x/hit.txt', isDirectory: false }] as unknown as T
       if (cmd === 'image_read_as_data_url') return 'data:image/png;base64,xx' as unknown as T
+      if (cmd === 'pty_create') return 'term-1' as unknown as T
+      if (cmd === 'pty_write') return undefined as unknown as T
+      if (cmd === 'pty_resize') return undefined as unknown as T
+      if (cmd === 'pty_kill') return undefined as unknown as T
       throw new Error(`unexpected invoke: ${cmd}`)
     }
     setWindow({ __TAURI_INTERNALS__: { invoke } })
@@ -134,6 +138,14 @@ async function run() {
     const dataUrl = await mod.host.image.readAsDataUrl('/x/img.png')
     assert.equal(dataUrl, 'data:image/png;base64,xx')
 
+    const ptyId = await mod.host.pty.create({
+      id: 'term-1', cwd: '/x', type: 'terminal',
+    } as unknown as Parameters<typeof mod.host.pty.create>[0])
+    assert.equal(ptyId, 'term-1')
+    await mod.host.pty.write('term-1', 'echo hi\n')
+    await mod.host.pty.resize('term-1', 120, 32)
+    await mod.host.pty.kill('term-1')
+
     assert.deepEqual(invokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
@@ -155,6 +167,10 @@ async function run() {
       { cmd: 'fs_quick_locations', args: undefined },
       { cmd: 'fs_search', args: { dirPath: '/x', query: 'hit' } },
       { cmd: 'image_read_as_data_url', args: { path: '/x/img.png' } },
+      { cmd: 'pty_create', args: { options: { id: 'term-1', cwd: '/x', type: 'terminal' } } },
+      { cmd: 'pty_write', args: { id: 'term-1', data: 'echo hi\n' } },
+      { cmd: 'pty_resize', args: { id: 'term-1', cols: 120, rows: 32 } },
+      { cmd: 'pty_kill', args: { id: 'term-1' } },
     ])
   }
 
@@ -163,8 +179,14 @@ async function run() {
     const invoke: TauriInvoke = async () => undefined as unknown as never
     setWindow({ __TAURI_INTERNALS__: { invoke } })
     const mod = await loadFreshAdapter()
-    assert.throws(() => (mod.host as { pty: { create: () => unknown } }).pty.create(),
-      /pty\.create is not yet implemented under Tauri/)
+    // workspace is still unported — use it as the canary for "namespace
+    // not yet implemented" behaviour.
+    assert.throws(() => (mod.host as { workspace: { save: () => unknown } }).workspace.save(),
+      /workspace\.save is not yet implemented under Tauri/)
+    // Within a ported namespace, individually unported entries (e.g.
+    // pty.restart) still throw the same way.
+    assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),
+      /pty\.restart is not yet implemented under Tauri/)
   }
 
   // 5) Legacy __TAURI__ marker still works (detection only — invoke can't be

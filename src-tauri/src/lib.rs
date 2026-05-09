@@ -9,8 +9,8 @@ mod commands;
 mod path_guard;
 
 use commands::{
-    clipboard as clipboard_cmd, dialog as dialog_cmd, fs as fs_cmd, image as image_cmd, settings,
-    shell as shell_cmd,
+    clipboard as clipboard_cmd, dialog as dialog_cmd, fs as fs_cmd, image as image_cmd,
+    pty as pty_cmd, settings, shell as shell_cmd,
 };
 
 pub fn run() {
@@ -18,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(pty_cmd::PtyState::default())
         .invoke_handler(tauri::generate_handler![
             settings::settings_load,
             settings::settings_save,
@@ -38,6 +39,10 @@ pub fn run() {
             fs_cmd::fs_search,
             clipboard_cmd::clipboard_write_text,
             image_cmd::image_read_as_data_url,
+            pty_cmd::pty_create,
+            pty_cmd::pty_write,
+            pty_cmd::pty_resize,
+            pty_cmd::pty_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running better-agent-terminal");

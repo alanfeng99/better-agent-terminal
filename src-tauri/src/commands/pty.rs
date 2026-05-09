@@ -1,0 +1,344 @@
+// pty:* — first cut of the cross-platform PTY surface for the Tauri shell.
+//
+// We mirror the Electron preload contract from src/types/index.ts and
+// electron/preload.ts so the renderer doesn't have to branch on host:
+//   pty.create({ id, cwd, type, shell?, customEnv?, … })
+//   pty.write(id, data)
+//   pty.resize(id, cols, rows)
+//   pty.kill(id)
+// Plus two event streams emitted from a per-session reader thread:
+//   pty:output  -> { id, data }
+//   pty:exit    -> { id, exitCode }
+//
+// portable-pty handles the cross-platform side (forkpty on Unix, ConPTY on
+// Windows). We keep one PtySession per id, hold the writer + master in a
+// shared map behind Arc<Mutex<…>>, and use background threads to pump
+// bytes into Tauri events and to wait on the child exit.
+//
+// Restart and getCwd are intentionally not ported in this MVP — they need
+// child-process tracking that's substantially more involved on Windows.
+
+use crate::commands::settings::resolve_shell_path;
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, State};
+
+#[derive(Debug, Serialize)]
+pub struct CommandError {
+    message: String,
+}
+
+impl<E: std::fmt::Display> From<E> for CommandError {
+    fn from(value: E) -> Self {
+        Self { message: value.to_string() }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePtyOptions {
+    pub id: String,
+    pub cwd: String,
+    #[allow(dead_code)] // accepted for API compat with Electron contract
+    pub r#type: String,
+    pub shell: Option<String>,
+    #[allow(dead_code)]
+    pub agent_preset: Option<String>,
+    #[serde(default)]
+    pub custom_env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub per_terminal_history: Option<bool>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub history_key: Option<String>,
+}
+
+pub struct PtySession {
+    writer: Box<dyn Write + Send>,
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn Child + Send + Sync>,
+}
+
+pub struct PtyState {
+    inner: Arc<Mutex<HashMap<String, PtySession>>>,
+}
+
+impl Default for PtyState {
+    fn default() -> Self {
+        Self { inner: Arc::new(Mutex::new(HashMap::new())) }
+    }
+}
+
+impl PtyState {
+    fn handle(&self) -> Arc<Mutex<HashMap<String, PtySession>>> {
+        Arc::clone(&self.inner)
+    }
+
+    fn with_session<R>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut PtySession) -> Result<R, CommandError>,
+    ) -> Result<R, CommandError> {
+        let mut map = self.inner.lock().map_err(|e| CommandError { message: e.to_string() })?;
+        let session = map.get_mut(id).ok_or_else(|| CommandError {
+            message: format!("pty session {id} not found"),
+        })?;
+        f(session)
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PtyOutputEvent {
+    id: String,
+    data: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PtyExitEvent {
+    id: String,
+    exit_code: i32,
+}
+
+// Pure, host-agnostic "is this id safe to use as a key?" check we can
+// unit-test without touching the OS. The renderer generates short string
+// ids, but we still defend against empty / overly long inputs.
+pub fn is_valid_pty_id(id: &str) -> bool {
+    if id.is_empty() || id.len() > 256 {
+        return false;
+    }
+    // No control chars / null bytes.
+    !id.chars().any(|c| c.is_control())
+}
+
+// Pure helper used to decide which shell we should hand to portable-pty.
+// Matches the Electron rule: explicit option wins, otherwise resolve via
+// settings::resolve_shell_path("auto", …) for the running OS.
+pub fn select_shell<F: Fn(&str) -> bool>(
+    requested: Option<&str>,
+    target_os: &str,
+    exists: &F,
+) -> String {
+    if let Some(s) = requested {
+        if !s.trim().is_empty() {
+            return s.to_string();
+        }
+    }
+    resolve_shell_path("auto", target_os, exists)
+}
+
+#[cfg(target_family = "unix")]
+const TARGET_OS: &str = "unix";
+#[cfg(target_os = "windows")]
+const TARGET_OS: &str = "windows";
+
+fn build_command(opts: &CreatePtyOptions) -> CommandBuilder {
+    let exists = |s: &str| Path::new(s).exists();
+    let shell = select_shell(opts.shell.as_deref(), TARGET_OS, &exists);
+    let mut cmd = CommandBuilder::new(&shell);
+    let cwd = if Path::new(&opts.cwd).is_dir() {
+        PathBuf::from(&opts.cwd)
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    };
+    cmd.cwd(cwd);
+    if let Some(env) = &opts.custom_env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    cmd
+}
+
+#[tauri::command]
+pub fn pty_create(
+    app: AppHandle,
+    state: State<'_, PtyState>,
+    options: CreatePtyOptions,
+) -> Result<String, CommandError> {
+    if !is_valid_pty_id(&options.id) {
+        return Err(CommandError { message: format!("invalid pty id: {:?}", options.id) });
+    }
+    {
+        let map = state.inner.lock().map_err(|e| CommandError { message: e.to_string() })?;
+        if map.contains_key(&options.id) {
+            return Err(CommandError {
+                message: format!("pty session {} already exists", options.id),
+            });
+        }
+    }
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| CommandError { message: e.to_string() })?;
+    let cmd = build_command(&options);
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| CommandError { message: e.to_string() })?;
+    drop(pair.slave);
+
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| CommandError { message: e.to_string() })?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| CommandError { message: e.to_string() })?;
+
+    // Reader thread: pump bytes from PTY → pty:output events. Lossy UTF-8
+    // because xterm.js consumes strings and PTYs can split codepoints
+    // across reads; renderer can stitch via terminal state.
+    let id_for_reader = options.id.clone();
+    let app_for_reader = app.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let _ = app_for_reader.emit(
+                        "pty:output",
+                        PtyOutputEvent { id: id_for_reader.clone(), data: chunk },
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Insert the session before kicking off the exit watcher so the
+    // watcher can find it.
+    {
+        let mut map = state.inner.lock().map_err(|e| CommandError { message: e.to_string() })?;
+        map.insert(options.id.clone(), PtySession { writer, master: pair.master, child });
+    }
+
+    // Exit watcher: poll try_wait on the session's child every 100ms,
+    // emit pty:exit with the exit code, and remove the session entry.
+    let id_for_exit = options.id.clone();
+    let app_for_exit = app.clone();
+    let map_handle = state.handle();
+    std::thread::spawn(move || {
+        loop {
+            let status = {
+                let mut map = match map_handle.lock() {
+                    Ok(m) => m,
+                    Err(_) => break,
+                };
+                let session = match map.get_mut(&id_for_exit) {
+                    Some(s) => s,
+                    // Killed externally — nothing to wait on.
+                    None => break,
+                };
+                match session.child.try_wait() {
+                    Ok(opt) => opt,
+                    Err(_) => break,
+                }
+            };
+            if let Some(s) = status {
+                let code = s.exit_code() as i32;
+                let _ = app_for_exit.emit(
+                    "pty:exit",
+                    PtyExitEvent { id: id_for_exit.clone(), exit_code: code },
+                );
+                if let Ok(mut map) = map_handle.lock() {
+                    map.remove(&id_for_exit);
+                }
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+
+    Ok(options.id)
+}
+
+#[tauri::command]
+pub fn pty_write(
+    state: State<'_, PtyState>,
+    id: String,
+    data: String,
+) -> Result<(), CommandError> {
+    state.with_session(&id, |s| {
+        s.writer
+            .write_all(data.as_bytes())
+            .map_err(|e| CommandError { message: e.to_string() })?;
+        s.writer.flush().map_err(|e| CommandError { message: e.to_string() })?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn pty_resize(
+    state: State<'_, PtyState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), CommandError> {
+    state.with_session(&id, |s| {
+        s.master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| CommandError { message: e.to_string() })?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), CommandError> {
+    let mut map = state.inner.lock().map_err(|e| CommandError { message: e.to_string() })?;
+    if let Some(mut session) = map.remove(&id) {
+        let _ = session.child.kill();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_must_be_non_empty_and_non_control() {
+        assert!(is_valid_pty_id("term-1"));
+        assert!(is_valid_pty_id("a"));
+        assert!(!is_valid_pty_id(""));
+        assert!(!is_valid_pty_id("with\nnewline"));
+        assert!(!is_valid_pty_id("with\0null"));
+        // Length cap: 256 chars is fine, 257 is not.
+        let long = "a".repeat(256);
+        assert!(is_valid_pty_id(&long));
+        let too_long = "a".repeat(257);
+        assert!(!is_valid_pty_id(&too_long));
+    }
+
+    #[test]
+    fn select_shell_uses_explicit_option_when_provided() {
+        let none = |_: &str| false;
+        assert_eq!(select_shell(Some("/bin/zsh"), "unix", &none), "/bin/zsh");
+        // Empty / whitespace falls back to auto-resolve.
+        assert_eq!(select_shell(Some("   "), "unix", &none), "/bin/bash");
+        assert_eq!(select_shell(Some(""), "unix", &none), "/bin/bash");
+    }
+
+    #[test]
+    fn select_shell_auto_falls_back_per_platform() {
+        let none = |_: &str| false;
+        // posix_auto_shell returns /bin/bash on Linux when $SHELL is unset
+        // (or the existing value isn't on disk per `exists`).
+        let unix = select_shell(None, "unix", &none);
+        assert!(unix.starts_with("/bin/"));
+
+        // On Windows with no PowerShell installs detected, auto returns
+        // powershell.exe (matches settings::resolve_shell_path).
+        let win = select_shell(None, "windows", &none);
+        assert_eq!(win, "powershell.exe");
+    }
+}

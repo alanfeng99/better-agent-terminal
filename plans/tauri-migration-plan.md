@@ -2,7 +2,7 @@
 
 ## 進度紀錄（持續更新）
 
-最近一次更新：2026-05-09。（最新一輪：完成 renderer 大規模搬遷到 `host` adapter，settings/shell/dialog/fs/clipboard/image 共 98 處 callsite 改走 adapter；同時補齊 fs 全套 directory ops + `image_read_as_data_url`，cargo test 30 測例。）
+最近一次更新：2026-05-09。（最新一輪：把 PTY 從 "Phase 2 待辦" 推進到 "MVP 已 port"，採 Rust 路線；renderer 已大規模搬到 `host` adapter；fs 全套 + `image_read_as_data_url` 完成；cargo test 33 測例。）
 
 ### 已完成
 
@@ -33,7 +33,7 @@
 ### 進行中 / 下一步
 
 - [ ] 把更多 Electron preload 命名空間 port 到 Rust。已完成：`shell.openPath`、`dialog.{confirm,selectFolder,selectFiles,selectImages}`、`fs.{readFile,home,readdir,listDirs,mkdir,deletePath,quickLocations,search}`、`settings.getShellPath`、`clipboard.writeText`、`image.readAsDataUrl`。待辦：`clipboard.{saveImage,writeImage}`（需要 raw bytes / data URL 橋）、`image.saveDataUrl`（save-file picker + 寫檔）、`fs.resolvePathLinks`（語言/檔副檔名啟發式）、`update.check` / `update.getVersion`、`debug.log` 接到 Rust logger。
-- [ ] 規劃 PTY 路線（Phase 2）：Rust PTY vs Node sidecar prototype。
+- [x] **PTY 路線決定**：採用 Rust PTY（`portable-pty` 0.8）而非 Node sidecar，理由：(1) Tauri release 不需要再帶一個 Node runtime，bundle 體積維持在 12.x MB 等級；(2) `portable-pty` 同時支援 Unix forkpty / Windows ConPTY，單一介面；(3) 事件通道直接走 Tauri `Emitter::emit("pty:output"|"pty:exit")`，跟 Electron 的 `webContents.send` 對應，renderer adapter 用 `@tauri-apps/api/event::listen` 包成同步 unsubscribe 風格 → 與 preload 完全相容。**首批 commands**：`pty_create` / `pty_write` / `pty_resize` / `pty_kill`；reader thread 推 `pty:output`；exit watcher polling `try_wait()` 推 `pty:exit`。MVP 暫不 port `pty_restart` / `pty_get_cwd`（需要跨平台 child process tracking，下一個迭代再做）。
 - [ ] Agent SDK Node sidecar 設計（Phase 2）。
 - [~] 把全部 `window.batAppAPI.*` 直呼換成 `host.*`：已 port 命名空間（settings、shell、dialog、fs、clipboard、image，共 98 處 / 20 個檔案）已切到 `host.*`；剩下未 port 的命名空間（pty、claude、codex、openai、workspace、git、worktree 等）仍走 `window.batAppAPI` 直到該命名空間有 Rust 對應。
 
