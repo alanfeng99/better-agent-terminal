@@ -469,30 +469,31 @@ async function inProcess() {
     __resetMetadataCacheForTests()
   }
 
-  // Metadata cache contract. The 4 metadata RPCs (getSupportedModels /
-  // getSupportedCommands / getSupportedAgents / getAccountInfo) cache
-  // their result for 5 minutes per process. On macOS each cold call
-  // costs ~4-5s (sdk.query() spawns the bundled claude binary), so a
-  // panel mount that fires all 4 was paying ~17s — caching cuts that
-  // to ~4s on first mount and ~0ms on every subsequent mount.
+  // Metadata cache contract. getSupportedModels still spawns a fresh
+  // sdk.query() on cache miss (Electron parity); the 5-minute TTL cache
+  // ensures only the first call within a window pays the spawn cost.
   //
-  // We pin three contracts:
+  // The 3 cheap RPCs (getSupportedCommands / getSupportedAgents /
+  // getAccountInfo) read from the live `session.currentQuery` set by
+  // claude.sendMessage — no fresh spawn ever, just a method call on
+  // an already-initialized Query instance. When the session lacks a
+  // currentQuery (panel mounted but user hasn't sent a message yet),
+  // they return [] / null inertly instead of paying ~4s of spawn cost.
+  //
+  // Cache contracts pinned here:
   //   (a) Second call within TTL must NOT invoke the SDK builder.
   //   (b) __resetMetadataCacheForTests forces a rebuild.
   //   (c) Concurrent calls share the in-flight promise — only one
   //       SDK build runs even if 4 callers fire simultaneously.
+  //
+  // Live-Query contract pinned separately below.
   let modelsBuildCount = 0
-  let commandsBuildCount = 0
   __setSdkOverrideForTests({
     query() {
       return {
         async supportedModels() {
           modelsBuildCount++
           return [{ value: 'cache-test-model', displayName: 'cache', description: 'test' }]
-        },
-        async supportedCommands() {
-          commandsBuildCount++
-          return [{ name: 'cache-cmd', description: 'cache test' }]
         },
       }
     },
@@ -514,23 +515,100 @@ async function inProcess() {
     // Concurrent-call dedup: 4 callers in-flight simultaneously share
     // the same builder run.
     __resetMetadataCacheForTests()
-    commandsBuildCount = 0
+    modelsBuildCount = 0
     const racers = await Promise.all([
-      dispatch({ jsonrpc: '2.0', id: 74, method: 'claude.getSupportedCommands' }),
-      dispatch({ jsonrpc: '2.0', id: 75, method: 'claude.getSupportedCommands' }),
-      dispatch({ jsonrpc: '2.0', id: 76, method: 'claude.getSupportedCommands' }),
-      dispatch({ jsonrpc: '2.0', id: 77, method: 'claude.getSupportedCommands' }),
+      dispatch({ jsonrpc: '2.0', id: 74, method: 'claude.getSupportedModels' }),
+      dispatch({ jsonrpc: '2.0', id: 75, method: 'claude.getSupportedModels' }),
+      dispatch({ jsonrpc: '2.0', id: 76, method: 'claude.getSupportedModels' }),
+      dispatch({ jsonrpc: '2.0', id: 77, method: 'claude.getSupportedModels' }),
     ])
-    assert.equal(commandsBuildCount, 1,
-      `4 concurrent callers should share one build, ran ${commandsBuildCount} times`)
-    // All callers got the same shape.
+    assert.equal(modelsBuildCount, 1,
+      `4 concurrent callers should share one build, ran ${modelsBuildCount} times`)
+    // All callers got the same set (builtins + the one fake SDK entry).
     for (const r of racers) {
-      assert.equal(r.result[0].name, 'cache-cmd')
+      assert.ok(r.result.some(m => m.value === 'cache-test-model'),
+        'fake SDK model should appear in all racer results')
     }
   } finally {
     __setSdkOverrideForTests(undefined)
     __resetMetadataCacheForTests()
   }
+
+  // Live-Query contract for the 3 cheap RPCs.
+  //   (a) No session / no sessionId      → [] / null (inert default).
+  //   (b) Session with no currentQuery   → [] / null (no fresh spawn).
+  //   (c) Session with currentQuery      → reads from live Query.
+  //   (d) Live Query method throws       → []/null (graceful degrade).
+  // Mirrors electron/claude-agent-manager.ts:2079-2099 — the renderer
+  // panel re-fetches after the first claude:status arrives, by which
+  // point the session has a real currentQuery from sendMessage.
+  __resetMetadataCacheForTests()
+  // (a) No sessionId at all → empty/null without spawning anything.
+  const noSessCmds = await dispatch({ jsonrpc: '2.0', id: 80, method: 'claude.getSupportedCommands' })
+  assert.deepEqual(noSessCmds.result, [], 'no sessionId should return []')
+  const noSessAgents = await dispatch({ jsonrpc: '2.0', id: 81, method: 'claude.getSupportedAgents' })
+  assert.deepEqual(noSessAgents.result, [])
+  const noSessAccount = await dispatch({ jsonrpc: '2.0', id: 82, method: 'claude.getAccountInfo' })
+  assert.equal(noSessAccount.result, null)
+
+  // (b) Unknown sessionId → same inert defaults.
+  __resetMetadataCacheForTests()
+  const unkCmds = await dispatch({ jsonrpc: '2.0', id: 83, method: 'claude.getSupportedCommands', params: { sessionId: 'never-existed' } })
+  assert.deepEqual(unkCmds.result, [])
+
+  // (c) Session with currentQuery → reads from live Query.
+  await dispatch({ jsonrpc: '2.0', id: 84, method: 'claude.startSession', params: { sessionId: 'live-meta', options: { cwd: '/x' } } })
+  const liveSession = mod.sessions.get('live-meta')
+  let cmdsCallCount = 0
+  let agentsCallCount = 0
+  let accountCallCount = 0
+  liveSession.currentQuery = {
+    async supportedCommands() {
+      cmdsCallCount++
+      return [{ name: 'live-cmd', description: 'from live Query' }]
+    },
+    async supportedAgents() {
+      agentsCallCount++
+      return [{ name: 'live-agent', description: 'from live Query' }]
+    },
+    async accountInfo() {
+      accountCallCount++
+      return { email: 'live@example.com', subscriptionType: 'pro' }
+    },
+  }
+  __resetMetadataCacheForTests()
+  const liveCmds = await dispatch({ jsonrpc: '2.0', id: 85, method: 'claude.getSupportedCommands', params: { sessionId: 'live-meta' } })
+  assert.equal(liveCmds.result[0].name, 'live-cmd')
+  assert.equal(cmdsCallCount, 1)
+  // Second call within TTL hits cache, doesn't re-call the live Query.
+  await dispatch({ jsonrpc: '2.0', id: 86, method: 'claude.getSupportedCommands', params: { sessionId: 'live-meta' } })
+  assert.equal(cmdsCallCount, 1, 'second call must hit cache, not re-call Query')
+
+  const liveAgents = await dispatch({ jsonrpc: '2.0', id: 87, method: 'claude.getSupportedAgents', params: { sessionId: 'live-meta' } })
+  assert.equal(liveAgents.result[0].name, 'live-agent')
+  assert.equal(agentsCallCount, 1)
+
+  const liveAccount = await dispatch({ jsonrpc: '2.0', id: 88, method: 'claude.getAccountInfo', params: { sessionId: 'live-meta' } })
+  assert.equal(liveAccount.result.email, 'live@example.com')
+  assert.equal(accountCallCount, 1)
+
+  // (d) Live Query method throws → graceful empty/null.
+  __resetMetadataCacheForTests()
+  liveSession.currentQuery = {
+    async supportedCommands() { throw new Error('query died') },
+    async supportedAgents() { throw new Error('query died') },
+    async accountInfo() { throw new Error('query died') },
+  }
+  const throwCmds = await dispatch({ jsonrpc: '2.0', id: 89, method: 'claude.getSupportedCommands', params: { sessionId: 'live-meta' } })
+  assert.deepEqual(throwCmds.result, [], 'thrown error must degrade to []')
+  const throwAgents = await dispatch({ jsonrpc: '2.0', id: 90, method: 'claude.getSupportedAgents', params: { sessionId: 'live-meta' } })
+  assert.deepEqual(throwAgents.result, [])
+  const throwAccount = await dispatch({ jsonrpc: '2.0', id: 91, method: 'claude.getAccountInfo', params: { sessionId: 'live-meta' } })
+  assert.equal(throwAccount.result, null)
+
+  // Cleanup: drop the test session so later assertions don't see it.
+  mod.sessions.delete('live-meta')
+  __resetMetadataCacheForTests()
 
   // Per-session state round-trip via dispatch. Verifies setters mutate
   // the session map and getters read back exactly what was written.
@@ -1811,82 +1889,10 @@ async function inProcess() {
   const unknownReply = await dispatch({ jsonrpc: '2.0', id: 294, method: 'claude.getContextUsage', params: { sessionId: 'doesnt-exist' } })
   assert.equal(unknownReply.result, null)
 
-  // SDK-backed read APIs: getSupportedCommands / getSupportedAgents /
-  // getAccountInfo. Same dual-mode contract as getSupportedModels —
-  // returns SDK data when available, empty/null fallback when not. Lock
-  // both branches with override hooks so dev-machine SDK-presence
-  // doesn't mask a regression in the release fallback path.
-  __setSdkOverrideForTests({
-    query() {
-      return {
-        async supportedCommands() {
-          return [
-            { name: 'help', description: 'Show help', argumentHint: '' },
-            { name: 'clear', description: 'Clear context' },
-          ]
-        },
-        async supportedAgents() {
-          return [{ name: 'general-purpose', description: 'General agent' }]
-        },
-        async accountInfo() {
-          return { email: 'fake@example.com', subscriptionType: 'pro' }
-        },
-      }
-    },
-  })
-  __resetMetadataCacheForTests()
-  try {
-    const cmdsReply = await dispatch({ jsonrpc: '2.0', id: 270, method: 'claude.getSupportedCommands' })
-    assert.equal(cmdsReply.result.length, 2)
-    assert.equal(cmdsReply.result[0].name, 'help')
-    const agentsReply = await dispatch({ jsonrpc: '2.0', id: 271, method: 'claude.getSupportedAgents' })
-    assert.equal(agentsReply.result.length, 1)
-    assert.equal(agentsReply.result[0].name, 'general-purpose')
-    const accountReply = await dispatch({ jsonrpc: '2.0', id: 272, method: 'claude.getAccountInfo' })
-    assert.equal(accountReply.result.email, 'fake@example.com')
-    assert.equal(accountReply.result.subscriptionType, 'pro')
-  } finally {
-    __setSdkOverrideForTests(undefined)
-    __resetMetadataCacheForTests()
-  }
-  // SDK-unavailable fallback contract: empty array / null shape so the
-  // renderer's pickers degrade gracefully instead of throwing.
-  __setSdkOverrideForTests(null)
-  __resetMetadataCacheForTests()
-  try {
-    const cmdsFallback = await dispatch({ jsonrpc: '2.0', id: 273, method: 'claude.getSupportedCommands' })
-    assert.deepEqual(cmdsFallback.result, [])
-    const agentsFallback = await dispatch({ jsonrpc: '2.0', id: 274, method: 'claude.getSupportedAgents' })
-    assert.deepEqual(agentsFallback.result, [])
-    const accountFallback = await dispatch({ jsonrpc: '2.0', id: 275, method: 'claude.getAccountInfo' })
-    assert.equal(accountFallback.result, null)
-  } finally {
-    __setSdkOverrideForTests(undefined)
-    __resetMetadataCacheForTests()
-  }
-  // SDK throws → handler must catch + return fallback (don't crash the
-  // renderer panel). Verifies the catch arms.
-  __setSdkOverrideForTests({
-    query() {
-      return {
-        async supportedCommands() { throw new Error('boom') },
-        async supportedAgents() { throw new Error('boom') },
-        async accountInfo() { throw new Error('boom') },
-      }
-    },
-  })
-  __resetMetadataCacheForTests()
-  try {
-    const r1 = await dispatch({ jsonrpc: '2.0', id: 276, method: 'claude.getSupportedCommands' })
-    assert.deepEqual(r1.result, [])
-    const r2 = await dispatch({ jsonrpc: '2.0', id: 277, method: 'claude.getSupportedAgents' })
-    assert.deepEqual(r2.result, [])
-    const r3 = await dispatch({ jsonrpc: '2.0', id: 278, method: 'claude.getAccountInfo' })
-    assert.equal(r3.result, null)
-  } finally {
-    __setSdkOverrideForTests(undefined)
-    __resetMetadataCacheForTests()
-  }
+  // Live-Query backed read APIs (getSupportedCommands / getSupportedAgents
+  // / getAccountInfo) are pinned in the dedicated Live-Query contract block
+  // above (no-session / unknown-session / live / throwing-currentQuery).
+  // No SDK fallback here — these RPCs no longer call the SDK builder.
 
   // stream_event → claude:stream mapping for real-time text/thinking
   // deltas. Only content_block_delta with text or thinking forwards;

@@ -10,6 +10,7 @@ import { join, basename } from 'node:path'
 
 import { registerHandler, sendEvent } from '../lib/protocol.mjs'
 import { loadAnthropicSdk } from '../lib/sdk-loader.mjs'
+import { sessions } from '../lib/state.mjs'
 import { CLAUDE_BUILTIN_MODELS, CLAUDE_BUILTIN_DEDUP_KEYS } from '../lib/models.mjs'
 import { scanSkills } from '../lib/skills.mjs'
 import { activeWorktrees, worktreeStatus, worktreeRemove } from './worktree.mjs'
@@ -234,49 +235,49 @@ registerHandler('claude.getSupportedModels', async () =>
     }
   })
 )
-// getSupportedCommands / getSupportedAgents / getAccountInfo follow the
-// same SDK-augmentation pattern as getSupportedModels: try the SDK
-// first, fall back to the previous stub shape (empty list / null) if
-// the SDK isn't reachable. The Query instance is short-lived — we
-// instantiate it just to call the read method, no actual prompt sent,
-// matching what getSupportedModels does.
-registerHandler('claude.getSupportedCommands', async () =>
-  cachedSdkRead('getSupportedCommands', async () => {
-    try {
-      const sdk = await loadAnthropicSdk()
-      if (!sdk || typeof sdk.query !== 'function') return []
-      const instance = sdk.query({ prompt: '', options: { cwd: '/' } })
-      const cmds = await instance.supportedCommands()
-      return Array.isArray(cmds) ? cmds : []
-    } catch {
-      return []
-    }
+// getSupportedCommands / getSupportedAgents / getAccountInfo all read
+// from the live `session.currentQuery` instance — the Query that was
+// created by claude.sendMessage and has been alive since. The SDK's
+// .supportedCommands() / .supportedAgents() / .accountInfo() are all
+// `return (await this.initialization).<field>` reads against that
+// Query's already-resolved init promise, so the call costs ~0ms.
+//
+// This mirrors electron/claude-agent-manager.ts:2079-2099 exactly:
+// when no session has run a query yet, return the inert default
+// ([] / null) instead of spawning a fresh SDK subprocess (which costs
+// ~4s on Windows and is wasted work — the renderer panel re-fetches
+// after the first claude:status event arrives anyway, by which point
+// session.currentQuery exists).
+//
+// Pre-fix bench (Windows): each handler spawned its own fresh
+// sdk.query() → 3.7-5.5s per call → ~16s for the 4-RPC panel-mount
+// burst. Post-fix: cheap RPCs return [] / null instantly when the
+// session hasn't run a query, getSupportedModels alone keeps the
+// fresh-Query path (Electron parity).
+function readFromLiveQuery(sessionId, method, fallback) {
+  if (typeof sessionId !== 'string' || !sessionId) return fallback
+  const session = sessions.get(sessionId)
+  const q = session?.currentQuery
+  if (!q || typeof q[method] !== 'function') return fallback
+  return q[method]().catch(() => fallback)
+}
+
+registerHandler('claude.getSupportedCommands', async (params) =>
+  cachedSdkRead(`getSupportedCommands:${params?.sessionId ?? ''}`, async () => {
+    const result = await readFromLiveQuery(params?.sessionId, 'supportedCommands', [])
+    return Array.isArray(result) ? result : []
   })
 )
-registerHandler('claude.getSupportedAgents', async () =>
-  cachedSdkRead('getSupportedAgents', async () => {
-    try {
-      const sdk = await loadAnthropicSdk()
-      if (!sdk || typeof sdk.query !== 'function') return []
-      const instance = sdk.query({ prompt: '', options: { cwd: '/' } })
-      const agents = await instance.supportedAgents()
-      return Array.isArray(agents) ? agents : []
-    } catch {
-      return []
-    }
+registerHandler('claude.getSupportedAgents', async (params) =>
+  cachedSdkRead(`getSupportedAgents:${params?.sessionId ?? ''}`, async () => {
+    const result = await readFromLiveQuery(params?.sessionId, 'supportedAgents', [])
+    return Array.isArray(result) ? result : []
   })
 )
-registerHandler('claude.getAccountInfo', async () =>
-  cachedSdkRead('getAccountInfo', async () => {
-    try {
-      const sdk = await loadAnthropicSdk()
-      if (!sdk || typeof sdk.query !== 'function') return null
-      const instance = sdk.query({ prompt: '', options: { cwd: '/' } })
-      const info = await instance.accountInfo()
-      return info ?? null
-    } catch {
-      return null
-    }
+registerHandler('claude.getAccountInfo', async (params) =>
+  cachedSdkRead(`getAccountInfo:${params?.sessionId ?? ''}`, async () => {
+    const result = await readFromLiveQuery(params?.sessionId, 'accountInfo', null)
+    return result ?? null
   })
 )
 
