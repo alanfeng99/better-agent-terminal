@@ -16,6 +16,8 @@ import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
 import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
+import { displayNameForClaudeSelection } from '../utils/claude-model-presets'
+import { CODEX_MODELS } from '../utils/codex-models'
 import { firstMeaningfulLine, formatContentSize, truncateMiddle } from './CodexAgentPanel.helpers'
 import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
 
@@ -126,6 +128,19 @@ function scheduleAgentMetadataRefresh(callback: () => void): () => void {
   return () => window.clearTimeout(timer)
 }
 
+function displayNameForPanelModel(model?: string): string {
+  const codexModel = CODEX_MODELS.find(m => m.value === model)
+  return codexModel?.displayName || displayNameForClaudeSelection(model)
+}
+
+function formatContextWindowSuffix(displayName: string, contextWindow?: number): string {
+  if (!contextWindow || contextWindow <= 0) return ''
+  const label = contextWindow >= 1000000
+    ? `${Math.round(contextWindow / 1000000)}M`
+    : `${Math.round(contextWindow / 1000)}k`
+  return displayName.toLowerCase().includes(label.toLowerCase()) ? '' : ` (${label})`
+}
+
 export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose, showUserMsg = true, showAssistantMsg = true, showToolMsg = true, showThinkingMsg = true, isRemoteConnected = false }: Readonly<OpenAIAgentPanelProps>) {
   const { t } = useTranslation()
   const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
@@ -172,6 +187,14 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     if (isCodexSession) return t?.model || ''
     return t?.model || settingsStore.getSettings().defaultClaudeModel || ''
   })
+  const currentModelLabel = useMemo(() => displayNameForPanelModel(currentModel), [currentModel])
+  const currentModelContextSuffix = useMemo(
+    () => formatContextWindowSuffix(currentModelLabel, sessionMeta?.contextWindow),
+    [currentModelLabel, sessionMeta?.contextWindow],
+  )
+  const currentModelTitle = currentModel
+    ? `${currentModelLabel || currentModel}${currentModelLabel && currentModelLabel !== currentModel ? ` (${currentModel})` : ''}`
+    : '(default)'
   const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
     const value = normalizedAgentParams?.sandboxMode
     return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access'
@@ -4061,9 +4084,9 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               <span
                 className="claude-status-btn"
                 onClick={() => setShowModelList(true)}
-                title={`Model: ${currentModel} (click to select)`}
+                title={`Model: ${currentModelTitle} (click to select)`}
               >
-                {'</>'} {currentModel}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModelLabel || currentModel}{currentModelContextSuffix}
               </span>
             )}
             {(isCodexSession || !isV2Session) && (

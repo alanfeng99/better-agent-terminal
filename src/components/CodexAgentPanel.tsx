@@ -16,6 +16,8 @@ import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
 import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
+import { displayNameForClaudeSelection } from '../utils/claude-model-presets'
+import { CODEX_MODELS } from '../utils/codex-models'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
 import { firstMeaningfulLine, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
@@ -31,6 +33,19 @@ function scheduleAgentMetadataRefresh(callback: () => void): () => void {
   }
   const timer = window.setTimeout(callback, 1500)
   return () => window.clearTimeout(timer)
+}
+
+function displayNameForPanelModel(model?: string): string {
+  const codexModel = CODEX_MODELS.find(m => m.value === model)
+  return codexModel?.displayName || displayNameForClaudeSelection(model)
+}
+
+function formatContextWindowSuffix(displayName: string, contextWindow?: number): string {
+  if (!contextWindow || contextWindow <= 0) return ''
+  const label = contextWindow >= 1000000
+    ? `${Math.round(contextWindow / 1000000)}M`
+    : `${Math.round(contextWindow / 1000)}k`
+  return displayName.toLowerCase().includes(label.toLowerCase()) ? '' : ` (${label})`
 }
 
 function parseGeneratedImageResult(result: unknown): { dataUrl: string; revisedPrompt?: string } | null {
@@ -99,6 +114,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     if (isCodexSession) return t?.model || settingsStore.getSettings().defaultCodexModel || ''
     return t?.model || settingsStore.getSettings().defaultClaudeModel || ''
   })
+  const currentModelLabel = useMemo(() => displayNameForPanelModel(currentModel), [currentModel])
+  const currentModelContextSuffix = useMemo(
+    () => formatContextWindowSuffix(currentModelLabel, sessionMeta?.contextWindow),
+    [currentModelLabel, sessionMeta?.contextWindow],
+  )
+  const currentModelTitle = currentModel
+    ? `${currentModelLabel || currentModel}${currentModelLabel && currentModelLabel !== currentModel ? ` (${currentModel})` : ''}`
+    : '(default)'
   const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
     const value = normalizedAgentParams?.sandboxMode
     return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access'
@@ -3870,9 +3893,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
               <span
                 className="claude-status-btn"
                 onClick={() => setShowModelList(true)}
-                title={`Model: ${currentModel || '(default)'} (click to select)`}
+                title={`Model: ${currentModelTitle} (click to select)`}
               >
-                {'</>'} {currentModel || '(default)'}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModelLabel || currentModel || '(default)'}{currentModelContextSuffix}
               </span>
             )}
             {(isCodexSession || !isV2Session) && (

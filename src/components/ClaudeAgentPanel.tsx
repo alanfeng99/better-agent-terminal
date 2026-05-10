@@ -210,6 +210,14 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     return availableModels.find(model => model.value === currentModel)?.displayName || displayNameForClaudeSelection(currentModel)
   }, [availableModels, currentModel])
   const currentSdkModel = useMemo(() => sdkModelForClaudeSelection(currentModel) || currentModel, [currentModel])
+  const currentModelContextSuffix = useMemo(() => {
+    const contextWindow = sessionMeta?.contextWindow
+    if (!contextWindow || contextWindow <= 0) return ''
+    const label = contextWindow >= 1000000
+      ? `${Math.round(contextWindow / 1000000)}M`
+      : `${Math.round(contextWindow / 1000)}k`
+    return currentModelLabel.toLowerCase().includes(label.toLowerCase()) ? '' : ` (${label})`
+  }, [currentModelLabel, sessionMeta?.contextWindow])
   // Subagent message storage (keyed by parent Task tool_use_id)
   const subagentMessagesRef = useRef<Map<string, MessageItem[]>>(new Map())
   const [subagentStreamingText, setSubagentStreamingText] = useState<Map<string, string>>(new Map())
@@ -3961,7 +3969,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 onClick={() => setShowModelList(true)}
                 title={`Model: ${currentModelLabel}${currentSdkModel !== currentModel ? ` (${currentSdkModel})` : ''} (click to select)`}
               >
-                {'</>'} {currentModelLabel}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModelLabel}{currentModelContextSuffix}
               </span>
             )}
             {!isCodexSession && !isV2Session && (
