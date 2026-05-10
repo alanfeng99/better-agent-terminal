@@ -39,6 +39,7 @@ interface SessionMeta {
   callCacheWrite?: number
   lastQueryCalls?: number
   permissionMode?: string
+  effort?: string
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }>
   cacheWrite5mTokens?: number
   cacheWrite1hTokens?: number
@@ -4546,6 +4547,22 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           gitBranch: () => !gitBranch ? null : (
             <span key="gitBranch" className="claude-statusline-item">[{gitBranch}]</span>
           ),
+          model: () => {
+            const model = sessionMeta?.model || currentModel
+            if (!model) return null
+            return (
+              <span key="model" className="claude-statusline-item" title={`model: ${model}`}>
+                {displayNameForClaudeSelection(model)}
+              </span>
+            )
+          },
+          effort: () => {
+            const effort = sessionMeta?.effort || effortLevel
+            if (!effort) return null
+            return <span key="effort" className="claude-statusline-item" title={`effort: ${effort}`}>{effort}</span>
+          },
+          sandbox: () => null,
+          approval: () => null,
           tokens: () => !sessionMeta ? null : (
             <span key="tokens" className="claude-statusline-item claude-statusline-clickable" title={`context: ${(sessionMeta.contextTokens || 0).toLocaleString()} tok\ncumulative in: ${sessionMeta.inputTokens.toLocaleString()} / out: ${sessionMeta.outputTokens.toLocaleString()}\nclick to show context breakdown`}
               onClick={() => { host.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>

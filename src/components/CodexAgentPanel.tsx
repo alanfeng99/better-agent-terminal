@@ -4500,13 +4500,40 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           gitBranch: () => !gitBranch ? null : (
             <span key="gitBranch" className="claude-statusline-item">[{gitBranch}]</span>
           ),
+          model: () => {
+            const model = sessionMeta?.model || currentModel
+            if (!model) return null
+            return (
+              <span key="model" className="claude-statusline-item" title={`model: ${model}`}>
+                {displayNameForPanelModel(model)}
+              </span>
+            )
+          },
+          effort: () => {
+            const effort = sessionMeta?.effort || effortLevel
+            if (!effort) return null
+            return <span key="effort" className="claude-statusline-item" title={`effort: ${effort}`}>{effort}</span>
+          },
+          sandbox: () => {
+            if (!isCodexSession) return null
+            const mode = sessionMeta?.codexSandboxMode || codexSandboxMode
+            if (!mode) return null
+            return <span key="sandbox" className="claude-statusline-item" title={`sandbox: ${mode}`}>{mode}</span>
+          },
+          approval: () => {
+            if (!isCodexSession) return null
+            const policy = sessionMeta?.codexApprovalPolicy || codexApprovalPolicy
+            if (!policy) return null
+            return <span key="approval" className="claude-statusline-item" title={`approval: ${policy}`}>{policy}</span>
+          },
           tokens: () => {
             if (!sessionMeta) return null
-            if (isCodexSession && (sessionMeta.contextTokens || 0) <= 0) return null
+            const visibleTokens = sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)
+            if (isCodexSession && visibleTokens <= 0) return null
             return (
-              <span key="tokens" className="claude-statusline-item claude-statusline-clickable" title={`context: ${(sessionMeta.contextTokens || 0).toLocaleString()} tok\ncumulative in: ${sessionMeta.inputTokens.toLocaleString()} / out: ${sessionMeta.outputTokens.toLocaleString()}\nclick to show context breakdown`}
+              <span key="tokens" className="claude-statusline-item claude-statusline-clickable" title={`context: ${visibleTokens.toLocaleString()} tok\ncumulative in: ${sessionMeta.inputTokens.toLocaleString()} / out: ${sessionMeta.outputTokens.toLocaleString()}\nclick to show context breakdown`}
                 onClick={() => { host.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
-                {(sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)).toLocaleString()} tok
+                {visibleTokens.toLocaleString()} tok
               </span>
             )
           },
@@ -4518,8 +4545,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           ),
           contextPct: () => {
             if (!sessionMeta || sessionMeta.contextWindow <= 0) return null
-            if (isCodexSession && (sessionMeta.contextTokens || 0) <= 0) return null
             const ctxTokens = sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)
+            if (isCodexSession && ctxTokens <= 0) return null
             const pct = Math.round((ctxTokens / sessionMeta.contextWindow) * 100)
             const ctxColor = pct >= 80 ? '#e05252' : pct >= 50 ? '#e6a700' : '#89ca78'
             return (

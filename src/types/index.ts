@@ -277,7 +277,8 @@ export interface SkillCommand {
 // ============================================
 
 export type StatuslineItemId =
-  | 'sessionId' | 'tokens' | 'turns' | 'duration'
+  | 'sessionId' | 'model' | 'effort' | 'sandbox' | 'approval'
+  | 'tokens' | 'turns' | 'duration'
   | 'contextPct' | 'cost' | 'workspace' | 'gitBranch'
   | 'usage5h' | 'usage5hReset' | 'usage7d' | 'usage7dReset'
   | 'maxOut' | 'cacheEff' | 'prompts'
@@ -300,6 +301,10 @@ export interface StatuslineItemDef {
 
 export const STATUSLINE_ITEMS: StatuslineItemDef[] = [
   { id: 'sessionId',    label: 'Session ID',   description: 'First 8 chars of SDK session ID (click to resume)',  defaultVisible: true,  group: 'session' },
+  { id: 'model',        label: 'Model',        description: 'Current agent model',                                defaultVisible: true,  group: 'session' },
+  { id: 'effort',       label: 'Effort',       description: 'Current reasoning effort',                           defaultVisible: true,  group: 'session' },
+  { id: 'sandbox',      label: 'Sandbox',      description: 'Codex sandbox mode',                                  defaultVisible: true,  group: 'session' },
+  { id: 'approval',     label: 'Approval',     description: 'Codex approval policy',                               defaultVisible: true,  group: 'session' },
   { id: 'gitBranch',    label: 'Git Branch',   description: 'Current git branch name',                            defaultVisible: true,  group: 'session' },
   { id: 'tokens',       label: 'Tokens',       description: 'Total input + output token count',                   defaultVisible: true,  group: 'session' },
   { id: 'turns',        label: 'Turns',        description: 'Number of conversation turns',                       defaultVisible: true,  group: 'session' },

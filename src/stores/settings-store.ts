@@ -396,7 +396,7 @@ class SettingsStore {
       return stripDynamicColors([...this.settings.statuslineItems, ...missing])
     }
     // Default template
-    return stripDynamicColors(parseStatuslineTemplate('gitBranch(#61afef),sessionId(#d19a66) > tokens,turns,duration > contextPct,cacheEff,cost > usage5h,usage5hReset > usage7d(#e5c07b),usage7dReset(#e5c07b) > prompts(#d19a66)'))
+    return stripDynamicColors(parseStatuslineTemplate('gitBranch(#61afef),sessionId(#d19a66),model,effort,sandbox,approval > tokens,turns,duration > contextPct,cacheEff,cost > usage5h,usage5hReset > usage7d(#e5c07b),usage7dReset(#e5c07b) > prompts(#d19a66)'))
   }
 
   setStatuslineItems(items: StatuslineItemConfig[]): void {

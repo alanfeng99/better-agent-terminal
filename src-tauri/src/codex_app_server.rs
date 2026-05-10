@@ -133,6 +133,10 @@ struct CodexSession {
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
+    num_turns: u64,
+    last_turn_started_at: Option<Instant>,
+    last_turn_first_token_ms: Option<u64>,
+    last_turn_duration_ms: Option<u64>,
     messages: Vec<Value>,
     is_running: bool,
 }
@@ -148,7 +152,7 @@ impl CodexSession {
             "inputTokens": self.input_tokens,
             "outputTokens": self.output_tokens,
             "durationMs": self.start_time.elapsed().as_millis() as u64,
-            "numTurns": 0,
+            "numTurns": self.num_turns,
             "contextWindow": 0,
             "maxOutputTokens": 0,
             "contextTokens": context_tokens,
@@ -160,6 +164,8 @@ impl CodexSession {
             "codexSandboxMode": self.sandbox_mode,
             "codexApprovalPolicy": self.approval_policy,
             "effort": self.effort,
+            "lastTurnFirstTokenMs": self.last_turn_first_token_ms,
+            "lastTurnDurationMs": self.last_turn_duration_ms,
         })
     }
 }
@@ -623,6 +629,10 @@ impl CodexAppServerState {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            num_turns: 0,
+            last_turn_started_at: None,
+            last_turn_first_token_ms: None,
+            last_turn_duration_ms: None,
             messages: Vec::new(),
             is_running: false,
         };
@@ -766,6 +776,10 @@ impl CodexAppServerState {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            num_turns: 0,
+            last_turn_started_at: None,
+            last_turn_first_token_ms: None,
+            last_turn_duration_ms: None,
             messages: Vec::new(),
             is_running: false,
         };
@@ -817,6 +831,10 @@ impl CodexAppServerState {
                 .get_mut(&session_id)
                 .ok_or_else(|| bridge_error("Codex session not started"))?;
             session.is_running = true;
+            session.num_turns += 1;
+            session.last_turn_started_at = Some(Instant::now());
+            session.last_turn_first_token_ms = None;
+            session.last_turn_duration_ms = None;
             session.assistant_text.clear();
             session.thinking_text.clear();
             let msg = make_user_message(&session_id, &prompt, images.len());
@@ -1047,6 +1065,12 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
             let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.is_running = true;
+                if session.last_turn_started_at.is_none() {
+                    session.num_turns += 1;
+                    session.last_turn_started_at = Some(Instant::now());
+                    session.last_turn_first_token_ms = None;
+                    session.last_turn_duration_ms = None;
+                }
                 session.active_turn_id = params
                     .get("turn")
                     .and_then(|v| v.get("id"))
@@ -1104,6 +1128,12 @@ fn append_stream_delta(
     {
         let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
         if let Some(session) = sessions.get_mut(session_id) {
+            if session.last_turn_first_token_ms.is_none() {
+                if let Some(started_at) = session.last_turn_started_at {
+                    session.last_turn_first_token_ms =
+                        Some(started_at.elapsed().as_millis() as u64);
+                }
+            }
             if key == "text" {
                 session.assistant_text.push_str(&delta);
             } else {
@@ -1296,28 +1326,40 @@ fn handle_usage_updated(
         return;
     };
     let usage = params.get("usage").unwrap_or(params);
-    if let Some(v) = usage
-        .get("inputTokens")
-        .or_else(|| usage.get("input_tokens"))
-        .and_then(Value::as_u64)
-    {
+    if let Some(v) = read_usage_u64(usage, &["inputTokens", "input_tokens", "input"]) {
         session.input_tokens = v;
     }
-    if let Some(v) = usage
-        .get("outputTokens")
-        .or_else(|| usage.get("output_tokens"))
-        .and_then(Value::as_u64)
-    {
+    if let Some(v) = read_usage_u64(usage, &["outputTokens", "output_tokens", "output"]) {
         session.output_tokens = v;
     }
-    if let Some(v) = usage
-        .get("cacheReadTokens")
-        .or_else(|| usage.get("cached_input_tokens"))
-        .and_then(Value::as_u64)
-    {
+    if let Some(v) = read_usage_u64(
+        usage,
+        &[
+            "cacheReadTokens",
+            "cached_input_tokens",
+            "cache_read_tokens",
+        ],
+    ) {
         session.cache_read_tokens = v;
     }
     emit(app, "claude:status", session_id, "meta", session.metadata());
+}
+
+fn read_usage_u64(usage: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(value) = usage.get(*key).and_then(Value::as_u64) {
+            return Some(value);
+        }
+    }
+    for nested_key in ["total", "cumulative", "usage"] {
+        if let Some(value) = usage
+            .get(nested_key)
+            .and_then(|nested| read_usage_u64(nested, keys))
+        {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn handle_turn_completed(
@@ -1334,6 +1376,27 @@ fn handle_turn_completed(
         session.is_running = false;
         session.active_turn_id = None;
         let turn = params.get("turn").unwrap_or(params);
+        if let Some(usage) = turn.get("usage") {
+            if let Some(v) = read_usage_u64(usage, &["inputTokens", "input_tokens", "input"]) {
+                session.input_tokens = v;
+            }
+            if let Some(v) = read_usage_u64(usage, &["outputTokens", "output_tokens", "output"]) {
+                session.output_tokens = v;
+            }
+            if let Some(v) = read_usage_u64(
+                usage,
+                &[
+                    "cacheReadTokens",
+                    "cached_input_tokens",
+                    "cache_read_tokens",
+                ],
+            ) {
+                session.cache_read_tokens = v;
+            }
+        }
+        if let Some(started_at) = session.last_turn_started_at {
+            session.last_turn_duration_ms = Some(started_at.elapsed().as_millis() as u64);
+        }
         let status = turn
             .get("status")
             .and_then(Value::as_str)
