@@ -1,4 +1,4 @@
-import { host } from './host-api'
+import { host, isTauri } from './host-api'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
@@ -78,6 +78,34 @@ function savePanelSettings(settings: PanelSettings): void {
   }
 }
 
+function afterFirstPaint(callback: () => void, delayMs = 0): () => void {
+  let cancelled = false
+  let firstFrame = 0
+  let secondFrame = 0
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  firstFrame = requestAnimationFrame(() => {
+    secondFrame = requestAnimationFrame(() => {
+      timeout = setTimeout(() => {
+        if (!cancelled) callback()
+      }, delayMs)
+    })
+  })
+  return () => {
+    cancelled = true
+    cancelAnimationFrame(firstFrame)
+    cancelAnimationFrame(secondFrame)
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+function scheduleTauriStartupBackgroundWork(callback: () => void): () => void {
+  if (!isTauri()) {
+    callback()
+    return () => {}
+  }
+  return afterFirstPaint(callback, 1000)
+}
+
 export default function App() {
   const { t } = useTranslation()
   const [state, setState] = useState<AppState>(workspaceStore.getState())
@@ -113,16 +141,23 @@ export default function App() {
     host.app.getWindowIndex().then(setWindowIndex)
   }, [])
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null
     const fetchAuth = () => {
       host.claude.authStatus().then(info => {
         if (info) setAuthInfo({ email: info.email, subscriptionType: info.subscriptionType })
       }).catch(() => {})
     }
-    fetchAuth()
-    const interval = setInterval(fetchAuth, 120_000)
     const onAccountSwitch = () => fetchAuth()
-    window.addEventListener('claude-account-switched', onAccountSwitch)
-    return () => { clearInterval(interval); window.removeEventListener('claude-account-switched', onAccountSwitch) }
+    const cancelStart = scheduleTauriStartupBackgroundWork(() => {
+      fetchAuth()
+      interval = setInterval(fetchAuth, 120_000)
+      window.addEventListener('claude-account-switched', onAccountSwitch)
+    })
+    return () => {
+      cancelStart()
+      if (interval) clearInterval(interval)
+      window.removeEventListener('claude-account-switched', onAccountSwitch)
+    }
   }, [])
   useEffect(() => {
     const profileTitle = /:\d+$/.test(activeProfileName)
@@ -510,12 +545,18 @@ export default function App() {
 
   // Poll remote client connection status
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null
     const check = () => {
       host.remote.clientStatus().then(s => setIsRemoteConnected(s.connected))
     }
-    check()
-    const interval = setInterval(check, 3000)
-    return () => clearInterval(interval)
+    const cancelStart = scheduleTauriStartupBackgroundWork(() => {
+      check()
+      interval = setInterval(check, 3000)
+    })
+    return () => {
+      cancelStart()
+      if (interval) clearInterval(interval)
+    }
   }, [])
 
   const handleAddWorkspace = useCallback(() => {
