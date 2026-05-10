@@ -10,12 +10,13 @@ use crate::sidecar::BridgeError;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,7 +55,7 @@ struct CodexConnection {
     stdin: Mutex<ChildStdin>,
     next_id: AtomicU64,
     pending: Arc<PendingTable>,
-    _child: Mutex<Child>,
+    child: Mutex<Child>,
 }
 
 impl CodexConnection {
@@ -91,6 +92,15 @@ impl CodexConnection {
                 let _ = self.pending.take(id);
                 Err(format!("codex app-server request timed out: {method}"))
             }
+        }
+    }
+}
+
+impl Drop for CodexConnection {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -201,19 +211,154 @@ fn normalize_approval(value: Option<&str>) -> String {
     }
 }
 
-fn build_codex_command() -> Command {
-    let codex = std::env::var("BAT_CODEX_BIN").unwrap_or_else(|_| "codex".to_string());
-    #[cfg(windows)]
-    {
-        let mut command = Command::new("cmd");
-        command.arg("/C").arg(codex).arg("app-server");
-        command
+enum CodexBinary {
+    Native(PathBuf),
+    Wrapper(String),
+}
+
+fn codex_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "codex.exe"
+    } else {
+        "codex"
     }
-    #[cfg(not(windows))]
-    {
-        let mut command = Command::new(codex);
-        command.arg("app-server");
-        command
+}
+
+fn codex_target_triple() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
+        _ => None,
+    }
+}
+
+fn codex_platform_package() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("codex-linux-x64"),
+        ("linux", "aarch64") => Some("codex-linux-arm64"),
+        ("macos", "x86_64") => Some("codex-darwin-x64"),
+        ("macos", "aarch64") => Some("codex-darwin-arm64"),
+        ("windows", "x86_64") => Some("codex-win32-x64"),
+        ("windows", "aarch64") => Some("codex-win32-arm64"),
+        _ => None,
+    }
+}
+
+fn bundled_codex_candidate(base: &Path) -> Option<PathBuf> {
+    let triple = codex_target_triple()?;
+    let platform_pkg = codex_platform_package()?;
+    let exe = codex_exe_name();
+    let candidates = [
+        base.join("node-sidecar")
+            .join("node_modules")
+            .join("@openai")
+            .join(platform_pkg)
+            .join("vendor")
+            .join(triple)
+            .join("codex")
+            .join(exe),
+        base.join("node-sidecar")
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("vendor")
+            .join(triple)
+            .join("codex")
+            .join(exe),
+        base.join("node_modules")
+            .join("@openai")
+            .join(platform_pkg)
+            .join("vendor")
+            .join(triple)
+            .join("codex")
+            .join(exe),
+        base.join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("vendor")
+            .join(triple)
+            .join("codex")
+            .join(exe),
+    ];
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn find_codex_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(codex_exe_name());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn resolve_codex_binary(app: &AppHandle) -> CodexBinary {
+    if let Ok(override_path) = std::env::var("BAT_CODEX_BIN") {
+        let path = PathBuf::from(&override_path);
+        if path.is_file() {
+            let ext = path
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ext != "cmd" && ext != "bat" {
+                return CodexBinary::Native(path);
+            }
+            return CodexBinary::Wrapper(override_path);
+        }
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        if let Some(path) = bundled_codex_candidate(&resource_dir) {
+            return CodexBinary::Native(path);
+        }
+    }
+
+    if let Ok(mut cwd) = std::env::current_dir() {
+        loop {
+            if let Some(path) = bundled_codex_candidate(&cwd) {
+                return CodexBinary::Native(path);
+            }
+            if !cwd.pop() {
+                break;
+            }
+        }
+    }
+
+    if let Some(path) = find_codex_on_path() {
+        return CodexBinary::Native(path);
+    }
+
+    CodexBinary::Wrapper("codex".to_string())
+}
+
+fn build_codex_command(app: &AppHandle) -> Command {
+    match resolve_codex_binary(app) {
+        CodexBinary::Native(path) => {
+            let mut command = Command::new(path);
+            command.arg("app-server");
+            command
+        }
+        CodexBinary::Wrapper(command_name) => {
+            #[cfg(windows)]
+            {
+                let mut command = Command::new("cmd");
+                command.arg("/C").arg(command_name).arg("app-server");
+                command
+            }
+            #[cfg(not(windows))]
+            {
+                let mut command = Command::new(command_name);
+                command.arg("app-server");
+                command
+            }
+        }
     }
 }
 
@@ -369,7 +514,7 @@ impl CodexAppServerState {
             return Ok(existing);
         }
 
-        let mut child = build_codex_command()
+        let mut child = build_codex_command(app)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -388,7 +533,7 @@ impl CodexAppServerState {
             stdin: Mutex::new(stdin),
             next_id: AtomicU64::new(0),
             pending: pending.clone(),
-            _child: Mutex::new(child),
+            child: Mutex::new(child),
         });
 
         let app_for_reader = app.clone();
