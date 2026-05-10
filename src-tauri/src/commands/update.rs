@@ -17,20 +17,27 @@ pub fn update_get_version(app: tauri::AppHandle) -> String {
 }
 
 #[tauri::command]
-pub fn update_check(
+pub async fn update_check(
     app: tauri::AppHandle,
     state: tauri::State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    let cfg = resolve_spawn_config(&app)?;
-    let sink = app_handle_emit_sink(app.clone());
     let current_version = app.package_info().version.to_string();
-    state.call_with_emit(
-        &cfg,
-        Some(sink),
-        "update.check",
-        json!({ "currentVersion": current_version }),
-        Duration::from_secs(15),
-    )
+    let state = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = resolve_spawn_config(&app)?;
+        let sink = app_handle_emit_sink(app.clone());
+        state.call_with_emit(
+            &cfg,
+            Some(sink),
+            "update.check",
+            json!({ "currentVersion": current_version }),
+            Duration::from_secs(15),
+        )
+    })
+    .await
+    .map_err(|err| BridgeError {
+        message: format!("update.check worker failed: {err}"),
+    })?
 }
 
 #[cfg(test)]
