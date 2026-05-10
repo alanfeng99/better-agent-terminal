@@ -8,6 +8,8 @@
 // and verify augmentation paths without depending on the real SDK
 // (which spawns the claude CLI on first call).
 
+import { info as logInfo, warn as logWarn } from './logger.mjs'
+
 let _sdkLoadAttempted = false
 let _sdkModule = null
 let _sdkOverrideSet = false
@@ -17,19 +19,24 @@ export async function loadAnthropicSdk() {
   if (_sdkOverrideSet) return _sdkOverride
   if (_sdkLoadAttempted) return _sdkModule
   _sdkLoadAttempted = true
+  const startedAt = Date.now()
   // Escape hatch for tests + dev shells: BAT_SIDECAR_DISABLE_SDK=1
   // forces the SDK-unavailable path even if @anthropic-ai/claude-agent-sdk
   // is importable. The e2e test uses this so claude.sendMessage takes
   // the deterministic stub path instead of trying to call the real API.
   if (process.env.BAT_SIDECAR_DISABLE_SDK === '1') {
     _sdkModule = null
+    logInfo(`claude.sdkLoad: disabled elapsedMs=${Date.now() - startedAt}`)
     return null
   }
   try {
     _sdkModule = await import('@anthropic-ai/claude-agent-sdk')
+    logInfo(`claude.sdkLoad: ok elapsedMs=${Date.now() - startedAt}`)
     return _sdkModule
-  } catch {
+  } catch (err) {
     _sdkModule = null
+    const msg = err instanceof Error ? err.message : String(err)
+    logWarn(`claude.sdkLoad: failed elapsedMs=${Date.now() - startedAt} error=${msg}`)
     return null
   }
 }

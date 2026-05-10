@@ -42,6 +42,7 @@
 - 2026-05-10：修正 Tauri Claude 連續送訊息的 sidecar 狀態缺口。`claude.sendMessage` 不再因 `streaming` flag 直接回 `session already streaming`，改為 per-session FIFO 排隊並沿用同一個 LiveQuery；同時補 `sidecar.log` 的 send start/queued/completed/abort 訊息，方便比對第二輪 ping 是否有進 sidecar、是否有完成 result/turn-end。
 - 2026-05-10：降低 FolderPicker / fs listing 對 Tauri runtime 的阻塞風險。`fs.readdir`、`fs.listDirs`、`fs.quickLocations` 的同步檔案列目錄工作改丟 Rust blocking worker，避免慢磁碟、網路磁碟、Windows drive probe 或 macOS `/Volumes` 掃描佔住 async command runtime；UI API 與 Electron 回傳 shape 不變。
 - 2026-05-10：補 FolderPicker performance marker。renderer 會在 `home`、`listDirs/readdir`、`quickLocations` 任一步超過 50ms 時寫 debug log，包含 path、mode、hidden flag、entry count 與 outcome，用來定位首次 Choose Folder 慢在 home resolve、目錄 listing，還是 quick locations 掃描。
+- 2026-05-10：補 Claude SDK import timing。Node sidecar 第一次 `loadAnthropicSdk()` 會在 `sidecar.log` 記錄 `claude.sdkLoad` 的 ok/failed/disabled 與 elapsedMs，讓 first send / metadata 慢可以拆成 Node spawn、SDK import、LiveQuery/CLI turn 三段觀察。
 
 ## 目前判斷
 
