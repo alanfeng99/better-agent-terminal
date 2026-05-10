@@ -30,6 +30,7 @@
 - 2026-05-10：收斂 `WorkspaceView` direct host calls。agent preset list、worktree create/remove、Claude CLI path、session start/stop/resume/send、cleanupWorktree 已改走 `host.*`，workspace shell 的新增、重啟、關閉與 send-to-agent 流程不再旁路 host adapter。
 - 2026-05-10：收斂 `ClaudeAgentPanel` direct Claude calls。archive/history、session lifecycle、metadata、permission/ask-user、account、MCP、worktree/context usage 等 `window.batAppAPI.claude.*` 呼叫已改走 `host.claude.*`，保留既有 Electron 行為並讓 Tauri adapter 統一承接。
 - 2026-05-10：收斂 `CodexAgentPanel` direct Claude calls。Codex panel 共用的 archive/history、session lifecycle、metadata、permission/ask-user、account、worktree/context usage 等 Claude bridge 呼叫已改走 `host.claude.*`，避免 Codex UI 旁路 Tauri adapter。
+- 2026-05-10：收斂 `OpenAIAgentPanel` direct Claude calls。OpenAI panel 共用的 archive/history、session lifecycle、metadata、permission/ask-user、account、worktree/context usage 等 Claude bridge 呼叫已改走 `host.claude.*`，三個大型 agent panel 的 direct `window.batAppAPI.claude` 使用點已清完。
 
 ## 目前判斷
 
