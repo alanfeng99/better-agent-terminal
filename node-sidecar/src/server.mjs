@@ -27,6 +27,7 @@ import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 import { registerHandler, handlers, dispatch, sendEvent, writeMessage, __setSendEventForTests } from './lib/protocol.mjs'
+import { initLogger, getLogPath, attachProcessHooks, __setLogPathOverrideForTests } from './lib/logger.mjs'
 import { sessions } from './lib/state.mjs'
 import { loadAnthropicSdk, __setSdkOverrideForTests } from './lib/sdk-loader.mjs'
 import { __setProjectsDirOverrideForTests, __normalizeMainPath } from './lib/data-paths.mjs'
@@ -71,6 +72,11 @@ registerHandler('ping', async (params) => {
   return { ok: true, echo: params ?? null, pid: process.pid }
 })
 
+// sidecar.* — process-level utility namespace. getLogPath returns the
+// resolved path of the sidecar's append-only debug log so the renderer
+// (or a future bug-report flow) can surface it to the user.
+registerHandler('sidecar.getLogPath', async () => ({ path: getLogPath() }))
+
 // Re-export the test-visible surface. server.test.mjs imports these
 // directly off the module, so every name listed below must be present.
 export {
@@ -80,6 +86,11 @@ export {
   registerHandler,
   sendEvent,
   __setSendEventForTests,
+  // logger
+  initLogger,
+  getLogPath,
+  attachProcessHooks,
+  __setLogPathOverrideForTests,
   // state
   sessions,
   // sdk loader
@@ -134,6 +145,11 @@ export {
 // --- main ------------------------------------------------------------------
 
 function main() {
+  // Boot the on-disk log first so anything that happens during stdin
+  // setup (including uncaughtException from a malformed handler import,
+  // though those'd already have crashed module load) lands in the file.
+  initLogger()
+  attachProcessHooks()
   // readline handles CR/LF differences, partial chunks, and large lines
   // without us needing to buffer-and-split manually.
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })

@@ -7,6 +7,7 @@
 import { registerHandler, sendEvent } from '../lib/protocol.mjs'
 import { sessions, ensureSession, buildSessionMeta } from '../lib/state.mjs'
 import { loadAnthropicSdk } from '../lib/sdk-loader.mjs'
+import { warn as logWarn } from '../lib/logger.mjs'
 import { sdkModelForClaudeSelection } from '../lib/models.mjs'
 import { loadInstalledPlugins, dataUrlToContentBlock } from '../lib/plugins.mjs'
 import { resolveClaudeCliBinary } from './claude-auth.mjs'
@@ -56,7 +57,7 @@ registerHandler('claude.sendMessage', async (params) => {
     // Same stub the pre-#21 handler emitted, kept for SDK-unavailable
     // dev shells and as a graceful fallback. Logged so it's obvious
     // this isn't a real reply.
-    process.stderr.write(`[sidecar] claude.sendMessage: SDK unavailable, returning stub for session ${sessionId}\n`)
+    logWarn(`claude.sendMessage: SDK unavailable, returning stub for session ${sessionId}`)
     sendEvent('claude:message', { sessionId, message: { role: 'assistant', content: '(stub reply — SDK unavailable)' } })
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: '(stub)' } })
     return { ok: true, stub: true }

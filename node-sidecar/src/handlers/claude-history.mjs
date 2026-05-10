@@ -9,6 +9,7 @@ import { registerHandler, sendEvent } from '../lib/protocol.mjs'
 import { sessions, buildSessionMeta } from '../lib/state.mjs'
 import { __resolveProjectsDir, archiveFilePath, resolveDataDir } from '../lib/data-paths.mjs'
 import { loadAnthropicSdk } from '../lib/sdk-loader.mjs'
+import { warn as logWarn } from '../lib/logger.mjs'
 import { resolveClaudeCliBinary } from './claude-auth.mjs'
 
 // claude.rewindToPrompt: cut the SDK session's JSONL transcript at a
@@ -173,7 +174,7 @@ registerHandler('claude.forkSession', async (params) => {
     const errMsg = err instanceof Error ? err.message : String(err)
     const isAbort = abortController.signal.aborted || /aborted/i.test(errMsg)
     if (!isAbort) {
-      process.stderr.write(`[sidecar] claude.forkSession: ${errMsg}\n`)
+      logWarn(`claude.forkSession: ${errMsg}`)
     }
   } finally {
     clearTimeout(timeoutHandle)
@@ -217,7 +218,7 @@ registerHandler('claude.fetchSubagentMessages', async (params) => {
     messages = await sdk.getSubagentMessages(sdkSid, agentToolUseId, cwd ? { dir: cwd } : undefined)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`[sidecar] claude.fetchSubagentMessages: ${errMsg}\n`)
+    logWarn(`claude.fetchSubagentMessages: ${errMsg}`)
     return []
   }
   if (!Array.isArray(messages)) return []
@@ -316,7 +317,7 @@ registerHandler('claude.archiveMessages', async (params) => {
     if (lines) await appendFile(archiveFilePath(sessionId), lines, 'utf-8')
     return true
   } catch (err) {
-    process.stderr.write(`[sidecar] claude.archiveMessages: ${err instanceof Error ? err.message : String(err)}\n`)
+    logWarn(`claude.archiveMessages: ${err instanceof Error ? err.message : String(err)}`)
     return false
   }
 })

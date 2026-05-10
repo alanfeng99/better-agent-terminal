@@ -62,6 +62,87 @@ async function inProcess() {
   const notif = await dispatch({ jsonrpc: '2.0', method: 'ping' })
   assert.equal(notif, null)
 
+  // sidecar logger — mirrors stderr writes to <dataDir>/sidecar.log so
+  // mac users can scrape the file post-mortem after a hung send.
+  // (a) initLogger creates the file at the override path, mode 0600 on
+  // POSIX. (b) log/warn/error append a timestamp+level+message line.
+  // (c) sidecar.getLogPath surfaces the path through dispatch so the
+  // renderer can show it. (d) rotate kicks in when the file exceeds
+  // 5 MB. (e) attachProcessHooks is idempotent.
+  {
+    const logger = await import('../src/lib/logger.mjs')
+    const { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, statSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'bat-sidecar-log-'))
+    const logPath = join(tmpRoot, 'sidecar.log')
+    logger.__setLogPathOverrideForTests(logPath)
+    try {
+      logger.initLogger()
+      assert.equal(existsSync(logPath), true, 'initLogger must create the log file')
+      assert.equal(logger.getLogPath(), logPath)
+
+      // Every level appends a parseable line.
+      logger.log('hello', 'world')
+      logger.info('numbers:', 42)
+      logger.warn('careful')
+      logger.error('boom', new Error('kaboom'))
+      const contents = readFileSync(logPath, 'utf-8')
+      // Count entries by ISO-timestamp prefix at line start (errors with
+      // multi-line stacks count as one entry).
+      const entryStarts = contents.match(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z (LOG |INFO|WARN|ERR ) /gm) || []
+      assert.equal(entryStarts.length, 4, `expected 4 entries, got ${entryStarts.length}`)
+      // Per-line spot-checks via the first line of each entry.
+      const firstLineOf = contents.split('\n').filter(Boolean)[0]
+      assert.match(firstLineOf, /LOG  hello world$/)
+      // The error entry must contain both 'boom' and 'kaboom' (stack or
+      // bare message).
+      assert.ok(contents.includes('boom') && contents.includes('kaboom'))
+      // INFO + WARN entries appear in order before ERR.
+      const ts = (regex) => contents.search(regex)
+      assert.ok(ts(/INFO numbers: 42/) > 0)
+      assert.ok(ts(/WARN careful/) > ts(/INFO numbers: 42/))
+      assert.ok(ts(/ERR /) > ts(/WARN careful/))
+
+      // sidecar.getLogPath through dispatch.
+      const reply = await dispatch({ jsonrpc: '2.0', id: 'log-1', method: 'sidecar.getLogPath' })
+      assert.equal(reply.result.path, logPath)
+
+      // POSIX mode 0600 on the file.
+      if (process.platform !== 'win32') {
+        const mode = statSync(logPath).mode & 0o777
+        assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`)
+      }
+
+      // Rotate: write >5MB, re-init, file gets truncated.
+      writeFileSync(logPath, 'X'.repeat(6 * 1024 * 1024), { mode: 0o600 })
+      assert.ok(statSync(logPath).size > 5 * 1024 * 1024)
+      logger.initLogger()
+      assert.equal(statSync(logPath).size, 0, 'oversized log must be rotated to empty')
+
+      // attachProcessHooks is idempotent — second call doesn't re-bind.
+      const before = process.listenerCount('uncaughtException')
+      logger.attachProcessHooks()
+      logger.attachProcessHooks()
+      const after = process.listenerCount('uncaughtException')
+      assert.ok(after - before <= 1,
+        `attachProcessHooks must add at most one listener, added ${after - before}`)
+
+      // Logger silently swallows write failures — point the override at
+      // a path inside a deleted dir, log, no throw.
+      const ghostDir = join(tmpRoot, 'gone')
+      const ghostPath = join(ghostDir, 'log')
+      logger.__setLogPathOverrideForTests(ghostPath)
+      logger.initLogger()
+      // initLogger creates the dir; then we delete it to force append failure.
+      rmSync(ghostDir, { recursive: true, force: true })
+      // Should not throw.
+      logger.warn('this write fails silently')
+    } finally {
+      logger.__setLogPathOverrideForTests(null)
+      rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  }
+
   // Handler that throws produces -32000 with the message verbatim.
   registerHandler('test.boom', async () => { throw new Error('kapow') })
   const boom = await dispatch({ jsonrpc: '2.0', id: 9, method: 'test.boom' })
