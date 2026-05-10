@@ -3539,7 +3539,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       )}
 
       {/* Resume Session List */}
-      {!isCodexSession && showResumeList && (
+      {showResumeList && (
         <div className="claude-resume-card">
           <div className="claude-permission-title">{t('claude.resumeSession')}</div>
           {resumeLoading ? (

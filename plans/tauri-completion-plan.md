@@ -93,6 +93,7 @@
 - 2026-05-11：補 Codex session listing 的 Electron/Tauri host API parity。`host.claude.listSessions(cwd, 'codex')` 在 Electron preload 不再丟掉 `agentKind`，server handler 會路由到 `CodexAgentManager.listSessions()`；Tauri host-api 測試也鎖住 `agentKind` payload，避免 Codex resume picker 讀到 Claude 歷史。
 - 2026-05-11：清理 OpenAI Direct README 殘留。README 不再描述 `BAT_DEBUG` OpenAI Direct runtime、已刪除的 manager/panel，Tech Stack 也移除 `@ai-sdk/openai`；cleanup regression test 會防止這些廢棄入口重新出現在使用者文件。
 - 2026-05-11：補 Rust-owned Codex setting feedback parity。Rust app-server runtime 的 model / effort / sandbox / approval 切換現在會和 Electron Codex 一樣 emit system message，並在 model/effort 變更時同步 emit status metadata；同值重設會直接回成功不插入重複訊息。
+- 2026-05-11：修正 Codex `/resume` UI gate。`CodexAgentPanel` 原本已呼叫 `host.claude.listSessions(cwd, 'codex')`，但 resume list render 條件仍是 `!isCodexSession && showResumeList`，導致 Codex 歷史列表永遠不顯示；現在改為 `showResumeList` 並加 source-level regression test。
 
 ## 目前判斷
 
