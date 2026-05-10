@@ -685,17 +685,12 @@ mod tests {
         );
     }
 
-    // Drag-drop regression: Tauri 2's default `dragDropEnabled: true`
-    // intercepts OS drag-drop at the webview layer, so the renderer's
-    // standard browser `onDrop` handlers never fire. The renderer's
-    // ClaudeAgentPanel / CodexAgentPanel / OpenAIAgentPanel / Sidebar
-    // all rely on `onDrop`, so silently flipping this back to true
-    // breaks file/image attachment + workspace folder drop.
-    //
-    // Pin the contract here. If a future tauri.conf edit removes the
-    // explicit `dragDropEnabled: false`, this test goes red.
+    // Tauri native drag/drop events provide absolute paths for OS file/folder
+    // drops. The renderer routes those events to Sidebar and all agent
+    // attachment panels, so the config must keep native events enabled instead
+    // of relying on browser File objects without host paths.
     #[test]
-    fn tauri_conf_disables_dragdrop_so_browser_ondrop_fires() {
+    fn tauri_conf_enables_native_dragdrop_path_events() {
         let conf_path = repo_root().join("src-tauri").join("tauri.conf.json");
         let raw = std::fs::read_to_string(&conf_path).expect("tauri.conf.json must be readable");
         let parsed: serde_json::Value =
@@ -712,10 +707,9 @@ mod tests {
             let dde = w.get("dragDropEnabled").and_then(|v| v.as_bool());
             assert_eq!(
                 dde,
-                Some(false),
-                "window[{i}].dragDropEnabled must be explicitly false so the renderer's \
-                 onDrop handlers fire. Tauri's OS-level drag-drop interception is \
-                 incompatible with our File-based attach flow.",
+                Some(true),
+                "window[{i}].dragDropEnabled must be explicitly true so Tauri emits \
+                 native drag-drop path events for folder/file drops.",
             );
         }
     }

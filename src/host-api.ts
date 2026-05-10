@@ -281,10 +281,10 @@ function createTauriHost(): BatAppAPI {
     shell: {
       openExternal: (url: string) => getInvoke()<void>('shell_open_external', { url }),
       openPath: (path: string) => getInvoke()<void>('shell_open_path', { path }),
-      // Tauri keeps browser onDrop working via dragDropEnabled=false. In that
-      // mode most WebViews expose only a File object, but some platforms still
-      // attach a non-standard absolute path. Use it when present; otherwise
-      // return null so callers can fall back to dataURL or native pickers.
+      // Tauri native drag/drop routes absolute paths through webview events.
+      // Browser File drops can still reach this fallback in non-native builds;
+      // use a cached/native or non-standard path when present, otherwise return
+      // null so callers can fall back to dataURL or native pickers.
       getPathForFile: (file: File) => getPathFromDroppedFile(file),
     },
     dialog: {
