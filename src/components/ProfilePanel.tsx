@@ -98,7 +98,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
     }
     const settled = await Promise.allSettled(
       Array.from(targetMap.values()).map(async target => {
-        const res = await window.batAppAPI.remote.listProfiles(target.host, target.port, target.token, target.fingerprint)
+        const res = await host.remote.listProfiles(target.host, target.port, target.token, target.fingerprint)
         if ('error' in res) return { profiles: target.profiles, activeIds: [] as string[] }
         return { profiles: target.profiles, activeIds: res.activeProfileIds }
       })
@@ -148,8 +148,8 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
     return () => window.removeEventListener('keydown', handler)
   }, [creating, editingId, confirmDelete, siblingSourceId, onClose])
 
-  const fetchRemoteProfileList = async (host: string, port: number, token: string, fingerprint: string): Promise<RemoteProfileOption[]> => {
-    const result = await window.batAppAPI.remote.listProfiles(host, port, token, fingerprint)
+  const fetchRemoteProfileList = async (remoteHost: string, port: number, token: string, fingerprint: string): Promise<RemoteProfileOption[]> => {
+    const result = await host.remote.listProfiles(remoteHost, port, token, fingerprint)
     if ('error' in result) throw new Error(result.error)
     return result.profiles
   }
@@ -273,7 +273,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
     setTestingId(profile.id)
     setTestResult(prev => ({ ...prev, [profile.id]: 'testing' }))
     try {
-      const result = await window.batAppAPI.remote.testConnection(
+      const result = await host.remote.testConnection(
         profile.remoteHost,
         profile.remotePort || 9876,
         profile.remoteToken,

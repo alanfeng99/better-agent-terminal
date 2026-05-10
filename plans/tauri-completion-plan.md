@@ -21,6 +21,7 @@
 - 2026-05-10：補上 Tauri resources 量測腳本。`pnpm run verify:tauri-resources` 會依 `src-tauri/tauri.conf.json` 統計 bundle resources 的檔案數與大小，並在 resource source 缺失時失敗，作為後續 mac cold-start 瘦身基準。
 - 2026-05-10：收斂部分 renderer direct `window.batAppAPI` 呼叫。`AgentsPanel`、`SkillsPanel`、`TerminalThumbnail` 已改走 `host.claude.*`，讓 Tauri 的 supported agents/commands/skills 與 agent preview event adapter 不再旁路 host-api。
 - 2026-05-10：收斂 `WorkerPanel` direct host calls。Procfile worker buffer init/read/append/clear 與 remote client status 已改走 `host.workerBuffer` / `host.remote`，對齊已 port 的 Tauri adapter。
+- 2026-05-10：收斂 `ProfilePanel` remote direct calls。remote profile list/test connection 改走 `host.remote.*`，避免 Tauri profile UI 旁路 host-api。
 
 ## 目前判斷
 
