@@ -89,6 +89,7 @@
 - 2026-05-11：停用 Electron OpenAI Direct manager 初始化與 session routing。Electron main 不再建立 `OpenAIAgentManager`；server-core 遇到舊 `openai-agent` start/resume 會 normalize 到 Codex ownership，OpenAI list/compact IPC 回相容 no-op，API key handler 保留。
 - 2026-05-11：移除 OpenAI Direct runtime implementation。刪除未引用的 `OpenAIAgentManager`、OpenAI tools、OpenAI session/model/compaction/skills runtime 檔案，並移除 direct dependencies `@ai-sdk/openai`、`ai`、`zod`；`electron/openai-agent/api-key.ts` 保留作為 Codex auth fallback。
 - 2026-05-11：補 Rust-owned Codex read/control no-op parity。`getContextUsage`、`forkSession`、`fetchSubagentMessages`、`rewindToPrompt`、`resolvePermission`、`resolveAskUser` 對 Rust-owned Codex session 直接回 Electron Codex 相容值，不再落回 sidecar Claude-only handlers。
+- 2026-05-11：補 Rust-owned Codex auto-continue / permission-mode no-op parity。`setAutoContinue`、`getAutoContinue`、`setPermissionMode` 對 Codex 直接回 Electron Codex 相容值，避免 Codex UI 控制寫進 sidecar Claude session state。
 
 ## 目前判斷
 

@@ -667,9 +667,13 @@ pub async fn claude_cleanup_worktree(
 pub async fn claude_set_auto_continue(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     opts: Value,
 ) -> Result<Value, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        return Ok(json!(false));
+    }
     call_blocking(
         app,
         state,
@@ -685,8 +689,12 @@ pub async fn claude_set_auto_continue(
 pub async fn claude_get_auto_continue(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        return Ok(Value::Null);
+    }
     call_blocking(
         app,
         state,
@@ -700,9 +708,13 @@ pub async fn claude_get_auto_continue(
 pub async fn claude_set_permission_mode(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     mode: String,
 ) -> Result<Value, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        return Ok(json!(false));
+    }
     call_blocking(
         app,
         state,
