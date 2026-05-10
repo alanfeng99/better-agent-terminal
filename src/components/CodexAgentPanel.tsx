@@ -1379,7 +1379,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [sessionId, isCodexSession, isV2Session, currentModel, t])
 
   const handleResumeSelect = useCallback(async (sdkSessionId: string) => {
-    console.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
+    host.debug.log(`[Codex:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
     setShowResumeList(false)
     setResumeSessions([])
     // Clear UI immediately so user sees the switch
@@ -1399,21 +1399,24 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     historyLoadedRef.current = true
     const apiVersion = isV2Session ? 'v2' as const : 'v1' as const
     const resumeUsesWorktree = terminal?.agentPreset === 'codex-agent-worktree' || !!terminal?.worktreePath
+    const resumeModel = currentModel || settingsStore.getSettings().defaultCodexModel || DEFAULT_CODEX_MODEL
     await host.claude.resumeSession(
       sessionId,
       sdkSessionId,
       cwd,
-      undefined,
+      resumeModel,
       apiVersion,
       resumeUsesWorktree ? true : undefined,
       terminal?.worktreePath,
       terminal?.worktreeBranch,
       terminal?.agentPreset,
       codexSandboxMode,
-      codexApprovalPolicy
+      codexApprovalPolicy,
+      permissionMode,
+      effortLevel as EffortLevel
     )
     workspaceStore.setTerminalSdkSessionId(sessionId, sdkSessionId)
-  }, [sessionId, cwd, isV2Session])
+  }, [sessionId, cwd, isV2Session, terminal?.agentPreset, terminal?.worktreePath, terminal?.worktreeBranch, currentModel, codexSandboxMode, codexApprovalPolicy, permissionMode, effortLevel])
 
   const handleForkSession = useCallback(async () => {
     const dlog = (...args: unknown[]) => host.debug.log(...args)

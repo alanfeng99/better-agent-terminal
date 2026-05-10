@@ -95,6 +95,7 @@
 - 2026-05-11：補 Rust-owned Codex setting feedback parity。Rust app-server runtime 的 model / effort / sandbox / approval 切換現在會和 Electron Codex 一樣 emit system message，並在 model/effort 變更時同步 emit status metadata；同值重設會直接回成功不插入重複訊息。
 - 2026-05-11：修正 Codex `/resume` UI gate。`CodexAgentPanel` 原本已呼叫 `host.claude.listSessions(cwd, 'codex')`，但 resume list render 條件仍是 `!isCodexSession && showResumeList`，導致 Codex 歷史列表永遠不顯示；現在改為 `showResumeList` 並加 source-level regression test。
 - 2026-05-11：補 agent panel auto-resume 參數完整性。Claude/Codex panel 的 saved-session auto-resume 會傳 `effectiveModel`、`permissionMode`、`effort`，Codex 也保留 sandbox/approval；這讓先前 Tauri host-api 補上的完整 resume payload 不再被 UI 呼叫端截斷。
+- 2026-05-11：補手動 resume 參數完整性。Claude/Codex panel 從 resume list 選 session 時也會帶目前 model、permissionMode、effort；Codex 額外帶 sandbox/approval/worktree options，並把 renderer `console.log` 改成 `host.debug.log`。
 
 ## 目前判斷
 

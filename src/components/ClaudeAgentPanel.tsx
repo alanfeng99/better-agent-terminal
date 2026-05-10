@@ -1393,7 +1393,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [sessionId, isCodexSession, isV2Session, currentModel, t])
 
   const handleResumeSelect = useCallback(async (sdkSessionId: string) => {
-    console.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
+    host.debug.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
     setShowResumeList(false)
     setResumeSessions([])
     // Clear UI immediately so user sees the switch
@@ -1412,9 +1412,24 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Mark that history will be loaded — prevents sys-init from wiping messages
     historyLoadedRef.current = true
     const apiVersion = isV2Session ? 'v2' as const : 'v1' as const
-    await host.claude.resumeSession(sessionId, sdkSessionId, cwd, undefined, apiVersion, undefined, undefined, undefined, terminal?.agentPreset)
+    const resumeModel = currentModel || settingsStore.getSettings().defaultClaudeModel || undefined
+    await host.claude.resumeSession(
+      sessionId,
+      sdkSessionId,
+      cwd,
+      resumeModel,
+      apiVersion,
+      undefined,
+      undefined,
+      undefined,
+      terminal?.agentPreset,
+      undefined,
+      undefined,
+      permissionMode,
+      effortLevel as EffortLevel,
+    )
     workspaceStore.setTerminalSdkSessionId(sessionId, sdkSessionId)
-  }, [sessionId, cwd, isV2Session])
+  }, [sessionId, cwd, isV2Session, terminal?.agentPreset, currentModel, permissionMode, effortLevel])
 
   const handleForkSession = useCallback(async () => {
     const dlog = (...args: unknown[]) => host.debug.log(...args)

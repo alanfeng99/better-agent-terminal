@@ -19,6 +19,11 @@ async function main() {
     /resumeSession\([\s\S]*effectiveModel \|\| savedModel[\s\S]*permissionMode,\s*effectiveEffort as EffortLevel\)/,
     'Codex auto-resume should preserve effective model, permission mode, and effort',
   )
+  assert.match(
+    source,
+    /const resumeModel = currentModel[\s\S]*resumeModel[\s\S]*codexSandboxMode[\s\S]*codexApprovalPolicy[\s\S]*permissionMode[\s\S]*effortLevel as EffortLevel/,
+    'Codex manual resume should preserve current model, sandbox, approval, permission mode, and effort',
+  )
 
   console.log('Codex panel regression: passed')
 }
