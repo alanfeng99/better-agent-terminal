@@ -438,6 +438,21 @@ pub fn claude_set_permission_mode(
 }
 
 #[tauri::command]
+pub fn claude_set_codex_sandbox_mode(_session_id: String, _mode: String) -> bool {
+    // CodexAgentManager has not moved into the Tauri sidecar yet.
+    // Return an explicit unsupported value instead of letting the
+    // renderer fall through to the permissive null shim.
+    false
+}
+
+#[tauri::command]
+pub fn claude_set_codex_approval_policy(_session_id: String, _policy: String) -> bool {
+    // See claude_set_codex_sandbox_mode: the route exists so callers
+    // get a stable Electron-shaped boolean until Codex parity lands.
+    false
+}
+
+#[tauri::command]
 pub fn claude_set_model(
     app: AppHandle,
     state: State<'_, SidecarState>,

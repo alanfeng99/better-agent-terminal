@@ -575,6 +575,14 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string, mode: string) =>
             getInvoke()<unknown>('claude_set_permission_mode', { sessionId, mode })
         }
+        if (key === 'setCodexSandboxMode') {
+          return (sessionId: string, mode: string) =>
+            getInvoke()<boolean>('claude_set_codex_sandbox_mode', { sessionId, mode })
+        }
+        if (key === 'setCodexApprovalPolicy') {
+          return (sessionId: string, policy: string) =>
+            getInvoke()<boolean>('claude_set_codex_approval_policy', { sessionId, policy })
+        }
         if (key === 'setModel') {
           return (sessionId: string, model: string, autoCompactWindow?: number) =>
             getInvoke()<unknown>('claude_set_model', { sessionId, model, autoCompactWindow })

@@ -143,6 +143,8 @@ pub fn run() {
             claude_cmd::claude_set_auto_continue,
             claude_cmd::claude_get_auto_continue,
             claude_cmd::claude_set_permission_mode,
+            claude_cmd::claude_set_codex_sandbox_mode,
+            claude_cmd::claude_set_codex_approval_policy,
             claude_cmd::claude_set_model,
             claude_cmd::claude_set_effort,
             claude_cmd::claude_reset_session,
