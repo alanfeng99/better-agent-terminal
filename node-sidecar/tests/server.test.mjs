@@ -2565,6 +2565,71 @@ async function inProcess() {
     __resetRemoteHandlersForTests()
     assert.equal(__remoteHandlerCountForTests(), 0)
     assert.equal(hasRemoteHandler('test:foo'), false)
+
+    // The remote-server-impl block below relies on the production bridge
+    // wiring (server.mjs runs wireRemoteBridgeHandlers() on import).
+    // Re-wire here so subsequent tests see the same registry the live
+    // sidecar starts with.
+    const bridge = await import('../src/lib/remote-bridge.mjs')
+    bridge.wireRemoteBridgeHandlers()
+    assert.ok(hasRemoteHandler('claude:auth-status'),
+      'bridge re-wire must register every PROXIED_CHANNEL')
+    assert.ok(__remoteHandlerCountForTests() >= 50,
+      `expected >50 bridged handlers, got ${__remoteHandlerCountForTests()}`)
+  }
+
+  // remote-bridge — kebab→camel translation + auto-bridge of every
+  // PROXIED_CHANNEL into the sidecar's JSON-RPC dispatch.
+  {
+    const bridge = await import('../src/lib/remote-bridge.mjs')
+    const { invokeRemoteHandler, hasRemoteHandler, __resetRemoteHandlersForTests } =
+      await import('../src/lib/remote-protocol.mjs')
+
+    // (a) channelToMethod translates kebab → camel correctly. Anchors:
+    //   simple namespaces, hyphenated channels, channels already in
+    //   camelCase, image:read-as-data-url (multi-hyphen).
+    assert.equal(bridge.channelToMethod('claude:start-session'), 'claude.startSession')
+    assert.equal(bridge.channelToMethod('claude:auth-status'), 'claude.authStatus')
+    assert.equal(bridge.channelToMethod('claude:get-supported-models'), 'claude.getSupportedModels')
+    assert.equal(bridge.channelToMethod('image:read-as-data-url'), 'image.readAsDataUrl')
+    assert.equal(bridge.channelToMethod('snippet:toggleFavorite'), 'snippet.toggleFavorite')
+    assert.equal(bridge.channelToMethod('git:getRoot'), 'git.getRoot')
+    assert.equal(bridge.channelToMethod('agent:list-presets'), 'agent.listPresets')
+    assert.equal(bridge.channelToMethod('profile:get-active-ids'), 'profile.getActiveIds')
+    // Empty/non-string throws — never silently returns garbage.
+    assert.throws(() => bridge.channelToMethod(''), /non-empty string/)
+    assert.throws(() => bridge.channelToMethod(null), /non-empty string/)
+
+    // (b) wireRemoteBridgeHandlers is idempotent. After bootstrap the
+    // registry is full; re-running registers nothing more (count stays).
+    const before = __resetRemoteHandlersForTests
+    // Snapshot the post-server.mjs-import wiring then make sure re-run
+    // doesn't double-count.
+    const firstRun = bridge.wireRemoteBridgeHandlers()
+    const secondRun = bridge.wireRemoteBridgeHandlers()
+    assert.equal(secondRun, 0, 'second wire pass must be a no-op')
+    // firstRun is non-negative; if the registry was full from server
+    // import it'll be 0, otherwise > 0. Either way the registry is now
+    // in the wired state.
+    assert.ok(firstRun >= 0)
+    assert.ok(hasRemoteHandler('claude:auth-status'))
+    assert.ok(hasRemoteHandler('worktree:create'))
+
+    // (c) Direct invokeRemoteHandler hits dispatch. claude:auth-status
+    // → claude.authStatus → null or auth object.
+    const authR = await invokeRemoteHandler('claude:auth-status', [])
+    assert.ok(authR === null || typeof authR === 'object')
+
+    // (d) Unbridged channel (no sidecar handler — pty:create lives in
+    // Tauri Rust) propagates JSON-RPC -32601 as a thrown Error with
+    // `method not found` in the message.
+    await assert.rejects(invokeRemoteHandler('pty:create', [{}]), /method not found/i)
+
+    // (e) args[0] becomes JSON-RPC params. Use claude.getSupportedModels
+    // which takes optional `{cwd}` — the bridge passes args[0] verbatim.
+    // (Result is an array; we only assert shape.)
+    const models = await invokeRemoteHandler('claude:get-supported-models', [{ cwd: tmpdir() }])
+    assert.ok(Array.isArray(models), `expected array, got ${typeof models}`)
   }
 
   // remote-secrets — port of electron/remote/secrets.ts. The sidecar
@@ -2902,18 +2967,20 @@ async function inProcess() {
       assert.equal(happy.seen[1].type, 'pong')
       assert.equal(happy.seen[1].id, 'p-1')
 
-      // invoke for an unbridged channel returns invoke-error with a
-      // specific message — server is up but registry is empty in this
-      // slice. Renderer SettingsPanel + ProfilePanel branch on
-      // type:'invoke-error', so the error path stays well-defined.
+      // invoke for a bridged channel succeeds. claude:auth-status maps
+      // to claude.authStatus (no params) which returns either null or a
+      // parsed auth object — both are valid invoke-result payloads.
       happy.ws.send(JSON.stringify({ type: 'invoke', id: 'i-1', channel: 'claude:auth-status', args: [] }))
-      const invokeDeadline = Date.now() + 2000
+      const invokeDeadline = Date.now() + 4000
       while (happy.seen.length < 3 && Date.now() < invokeDeadline) {
         await new Promise(r => setTimeout(r, 20))
       }
       assert.equal(happy.seen.length, 3)
-      assert.equal(happy.seen[2].type, 'invoke-error')
-      assert.match(happy.seen[2].error, /not yet bridged/)
+      assert.equal(happy.seen[2].type, 'invoke-result',
+        `expected invoke-result for claude:auth-status, got ${JSON.stringify(happy.seen[2])}`)
+      assert.equal(happy.seen[2].id, 'i-1')
+      // Result is null or an object — both are fine.
+      assert.ok(happy.seen[2].result === null || typeof happy.seen[2].result === 'object')
 
       // invoke for a not-on-allowlist channel: rejected before the
       // bridge check.
@@ -2924,6 +2991,19 @@ async function inProcess() {
       }
       assert.equal(happy.seen[3].type, 'invoke-error')
       assert.match(happy.seen[3].error, /not exposed remotely/)
+
+      // invoke for an allowlisted channel that has NO sidecar handler
+      // (lives in Tauri Rust commands — pty:* / git:* / fs:* / etc.):
+      // bridge dispatches, JSON-RPC returns -32601 method-not-found,
+      // bridge re-raises as invoke-error so the renderer's
+      // `'error' in result` branch is consistent.
+      happy.ws.send(JSON.stringify({ type: 'invoke', id: 'i-3', channel: 'pty:create', args: [{}] }))
+      const noHandlerDeadline = Date.now() + 2000
+      while (happy.seen.length < 5 && Date.now() < noHandlerDeadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+      assert.equal(happy.seen[4].type, 'invoke-error')
+      assert.match(happy.seen[4].error, /method not found/i)
 
       happy.ws.close()
       await new Promise(r => setTimeout(r, 50))
@@ -3113,11 +3193,11 @@ async function inProcess() {
         await assert.rejects(client.invoke('claude:auth-status', []), /Not connected/)
       }
 
-      // (f) invoke round trip — server has no bridged handlers so any
-      // allowed channel surfaces 'not yet bridged'. A non-allowlisted
-      // channel surfaces 'not exposed remotely'. Both come back through
-      // the pending-invoke promise as a rejection, exactly the same way
-      // the renderer's wrapper sees them.
+      // (f) invoke round trip — bridge wires every PROXIED_CHANNEL to
+      // the sidecar's JSON-RPC dispatch, so allowlisted channels with a
+      // sidecar handler return their real result. Non-allowlisted
+      // channels surface 'not exposed remotely'; allowlisted-without-
+      // sidecar-handler channels surface 'method not found'.
       {
         const client = new RemoteClient()
         try {
@@ -3127,13 +3207,21 @@ async function inProcess() {
             token: started.token,
             fingerprint: started.fingerprint,
           })
-          await assert.rejects(
-            client.invoke('claude:auth-status', []),
-            /not yet bridged/,
-          )
+          // claude:auth-status → claude.authStatus → null or auth object.
+          const authResult = await client.invoke('claude:auth-status', [])
+          assert.ok(authResult === null || typeof authResult === 'object',
+            `unexpected authStatus shape: ${JSON.stringify(authResult)}`)
+
+          // Not on allowlist → rejected before bridge check.
           await assert.rejects(
             client.invoke('evil:nuke-fs', []),
             /not exposed remotely/,
+          )
+          // On allowlist but lives in Tauri Rust (no sidecar handler) —
+          // bridge surfaces method-not-found via JSON-RPC -32601.
+          await assert.rejects(
+            client.invoke('pty:create', [{}]),
+            /method not found/i,
           )
           // invoke channel-validation (empty) rejects synchronously.
           await assert.rejects(client.invoke('', []), /non-empty string/)
@@ -3277,22 +3365,20 @@ async function inProcess() {
         assert.equal(wrongTokenReply.result.ok, false)
       }
 
-      // (l) listProfiles through dispatch — server has no profile:list
-      // bridged in this slice, so the client invoke surfaces 'not yet
-      // bridged' as the {error} field. SettingsPanel branches on
-      // `'error' in result` so the shape contract holds.
-      // NOTE: ban the testConnection IP first might not matter — we used
-      // valid token paths above.
+      // (l) listProfiles through dispatch — there's no sidecar
+      // `profile.list` handler yet (profiles live in Tauri Rust + the
+      // Electron build's profile-manager), so the bridge dispatches
+      // and surfaces JSON-RPC -32601 method-not-found in the {error}
+      // field. SettingsPanel branches on `'error' in result` so the
+      // shape contract holds; once a sidecar profile.list lands the
+      // assertion below should be flipped to expect {profiles, ...}.
       {
-        // Short-circuit if the wrong-token testConnection above pushed us
-        // toward the 5/60s ban. We do at most 1 wrong-token attempt above
-        // so we're safely under the threshold.
         const lpReply = await dispatch({
           jsonrpc: '2.0', id: 9120, method: 'remote.listProfiles',
           params: { host: '127.0.0.1', port: started.port, token: started.token, fingerprint: started.fingerprint },
         })
         assert.equal(typeof lpReply.result.error, 'string')
-        assert.match(lpReply.result.error, /not yet bridged|not exposed/i)
+        assert.match(lpReply.result.error, /method not found|not exposed/i)
       }
     } finally {
       restoreLogger()

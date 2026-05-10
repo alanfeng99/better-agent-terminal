@@ -57,6 +57,13 @@ import './handlers/agent.mjs'
 import './handlers/remote-tunnel.mjs'
 import './handlers/update.mjs'
 
+// Remote invoke bridge — must run after every handler module has called
+// registerHandler(). It introspects PROXIED_CHANNELS and auto-wires each
+// to the matching sidecar JSON-RPC method, so an authenticated remote
+// client can drive any allowed channel through the WebSocket server.
+import { wireRemoteBridgeHandlers } from './lib/remote-bridge.mjs'
+wireRemoteBridgeHandlers()
+
 // Ping is the lone built-in that doesn't fit any namespace — keep it
 // here so the entry file has at least one obvious registration.
 registerHandler('ping', async (params) => {
