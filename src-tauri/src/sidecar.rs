@@ -26,7 +26,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 // Cap stderr tail buffer at this many lines. Enough to capture a typical
@@ -182,7 +182,29 @@ impl SidecarState {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, BridgeError> {
-        let handle = self.ensure_spawned(cfg, emit)?;
+        let ensure_started = Instant::now();
+        let handle = match self.ensure_spawned(cfg, emit.clone()) {
+            Ok(handle) => {
+                emit_sidecar_metric(
+                    &emit,
+                    "ensureSpawned",
+                    Some(method),
+                    ensure_started.elapsed(),
+                    true,
+                );
+                handle
+            }
+            Err(err) => {
+                emit_sidecar_metric(
+                    &emit,
+                    "ensureSpawned",
+                    Some(method),
+                    ensure_started.elapsed(),
+                    false,
+                );
+                return Err(err);
+            }
+        };
         let id = handle.alloc_id();
         let (tx, rx) = channel::<Result<Value, String>>();
         handle.pending.insert(id, tx);
@@ -204,7 +226,8 @@ impl SidecarState {
                 return Err(BridgeError::from(e));
             }
         }
-        match rx.recv_timeout(timeout) {
+        let call_started = Instant::now();
+        let result = match rx.recv_timeout(timeout) {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(msg)) => Err(BridgeError { message: msg }),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -219,7 +242,15 @@ impl SidecarState {
                     message: format!("sidecar: channel closed for {method}"),
                 })
             }
-        }
+        };
+        emit_sidecar_metric(
+            &emit,
+            "call",
+            Some(method),
+            call_started.elapsed(),
+            result.is_ok(),
+        );
+        result
     }
 
     // Test helper: forcibly drop the current handle so the next call respawns.
@@ -251,6 +282,26 @@ pub fn app_handle_emit_sink(app: AppHandle) -> EventSink {
     })
 }
 
+fn emit_sidecar_metric(
+    emit: &Option<EventSink>,
+    phase: &str,
+    method: Option<&str>,
+    elapsed: Duration,
+    ok: bool,
+) {
+    if let Some(sink) = emit.as_ref() {
+        let mut payload = serde_json::json!({
+            "phase": phase,
+            "elapsedMs": elapsed.as_millis() as u64,
+            "ok": ok,
+        });
+        if let Some(method) = method {
+            payload["method"] = Value::String(method.to_string());
+        }
+        sink("sidecar:metric", &payload);
+    }
+}
+
 fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHandle, BridgeError> {
     let mut command = Command::new(&cfg.node_path);
     command
@@ -264,9 +315,19 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
     for (k, v) in &cfg.extra_env {
         command.env(k, v);
     }
-    let mut child = command.spawn().map_err(|e| BridgeError {
-        message: format!("sidecar: failed to spawn {}: {e}", cfg.node_path.display()),
-    })?;
+    let spawn_started = Instant::now();
+    let mut child = match command.spawn() {
+        Ok(child) => {
+            emit_sidecar_metric(&emit, "spawnProcess", None, spawn_started.elapsed(), true);
+            child
+        }
+        Err(e) => {
+            emit_sidecar_metric(&emit, "spawnProcess", None, spawn_started.elapsed(), false);
+            return Err(BridgeError {
+                message: format!("sidecar: failed to spawn {}: {e}", cfg.node_path.display()),
+            });
+        }
+    };
     let stdin = child.stdin.take().ok_or_else(|| BridgeError {
         message: "sidecar: failed to capture stdin".into(),
     })?;
@@ -1160,6 +1221,20 @@ mod tests {
         assert!(
             names.contains(&"claude:turn-end"),
             "missing claude:turn-end in {names:?}"
+        );
+        assert!(
+            names.contains(&"sidecar:metric"),
+            "missing sidecar:metric in {names:?}"
+        );
+        assert!(
+            events.iter().any(|(name, payload)| {
+                name == "sidecar:metric"
+                    && payload["phase"] == "call"
+                    && payload["method"] == "claude.sendMessage"
+                    && payload["ok"] == true
+                    && payload.get("elapsedMs").and_then(|v| v.as_u64()).is_some()
+            }),
+            "missing call metric for claude.sendMessage in {events:?}"
         );
         // Payload sanity: message event includes our session id.
         let msg_event = events.iter().find(|(n, _)| n == "claude:message").unwrap();
