@@ -1,10 +1,9 @@
-// claude.sendMessage — Electron-aligned one-shot SDK Query per turn.
+// claude.sendMessage — persistent streaming-input SDK Query when supported.
 //
-// Electron's ClaudeAgentManager calls sdk.query({ prompt, options }) for
-// every user turn, carrying queryOptions.resume=<sdkSessionId> after the
-// first SDK result. Keep the Tauri sidecar on the same contract: a
-// running query exposes control/read methods through session.currentQuery,
-// then the next user prompt builds a fresh query with resume context.
+// Keep one LiveQuery open per session so later turns do not pay the SDK
+// CLI subprocess startup cost. Some SDK/CLI builds close the generator
+// after a result even in streaming-input mode; when that happens, the
+// next sendMessage rebuilds with resume=<sdkSessionId>.
 //
 // SDKMessage→event mapping (mirror of Electron's processMessage):
 //   system/init      → claude:status (full meta + sdkSessionId capture)
@@ -29,6 +28,7 @@ import { sdkModelForClaudeSelection } from '../lib/models.mjs'
 import { loadInstalledPlugins, dataUrlToContentBlock } from '../lib/plugins.mjs'
 import { resolveClaudeCliBinary } from './claude-auth.mjs'
 import { buildCanUseTool } from './claude-permission.mjs'
+import { LiveQuery } from '../lib/live-query.mjs'
 
 // processMessage: dispatch a single SDKMessage to the renderer-shaped
 // event(s). Pure-ish — only mutates session state (sdkSessionId, model,
@@ -213,32 +213,41 @@ function buildUserMessage(prompt, images) {
   return { type: 'user', message: { role: 'user', content: text } }
 }
 
-function buildPromptArg(prompt, images) {
-  const imageList = Array.isArray(images) ? images : null
-  if (imageList && imageList.length > 0) {
-    const userMessage = buildUserMessage(prompt, imageList)
-    return (async function* singleMessage() {
-      yield userMessage
-    })()
-  }
-  return prompt || ' '
+async function ensureLiveQuery(s, sessionId, sdk, prompt) {
+  if (s.liveQuery && !s.liveQuery.isClosed) return s.liveQuery
+  const queryOptions = await buildQueryOptions(s, sessionId, prompt)
+  s.abortController = new AbortController()
+  queryOptions.abortController = s.abortController
+  const live = new LiveQuery({
+    sdk,
+    queryOptions,
+    onMessage: (msg) => {
+      try { processMessage(s, sessionId, msg) }
+      catch (err) {
+        logWarn(`processMessage threw for ${sessionId}: ${err?.message || err}`)
+      }
+    },
+    onError: (err) => {
+      logWarn(`LiveQuery stream error for ${sessionId}: ${err?.message || err}`)
+    },
+  })
+  s.liveQuery = live
+  s.currentQuery = live.generator
+  return live
 }
 
 // closeLiveQuery: shared cleanup used by the lifecycle handlers in
 // claude-session.mjs (abort / reset / stop / rest / resume) and also
-// invoked locally when a control method fails. It now also closes the
-// one-shot currentQuery used by sendMessage. Idempotent.
+// invoked locally when a control method fails. Idempotent.
 //
 // abortController is intentionally NOT cleared — sendMessage's catch
 // reads s.abortController?.signal.aborted to distinguish 'aborted' vs
-// 'error' turn-end reasons after sdk.query rejects. sendMessage installs
-// a fresh AbortController on the next turn.
+// 'error' turn-end reasons after a push() rejects. ensureLiveQuery
+// installs a fresh AbortController on the next rebuild.
 export function closeLiveQuery(s) {
   if (!s) return
   if (s.liveQuery) {
     try { s.liveQuery.close() } catch { /* ignore */ }
-  } else if (s.currentQuery && typeof s.currentQuery.close === 'function') {
-    try { s.currentQuery.close() } catch { /* ignore */ }
   }
   s.liveQuery = null
   s.currentQuery = null
@@ -266,55 +275,36 @@ async function performSendMessage(params) {
     return { ok: true, stub: true }
   }
 
-  const startedAt = Date.now()
-  const images = Array.isArray(params?.images) ? params.images : null
-  let queryOptions
+  const userMessage = buildUserMessage(prompt, Array.isArray(params?.images) ? params.images : null)
+  let live
   try {
-    queryOptions = await buildQueryOptions(s, sessionId, prompt)
+    live = await ensureLiveQuery(s, sessionId, sdk, prompt)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
-    logWarn(`claude.sendMessage(${sid}): buildQueryOptions failed: ${errMsg}`)
+    logWarn(`claude.sendMessage(${sid}): ensureLiveQuery failed: ${errMsg}`)
     sendEvent('claude:error', { sessionId, error: errMsg })
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'error' } })
     return { ok: false, error: errMsg }
   }
 
-  s.abortController = new AbortController()
-  queryOptions.abortController = s.abortController
+  const startedAt = Date.now()
   s.streaming = true
-  s.liveQuery = null
-  let generator = null
-  let lastResult = null
-  logInfo(`claude.sendMessage(${sid}): start promptLen=${prompt.length} images=${images ? images.length : 0} resume=${queryOptions.resume || 'none'}`)
+  logInfo(`claude.sendMessage(${sid}): start promptLen=${prompt.length} images=${Array.isArray(params?.images) ? params.images.length : 0} liveClosed=${live.isClosed}`)
   try {
-    generator = sdk.query({
-      prompt: buildPromptArg(prompt, images),
-      options: queryOptions,
-    })
-    s.currentQuery = generator
-    for await (const msg of generator) {
-      if (s.abortController?.signal.aborted) break
-      if (msg?.type === 'result') lastResult = msg
-      try { processMessage(s, sessionId, msg) }
-      catch (err) {
-        logWarn(`processMessage threw for ${sessionId}: ${err?.message || err}`)
-      }
-    }
+    const result = await live.push(userMessage)
+    // Give SDK builds that end the generator immediately after a result a
+    // chance to flip LiveQuery.isClosed before the next queued send starts.
+    await new Promise(resolve => setImmediate(resolve))
     const elapsedMs = Date.now() - startedAt
-    if (lastResult?.subtype === 'success') {
+    if (live.isClosed && s.liveQuery === live) {
+      s.liveQuery = null
+      s.currentQuery = null
+    }
+    if (result?.subtype === 'success') {
       logInfo(`claude.sendMessage(${sid}): completed ok elapsedMs=${elapsedMs}`)
       return { ok: true }
     }
-    if (!lastResult && s.abortController?.signal.aborted) {
-      logInfo(`claude.sendMessage(${sid}): aborted`)
-      return { ok: true }
-    }
-    if (!lastResult) {
-      logWarn(`claude.sendMessage(${sid}): completed without result elapsedMs=${elapsedMs}`)
-      sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed' } })
-      return { ok: true }
-    }
-    const errMsg = lastResult?.message || 'query error'
+    const errMsg = result?.message || 'query error'
     logWarn(`claude.sendMessage(${sid}): completed error elapsedMs=${elapsedMs} error=${errMsg}`)
     return { ok: false, error: errMsg }
   } catch (err) {
@@ -328,6 +318,10 @@ async function performSendMessage(params) {
       logInfo(`claude.sendMessage(${sid}): aborted`)
     }
     sendEvent('claude:turn-end', { sessionId, payload: { reason: aborted ? 'aborted' : 'error' } })
+    if (live.isClosed) {
+      s.liveQuery = null
+      s.currentQuery = null
+    }
     return { ok: !aborted, error: aborted ? undefined : errMsg }
   } finally {
     s.streaming = false

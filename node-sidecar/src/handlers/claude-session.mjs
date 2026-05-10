@@ -244,15 +244,18 @@ registerHandler('claude.setPermissionMode', async (params) => {
   if (typeof mode !== 'string') return false
   const s = ensureSession(sessionId)
   s.permissionMode = mode
-  // Mid-session mode change: forward to the running CLI via the SDK
-  // control method when a query is active. SDK's permissionMode
+  // Mode change: forward to the open LiveQuery / active SDK query when
+  // available. SDK's permissionMode
   // enum doesn't include 'bypassPlan' — that's a sidecar-only mode
   // mapped to 'plan' inside buildQueryOptions. If the control method
   // fails, close the query so the next sendMessage rebuilds with the
   // new mode in queryOptions.
-  if (s.streaming && s.currentQuery && typeof s.currentQuery.setPermissionMode === 'function') {
+  const controlTarget = (s.liveQuery && !s.liveQuery.isClosed)
+    ? s.liveQuery
+    : (s.streaming ? s.currentQuery : null)
+  if (controlTarget && typeof controlTarget.setPermissionMode === 'function') {
     const sdkMode = mode === 'bypassPlan' ? 'plan' : mode
-    try { await s.currentQuery.setPermissionMode(sdkMode) }
+    try { await controlTarget.setPermissionMode(sdkMode) }
     catch (err) {
       logWarn(`setPermissionMode control failed for ${sessionId}: ${err?.message || err}`)
       closeLiveQuery(s)
@@ -298,11 +301,14 @@ registerHandler('claude.setModel', async (params) => {
   // so changing it requires a rebuild — close the live query.
   // Model swap goes through the control method first; only rebuild on
   // failure.
-  if (s.streaming && s.currentQuery) {
+  const controlTarget = (s.liveQuery && !s.liveQuery.isClosed)
+    ? s.liveQuery
+    : (s.streaming ? s.currentQuery : null)
+  if (controlTarget) {
     if (typeof params?.autoCompactWindow === 'number') {
       closeLiveQuery(s)
-    } else if (typeof params?.model === 'string' && typeof s.currentQuery.setModel === 'function') {
-      try { await s.currentQuery.setModel(s.model) }
+    } else if (typeof params?.model === 'string' && typeof controlTarget.setModel === 'function') {
+      try { await controlTarget.setModel(s.model) }
       catch (err) {
         logWarn(`setModel control failed for ${sessionId}: ${err?.message || err}`)
         closeLiveQuery(s)

@@ -1179,25 +1179,29 @@ async function inProcess() {
     restoreSendEvent()
   }
 
-  // Consecutive sends rebuild the SDK query with resume=<sdkSessionId>.
-  // Some real Claude CLI/SDK builds close the async generator after a
-  // result frame; rebuilding between turns avoids leaving a second prompt
-  // queued with no consumer.
+  // Consecutive sends reuse the same LiveQuery when the SDK keeps the
+  // streaming-input generator alive.
   const persistentCaptured = []
   const restorePersistentSend = mod.__setSendEventForTests((name, payload) => persistentCaptured.push({ name, payload }))
   const fakeSdkStreaming = {
     queryCalls: 0,
     query({ prompt, options }) {
       this.queryCalls++
-      const myCallIdx = this.queryCalls
-      persistentCaptured.push({ name: '__queryArgs', payload: { resume: options?.resume ?? null, callIdx: myCallIdx, prompt } })
+      const userIter = prompt[Symbol.asyncIterator]()
+      persistentCaptured.push({ name: '__queryArgs', payload: { resume: options?.resume ?? null } })
+      let turn = 0
       return (async function*() {
-        yield { type: 'system', subtype: 'init', session_id: 'sdk-stream-1', cwd: '/s' }
-        yield { type: 'assistant', session_id: 'sdk-stream-1',
-          message: { role: 'assistant', content: [{ type: 'text', text: `reply-${myCallIdx}` }] } }
-        yield { type: 'result', subtype: 'success', session_id: 'sdk-stream-1',
-          result: `reply-${myCallIdx}`, stop_reason: 'end_turn',
-          total_cost_usd: 0.001, num_turns: myCallIdx }
+        while (true) {
+          const next = await userIter.next()
+          if (next.done) return
+          turn++
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-stream-1', cwd: '/s' }
+          yield { type: 'assistant', session_id: 'sdk-stream-1',
+            message: { role: 'assistant', content: [{ type: 'text', text: `reply-${turn}` }] } }
+          yield { type: 'result', subtype: 'success', session_id: 'sdk-stream-1',
+            result: `reply-${turn}`, stop_reason: 'end_turn',
+            total_cost_usd: 0.001, num_turns: turn }
+        }
       })()
     },
   }
@@ -1212,10 +1216,9 @@ async function inProcess() {
     const r2 = await dispatch({ jsonrpc: '2.0', id: 226, method: 'claude.sendMessage',
       params: { sessionId: 'stream-1', prompt: 'second' } })
     assert.equal(r2.result.ok, true)
-    assert.equal(fakeSdkStreaming.queryCalls, 2, 'second turn should rebuild sdk.query')
+    assert.equal(fakeSdkStreaming.queryCalls, 1, 'second turn should reuse the live sdk.query')
     const queryArgs = persistentCaptured.filter(c => c.name === '__queryArgs')
     assert.equal(queryArgs[0].payload.resume, null)
-    assert.equal(queryArgs[1].payload.resume, 'sdk-stream-1')
     // Both turns still produced result events.
     const results = persistentCaptured.filter(c => c.name === 'claude:result')
     assert.equal(results.length, 2, 'expected 2 result events across rebuilt queries')
@@ -1224,7 +1227,7 @@ async function inProcess() {
     // Completed turns do not keep a live query. The last currentQuery is
     // retained for SDK metadata reads, matching Electron's queryInstance.
     const ss = mod.sessions.get('stream-1')
-    assert.equal(ss.liveQuery, null)
+    assert.ok(ss.liveQuery)
     assert.ok(ss.currentQuery)
   } finally {
     __setSdkOverrideForTests(undefined)
@@ -1245,19 +1248,25 @@ async function inProcess() {
     queryCalls: 0,
     query({ prompt }) {
       this.queryCalls++
-      const myCallIdx = this.queryCalls
+      const userIter = prompt[Symbol.asyncIterator]()
       return (async function*() {
-        queuedCaptured.push(prompt)
-        yield { type: 'system', subtype: 'init', session_id: 'sdk-queued-1', cwd: '/q' }
-        yield { type: 'assistant', session_id: 'sdk-queued-1',
-          message: { role: 'assistant', content: [{ type: 'text', text: `queued-reply-${myCallIdx}` }] } }
-        if (myCallIdx === 1) {
-          firstTurnStartedResolve()
-          await new Promise(resolve => { releaseFirstResult = resolve })
+        let turn = 0
+        while (true) {
+          const next = await userIter.next()
+          if (next.done) return
+          turn++
+          queuedCaptured.push(next.value?.message?.content)
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-queued-1', cwd: '/q' }
+          yield { type: 'assistant', session_id: 'sdk-queued-1',
+            message: { role: 'assistant', content: [{ type: 'text', text: `queued-reply-${turn}` }] } }
+          if (turn === 1) {
+            firstTurnStartedResolve()
+            await new Promise(resolve => { releaseFirstResult = resolve })
+          }
+          yield { type: 'result', subtype: 'success', session_id: 'sdk-queued-1',
+            result: `queued-reply-${turn}`, stop_reason: 'end_turn',
+            total_cost_usd: 0.001, num_turns: turn }
         }
-        yield { type: 'result', subtype: 'success', session_id: 'sdk-queued-1',
-          result: `queued-reply-${myCallIdx}`, stop_reason: 'end_turn',
-          total_cost_usd: 0.001, num_turns: myCallIdx }
       })()
     },
   }
@@ -1274,7 +1283,7 @@ async function inProcess() {
     const [q1, q2] = await Promise.all([p1, p2])
     assert.equal(q1.result.ok, true)
     assert.equal(q2.result.ok, true)
-    assert.equal(fakeSdkQueued.queryCalls, 2, 'queued sends should rebuild safely after each completed turn')
+    assert.equal(fakeSdkQueued.queryCalls, 1, 'queued sends should reuse the live query when it stays open')
     assert.deepEqual(queuedCaptured, ['first', 'second'])
   } finally {
     __setSdkOverrideForTests(undefined)
@@ -1289,8 +1298,11 @@ async function inProcess() {
   const stopTurnStarted = new Promise(resolve => { stopTurnStartedResolve = resolve })
   const restoreStopSend = mod.__setSendEventForTests(() => {})
   const fakeSdkStop = {
-    query() {
+    query({ prompt }) {
+      const userIter = prompt[Symbol.asyncIterator]()
       const gen = (async function*() {
+        const first = await userIter.next()
+        if (first.done) return
         yield { type: 'system', subtype: 'init', session_id: 'sdk-stop' }
         stopTurnStartedResolve()
         await new Promise(resolve => { releaseStopResult = resolve })
@@ -1351,8 +1363,11 @@ async function inProcess() {
   const ctrlTurnStarted = new Promise(resolve => { ctrlTurnStartedResolve = resolve })
   const restoreCtrlSend = mod.__setSendEventForTests(() => {})
   const fakeSdkCtrl = {
-    query() {
+    query({ prompt }) {
+      const userIter = prompt[Symbol.asyncIterator]()
       const gen = (async function*() {
+        const first = await userIter.next()
+        if (first.done) return
         yield { type: 'system', subtype: 'init', session_id: 'sdk-ctrl' }
         ctrlTurnStartedResolve()
         await new Promise(resolve => { releaseCtrlResult = resolve })
@@ -1402,10 +1417,14 @@ async function inProcess() {
   const restoreLcSend = mod.__setSendEventForTests(() => {})
   function makeSdkLifecycle() {
     return {
-      query() {
+      query({ prompt }) {
+        const userIter = prompt[Symbol.asyncIterator]()
         const gen = (async function*() {
+          const first = await userIter.next()
+          if (first.done) return
           yield { type: 'system', subtype: 'init', session_id: 'sdk-lc' }
           yield { type: 'result', subtype: 'success', session_id: 'sdk-lc', result: 'ok', stop_reason: 'end_turn', total_cost_usd: 0, num_turns: 1 }
+          while (true) { const n = await userIter.next(); if (n.done) return }
         })()
         gen.close = () => { lcCalls.close++ }
         return gen
