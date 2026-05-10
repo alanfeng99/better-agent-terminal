@@ -283,8 +283,15 @@ pub async fn claude_list_sessions(
     app: AppHandle,
     state: State<'_, SidecarState>,
     cwd: String,
+    agent_kind: Option<String>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.listSessions", json!({ "cwd": cwd })).await
+    call_blocking(
+        app,
+        state,
+        "claude.listSessions",
+        json!({ "cwd": cwd, "agentKind": agent_kind }),
+    )
+    .await
 }
 
 #[tauri::command]

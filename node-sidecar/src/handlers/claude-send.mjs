@@ -29,6 +29,7 @@ import { loadInstalledPlugins, dataUrlToContentBlock } from '../lib/plugins.mjs'
 import { resolveClaudeCliBinary } from './claude-auth.mjs'
 import { buildCanUseTool } from './claude-permission.mjs'
 import { LiveQuery } from '../lib/live-query.mjs'
+import { isCodexSession, sendCodexMessage } from './codex.mjs'
 
 // processMessage: dispatch a single SDKMessage to the renderer-shaped
 // event(s). Pure-ish — only mutates session state (sdkSessionId, model,
@@ -261,6 +262,9 @@ async function performSendMessage(params) {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.sendMessage: missing sessionId')
+  }
+  if (isCodexSession(sessionId)) {
+    return sendCodexMessage(params)
   }
   const prompt = typeof params?.prompt === 'string' ? params.prompt : ''
   const s = ensureSession(sessionId)

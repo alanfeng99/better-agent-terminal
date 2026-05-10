@@ -1633,7 +1633,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       setResumeLoading(true)
       setShowResumeList(true)
       try {
-        const sessions = await host.claude.listSessions(cwd)
+        const sessions = await host.claude.listSessions(cwd, 'codex')
         setResumeSessions(sessions || [])
       } catch {
         setResumeSessions([])
@@ -4650,7 +4650,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             <span key="sessionId" className="claude-statusline-item claude-statusline-clickable"
               onClick={async () => {
                 setResumeLoading(true); setShowResumeList(true)
-                try { setResumeSessions(await host.claude.listSessions(cwd) || []) }
+                try { setResumeSessions(await host.claude.listSessions(cwd, 'codex') || []) }
                 catch { setResumeSessions([]) }
                 finally { setResumeLoading(false) }
               }}

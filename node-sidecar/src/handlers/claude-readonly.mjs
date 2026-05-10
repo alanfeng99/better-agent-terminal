@@ -14,6 +14,13 @@ import { sessions, buildSessionMeta } from '../lib/state.mjs'
 import { CLAUDE_BUILTIN_MODELS, CLAUDE_BUILTIN_DEDUP_KEYS } from '../lib/models.mjs'
 import { scanSkills } from '../lib/skills.mjs'
 import { activeWorktrees, worktreeStatus, worktreeRemove } from './worktree.mjs'
+import {
+  cleanupCodexWorktree,
+  getCodexSupportedModels,
+  getCodexWorktreeStatus,
+  isCodexSession,
+  listCodexSessions,
+} from './codex.mjs'
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 const PREVIEW_LINE_LIMIT = 20
@@ -136,6 +143,7 @@ async function readSessionPreview(filePath) {
 registerHandler('claude.getCliPath', async () => findClaudeCliPath() ?? '')
 registerHandler('claude.listSessions', async (params) => {
   const cwd = typeof params?.cwd === 'string' ? params.cwd : ''
+  if (params?.agentKind === 'codex') return listCodexSessions()
   if (!cwd) return []
   return listSessionsFallback(cwd)
 })
@@ -215,8 +223,9 @@ export function __resetMetadataCacheForTests() {
 //
 // In release builds without bundled node_modules, the SDK import will
 // fail and we silently return builtins. Drift guard test still applies.
-registerHandler('claude.getSupportedModels', async () =>
-  cachedSdkRead('getSupportedModels', async () => {
+registerHandler('claude.getSupportedModels', async (params) => {
+  if (isCodexSession(String(params?.sessionId ?? ''))) return getCodexSupportedModels()
+  return cachedSdkRead('getSupportedModels', async () => {
     const builtins = CLAUDE_BUILTIN_MODELS.map(m => ({ ...m, source: 'builtin' }))
     try {
       const sdk = await loadAnthropicSdk()
@@ -234,7 +243,7 @@ registerHandler('claude.getSupportedModels', async () =>
       return builtins
     }
   })
-)
+})
 // getSupportedCommands / getSupportedAgents / getAccountInfo all read
 // from the live `session.currentQuery` instance — the Query that was
 // created by claude.sendMessage and has been alive since. The SDK's
@@ -263,19 +272,19 @@ function readFromLiveQuery(sessionId, method, fallback) {
 }
 
 registerHandler('claude.getSupportedCommands', async (params) =>
-  cachedSdkRead(`getSupportedCommands:${params?.sessionId ?? ''}`, async () => {
+  isCodexSession(String(params?.sessionId ?? '')) ? [] : cachedSdkRead(`getSupportedCommands:${params?.sessionId ?? ''}`, async () => {
     const result = await readFromLiveQuery(params?.sessionId, 'supportedCommands', [])
     return Array.isArray(result) ? result : []
   })
 )
 registerHandler('claude.getSupportedAgents', async (params) =>
-  cachedSdkRead(`getSupportedAgents:${params?.sessionId ?? ''}`, async () => {
+  isCodexSession(String(params?.sessionId ?? '')) ? [] : cachedSdkRead(`getSupportedAgents:${params?.sessionId ?? ''}`, async () => {
     const result = await readFromLiveQuery(params?.sessionId, 'supportedAgents', [])
     return Array.isArray(result) ? result : []
   })
 )
 registerHandler('claude.getAccountInfo', async (params) =>
-  cachedSdkRead(`getAccountInfo:${params?.sessionId ?? ''}`, async () => {
+  isCodexSession(String(params?.sessionId ?? '')) ? null : cachedSdkRead(`getAccountInfo:${params?.sessionId ?? ''}`, async () => {
     const result = await readFromLiveQuery(params?.sessionId, 'accountInfo', null)
     return result ?? null
   })
@@ -284,6 +293,7 @@ registerHandler('claude.getAccountInfo', async (params) =>
 registerHandler('claude.getWorktreeStatus', async (params) => {
   const sessionId = String(params?.sessionId ?? '')
   if (!sessionId) return null
+  if (isCodexSession(sessionId)) return getCodexWorktreeStatus(params)
   const info = activeWorktrees.get(sessionId)
   if (!info) return null
   return worktreeStatus(sessionId)
@@ -314,6 +324,7 @@ registerHandler('claude.cleanupWorktree', async (params) => {
   const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : ''
   const deleteBranch = params?.deleteBranch !== false
   if (!sessionId) return false
+  if (isCodexSession(sessionId)) return cleanupCodexWorktree(params)
   try {
     const info = activeWorktrees.get(sessionId)
     await worktreeRemove(sessionId, deleteBranch)

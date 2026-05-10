@@ -13,6 +13,24 @@ import { closeLiveQuery } from './claude-send.mjs'
 import { loadSessionHistory } from './claude-history.mjs'
 import { warn as logWarn } from '../lib/logger.mjs'
 import { worktreeRehydrate } from './worktree.mjs'
+import {
+  abortCodexSession,
+  getCodexSessionMeta,
+  getCodexSessionState,
+  isCodexAgentPreset,
+  isCodexResting,
+  isCodexSession,
+  resetCodexSession,
+  restCodexSession,
+  resumeCodexSession,
+  setCodexApprovalPolicy,
+  setCodexEffort,
+  setCodexModel,
+  setCodexSandboxMode,
+  startCodexSession,
+  stopCodexSession,
+  wakeCodexSession,
+} from './codex.mjs'
 
 function applyWorktreeOptions(sessionId, session) {
   const options = session?.options
@@ -46,6 +64,9 @@ registerHandler('claude.startSession', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.startSession: missing sessionId')
+  }
+  if (isCodexAgentPreset(params?.options?.agentPreset)) {
+    return startCodexSession(params)
   }
   const s = ensureSession(sessionId)
   s.active = true
@@ -92,6 +113,9 @@ registerHandler('claude.resumeSession', async (params) => {
   if (typeof sdkSessionIdToResume !== 'string' || !sdkSessionIdToResume) {
     throw new Error('claude.resumeSession: missing sdkSessionId')
   }
+  if (isCodexAgentPreset(params?.options?.agentPreset) || isCodexSession(sessionId)) {
+    return resumeCodexSession(params)
+  }
   const existing = sessions.get(sessionId)
   if (existing?.abortController) {
     try { existing.abortController.abort() } catch { /* already aborted */ }
@@ -136,6 +160,7 @@ registerHandler('claude.resumeSession', async (params) => {
 registerHandler('claude.restSession', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
+  if (isCodexSession(sessionId)) return restCodexSession(params)
   const session = sessions.get(sessionId)
   if (!session) return false
   if (session.abortController) {
@@ -161,6 +186,7 @@ registerHandler('claude.restSession', async (params) => {
 registerHandler('claude.wakeSession', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
+  if (isCodexSession(sessionId)) return wakeCodexSession(params)
   const session = sessions.get(sessionId)
   if (!session) return false
   session.isResting = false
@@ -169,6 +195,7 @@ registerHandler('claude.wakeSession', async (params) => {
 registerHandler('claude.isResting', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
+  if (isCodexSession(sessionId)) return isCodexResting(params)
   const session = sessions.get(sessionId)
   return session?.isResting === true
 })
@@ -178,6 +205,7 @@ registerHandler('claude.stopSession', async (params) => {
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.stopSession: missing sessionId')
   }
+  if (isCodexSession(sessionId)) return stopCodexSession(params)
   const s = sessions.get(sessionId)
   if (s?.abortController) {
     try { s.abortController.abort() } catch { /* already aborted */ }
@@ -192,6 +220,7 @@ registerHandler('claude.abortSession', async (params) => {
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.abortSession: missing sessionId')
   }
+  if (isCodexSession(sessionId)) return abortCodexSession(params)
   const session = sessions.get(sessionId)
   if (session?.abortController) {
     try { session.abortController.abort() } catch { /* already aborted */ }
@@ -274,6 +303,7 @@ registerHandler('claude.setCodexSandboxMode', async (params) => {
   const mode = params?.mode
   if (typeof sessionId !== 'string' || !sessionId) return false
   if (typeof mode !== 'string' || !CODEX_SANDBOX_MODES.has(mode)) return false
+  if (isCodexSession(sessionId)) return setCodexSandboxMode(params)
   const s = sessions.get(sessionId)
   if (!s) return false
   s.codexSandboxMode = mode
@@ -285,6 +315,7 @@ registerHandler('claude.setCodexApprovalPolicy', async (params) => {
   const policy = params?.policy
   if (typeof sessionId !== 'string' || !sessionId) return false
   if (typeof policy !== 'string' || !CODEX_APPROVAL_POLICIES.has(policy)) return false
+  if (isCodexSession(sessionId)) return setCodexApprovalPolicy(params)
   const s = sessions.get(sessionId)
   if (!s) return false
   s.codexApprovalPolicy = policy
@@ -294,6 +325,7 @@ registerHandler('claude.setCodexApprovalPolicy', async (params) => {
 registerHandler('claude.setModel', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
+  if (isCodexSession(sessionId)) return setCodexModel(params)
   const s = ensureSession(sessionId)
   if (typeof params?.model === 'string') s.model = params.model
   if (typeof params?.autoCompactWindow === 'number') s.autoCompactWindow = params.autoCompactWindow
@@ -321,6 +353,7 @@ registerHandler('claude.setModel', async (params) => {
 registerHandler('claude.setEffort', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
+  if (isCodexSession(sessionId)) return setCodexEffort(params)
   const s = ensureSession(sessionId)
   if (typeof params?.effort === 'string') s.effort = params.effort
   return true
@@ -329,6 +362,7 @@ registerHandler('claude.setEffort', async (params) => {
 registerHandler('claude.resetSession', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
+  if (isCodexSession(sessionId)) return resetCodexSession(params)
   const prior = sessions.get(sessionId)
   if (prior?.abortController) {
     try { prior.abortController.abort() } catch { /* already aborted */ }
@@ -346,6 +380,7 @@ registerHandler('claude.resetSession', async (params) => {
 // startSession + the various setters above. When no session exists for
 // the given id we return null to match Electron's behaviour.
 registerHandler('claude.getSessionState', async (params) => {
+  if (isCodexSession(String(params?.sessionId ?? ''))) return getCodexSessionState(params)
   const s = sessions.get(String(params?.sessionId ?? ''))
   if (!s) return null
   return {
@@ -360,6 +395,7 @@ registerHandler('claude.getSessionState', async (params) => {
 })
 
 registerHandler('claude.getSessionMeta', async (params) => {
+  if (isCodexSession(String(params?.sessionId ?? ''))) return getCodexSessionMeta(params)
   const s = sessions.get(String(params?.sessionId ?? ''))
   return buildSessionMeta(s)
 })
@@ -378,6 +414,7 @@ registerHandler('claude.getSessionMeta', async (params) => {
 registerHandler('claude.getContextUsage', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string') return null
+  if (isCodexSession(sessionId)) return null
   const s = sessions.get(sessionId)
   if (!s || !s.lastUsage) return null
   const u = s.lastUsage

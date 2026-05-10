@@ -17,7 +17,7 @@ import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-ur
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
 import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
 import { displayNameForClaudeSelection } from '../utils/claude-model-presets'
-import { CODEX_MODELS } from '../utils/codex-models'
+import { CODEX_MODELS, DEFAULT_CODEX_MODEL } from '../utils/codex-models'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
 import { firstMeaningfulLine, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
@@ -38,6 +38,12 @@ function scheduleAgentMetadataRefresh(callback: () => void): () => void {
 function displayNameForPanelModel(model?: string): string {
   const codexModel = CODEX_MODELS.find(m => m.value === model)
   return codexModel?.displayName || displayNameForClaudeSelection(model)
+}
+
+function resolveCodexModel(saved?: string, fallback?: string): string {
+  if (saved && !saved.startsWith('claude-')) return saved
+  if (fallback && !fallback.startsWith('claude-')) return fallback
+  return DEFAULT_CODEX_MODEL
 }
 
 function formatContextWindowSuffix(displayName: string, contextWindow?: number): string {
@@ -111,7 +117,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [permissionMode, setPermissionMode] = useState<string>('bypassPermissions')
   const [currentModel, setCurrentModel] = useState<string>(() => {
     const t = workspaceStore.getState().terminals.find(t => t.id === sessionId)
-    if (isCodexSession) return t?.model || settingsStore.getSettings().defaultCodexModel || ''
+    if (isCodexSession) return resolveCodexModel(t?.model, settingsStore.getSettings().defaultCodexModel)
     return t?.model || settingsStore.getSettings().defaultClaudeModel || ''
   })
   const currentModelLabel = useMemo(() => displayNameForPanelModel(currentModel), [currentModel])
@@ -1105,7 +1111,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         dlog(`${stag} sdkSessionId=${savedSdkSessionId?.slice(0, 8)} pendingPrompt="${terminal?.pendingPrompt || ''}" apiVersion=${apiVersion}`)
 
         const effectiveModel = isCodexSession
-          ? (savedModel || globalSettings.defaultCodexModel || '')
+          ? resolveCodexModel(savedModel, globalSettings.defaultCodexModel)
           : (savedModel || globalSettings.defaultClaudeModel || '')
         if (effectiveModel) setCurrentModel(effectiveModel)
 
@@ -1580,7 +1586,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       setResumeLoading(true)
       setShowResumeList(true)
       try {
-        const sessions = await host.claude.listSessions(cwd)
+        const sessions = await host.claude.listSessions(cwd, 'codex')
         setResumeSessions(sessions || [])
       } catch {
         setResumeSessions([])
@@ -4477,7 +4483,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <span key="sessionId" className="claude-statusline-item claude-statusline-clickable"
               onClick={async () => {
                 setResumeLoading(true); setShowResumeList(true)
-                try { setResumeSessions(await host.claude.listSessions(cwd) || []) }
+                try { setResumeSessions(await host.claude.listSessions(cwd, 'codex') || []) }
                 catch { setResumeSessions([]) }
                 finally { setResumeLoading(false) }
               }}

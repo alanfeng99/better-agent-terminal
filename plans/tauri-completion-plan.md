@@ -67,6 +67,7 @@
 - 2026-05-10：降低 Tauri workspace state 檔案 I/O 阻塞風險。`workspace.load/save` 已改成 async command + `spawn_blocking`；啟動讀 `workspaces.json` 與工作區狀態儲存不再佔住 Tauri command handler，Electron/Tauri 回傳 shape 不變。
 - 2026-05-10：降低 Tauri Git/GitHub panel shell-out 阻塞風險。`git.*` 與 `github.*` Rust commands 仍沿用 Electron 的 `git` / `gh` CLI 行為，但 shell-out 與 timeout polling 已移到 `spawn_blocking`；GitPanel/GitHubPanel refresh、diff、status、PR/issue 查詢不再佔住 Tauri command handler。
 - 2026-05-10：降低 Tauri FolderPicker mutation UI 阻塞風險。`fs.mkdir` / `fs.deletePath` 行為仍對齊 Electron 的新資料夾與刪除資料夾流程，但 `create_dir`、`symlink_metadata`、`remove_dir_all` 已移到 `spawn_blocking`；慢磁碟或大量資料夾刪除不再佔住 Tauri command handler。
+- 2026-05-10：開始把 Tauri Codex Agent 從 Claude SDK 路徑切出。sidecar 新增 `@openai/codex-sdk` backed Codex session manager，`agentPreset=codex-agent/codex-agent-worktree` 會透過既有 `claude:*` event contract 路由到 Codex SDK；Codex model 防呆避免沿用舊 Claude `claude-*` model，OpenAI Direct preset/API key 設定入口已停用。
 
 ## 目前判斷
 

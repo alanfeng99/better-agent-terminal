@@ -16,7 +16,6 @@ export const AGENT_PRESET_IDS = [
   'claude-cli-worktree',
   'codex-agent',
   'codex-agent-worktree',
-  'openai-agent',
   'codex-cli',
   'none',
 ]

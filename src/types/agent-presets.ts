@@ -74,14 +74,6 @@ export const AGENT_PRESETS: AgentPreset[] = [
     needsGitRepo: true,
   },
   {
-    id: 'openai-agent',
-    name: 'OpenAI (Direct)',
-    icon: '◯',
-    color: '#0ea5e9',
-    backend: 'sdk',
-    debug: true,
-  },
-  {
     id: 'codex-cli',
     name: 'Codex CLI',
     icon: '▶',

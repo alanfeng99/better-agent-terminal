@@ -70,10 +70,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [bindInterface, setBindInterface] = useState<BindInterface>(settings.remoteServerBindInterface || 'localhost')
   const [clientStatus, setClientStatus] = useState<RemoteClientStatus>({ connected: false, info: null })
 
-  // OpenAI API key state
-  const [openaiKeyStatus, setOpenaiKeyStatus] = useState<{ hasKey: boolean }>({ hasKey: false })
-  const [openaiKeyInput, setOpenaiKeyInput] = useState('')
-  const [openaiKeySaving, setOpenaiKeySaving] = useState(false)
   const [cxStatus, setCxStatus] = useState<CxDetectionStatus | null>(null)
   const [cxDetecting, setCxDetecting] = useState(false)
 
@@ -131,11 +127,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     setServerPort(String(settings.remoteServerPort || 9876))
     setBindInterface(settings.remoteServerBindInterface || 'localhost')
   }, [settings.remoteServerPort, settings.remoteServerBindInterface, serverStatus.running])
-
-  useEffect(() => {
-    if (!isDebugMode) return
-    host.openai.getApiKeyStatus().then(setOpenaiKeyStatus).catch(() => { /* ignore */ })
-  }, [isDebugMode])
 
   const refreshCxStatus = useCallback(async () => {
     setCxDetecting(true)
@@ -636,55 +627,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   </>
                 )}
               </div>
-
-              {isDebugMode && (
-                <div className="settings-section">
-                  <h3>OpenAI (Direct) API Key</h3>
-                  <p className="settings-hint">Stored locally, encrypted with OS keychain via Electron safeStorage. Used by the "OpenAI (Direct)" agent preset.</p>
-                  <div className="settings-group">
-                    <label>Status: {openaiKeyStatus.hasKey ? '✅ key configured' : '❌ no key'}</label>
-                    <input
-                      type="password"
-                      value={openaiKeyInput}
-                      onChange={e => setOpenaiKeyInput(e.target.value)}
-                      placeholder="sk-..."
-                      autoComplete="off"
-                    />
-                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                      <button
-                        className="settings-btn"
-                        disabled={!openaiKeyInput.trim() || openaiKeySaving}
-                        onClick={async () => {
-                          setOpenaiKeySaving(true)
-                          try {
-                            await host.openai.setApiKey(openaiKeyInput.trim())
-                            setOpenaiKeyInput('')
-                            const s = await host.openai.getApiKeyStatus()
-                            setOpenaiKeyStatus(s)
-                          } finally {
-                            setOpenaiKeySaving(false)
-                          }
-                        }}
-                      >
-                        {openaiKeySaving ? 'Saving…' : 'Save Key'}
-                      </button>
-                      {openaiKeyStatus.hasKey && (
-                        <button
-                          className="settings-btn settings-btn-danger"
-                          onClick={async () => {
-                            if (!confirm('Clear saved OpenAI API key?')) return
-                            await host.openai.clearApiKey()
-                            const s = await host.openai.getApiKeyStatus()
-                            setOpenaiKeyStatus(s)
-                          }}
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
 
               <div className="settings-section">
                 <h3>{t('settings.modelAndEffort')}</h3>
