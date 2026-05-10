@@ -88,6 +88,16 @@ fn run_git(cwd: &str, args: &[&str], timeout: Duration) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+async fn run_git_blocking(cwd: String, args: Vec<String>, timeout: Duration) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_git(&cwd, &refs, timeout)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 // `git remote get-url origin` returns the remote URL; we only
 // translate github.com remotes so the GitHubPanel / Sidebar links
 // resolve to a browsable HTTPS URL.
@@ -234,21 +244,23 @@ pub fn clamp_log_count(count: Option<i64>) -> u32 {
 
 #[tauri::command]
 pub async fn git_get_github_url(folder_path: String) -> Option<String> {
-    let raw = run_git(
-        &folder_path,
-        &["remote", "get-url", "origin"],
+    let raw = run_git_blocking(
+        folder_path,
+        vec!["remote".into(), "get-url".into(), "origin".into()],
         Duration::from_secs(3),
-    )?;
+    )
+    .await?;
     parse_github_url(raw.trim())
 }
 
 #[tauri::command]
 pub async fn git_get_branch(cwd: String) -> Option<String> {
-    let raw = run_git(
-        &cwd,
-        &["rev-parse", "--abbrev-ref", "HEAD"],
+    let raw = run_git_blocking(
+        cwd,
+        vec!["rev-parse".into(), "--abbrev-ref".into(), "HEAD".into()],
         Duration::from_secs(3),
-    )?;
+    )
+    .await?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         None
@@ -261,8 +273,13 @@ pub async fn git_get_branch(cwd: String) -> Option<String> {
 pub async fn git_get_log(cwd: String, count: Option<i64>) -> Vec<GitLogEntry> {
     let n = clamp_log_count(count);
     let n_str = n.to_string();
-    let args = ["log", "--pretty=format:%H||%an||%ai||%s", "-n", &n_str];
-    match run_git(&cwd, &args, Duration::from_secs(5)) {
+    let args = vec![
+        "log".into(),
+        "--pretty=format:%H||%an||%ai||%s".into(),
+        "-n".into(),
+        n_str,
+    ];
+    match run_git_blocking(cwd, args, Duration::from_secs(5)).await {
         Some(raw) => parse_log(&raw),
         None => Vec::new(),
     }
@@ -275,15 +292,15 @@ pub async fn git_get_diff(
     file_path: Option<String>,
 ) -> String {
     let argv = build_diff_args(commit_hash.as_deref(), file_path.as_deref());
-    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    run_git(&cwd, &argv_refs, Duration::from_secs(10)).unwrap_or_default()
+    run_git_blocking(cwd, argv, Duration::from_secs(10))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 pub async fn git_get_diff_files(cwd: String, commit_hash: Option<String>) -> Vec<GitFileEntry> {
     let argv = build_diff_files_args(commit_hash.as_deref());
-    let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    match run_git(&cwd, &argv_refs, Duration::from_secs(5)) {
+    match run_git_blocking(cwd, argv, Duration::from_secs(5)).await {
         Some(raw) => parse_diff_files(&raw),
         None => Vec::new(),
     }
@@ -291,11 +308,12 @@ pub async fn git_get_diff_files(cwd: String, commit_hash: Option<String>) -> Vec
 
 #[tauri::command]
 pub async fn git_get_root(cwd: String) -> Option<String> {
-    let raw = run_git(
-        &cwd,
-        &["rev-parse", "--show-toplevel"],
+    let raw = run_git_blocking(
+        cwd,
+        vec!["rev-parse".into(), "--show-toplevel".into()],
         Duration::from_secs(5),
-    )?;
+    )
+    .await?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         None
@@ -306,11 +324,13 @@ pub async fn git_get_root(cwd: String) -> Option<String> {
 
 #[tauri::command]
 pub async fn git_get_status(cwd: String) -> Vec<GitFileEntry> {
-    match run_git(
-        &cwd,
-        &["status", "--porcelain", "-uall"],
+    match run_git_blocking(
+        cwd,
+        vec!["status".into(), "--porcelain".into(), "-uall".into()],
         Duration::from_secs(5),
-    ) {
+    )
+    .await
+    {
         Some(raw) => parse_status(&raw),
         None => Vec::new(),
     }

@@ -84,6 +84,19 @@ fn run_gh(cwd: Option<&str>, args: &[&str], timeout: Duration) -> Result<String,
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+async fn run_gh_blocking(
+    cwd: Option<String>,
+    args: Vec<String>,
+    timeout: Duration,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_gh(cwd.as_deref(), &refs, timeout)
+    })
+    .await
+    .map_err(|e| format!("gh worker failed: {e}"))?
+}
+
 // Helper for read commands that shape the response as either parsed
 // JSON or `{error: msg}` (Electron parity).
 fn json_or_error(result: Result<String, String>) -> Value {
@@ -98,7 +111,9 @@ fn json_or_error(result: Result<String, String>) -> Value {
 
 #[tauri::command]
 pub async fn github_check_cli() -> CliStatus {
-    let installed = run_gh(None, &["--version"], CHECK_TIMEOUT).is_ok();
+    let installed = run_gh_blocking(None, vec!["--version".into()], CHECK_TIMEOUT)
+        .await
+        .is_ok();
     if !installed {
         return CliStatus {
             installed: false,
@@ -109,7 +124,9 @@ pub async fn github_check_cli() -> CliStatus {
     // account has problems, even when the active one is fine.
     // `gh auth token` only validates the active account, which is
     // what we actually care about here.
-    let authenticated = run_gh(None, &["auth", "token"], CHECK_TIMEOUT).is_ok();
+    let authenticated = run_gh_blocking(None, vec!["auth".into(), "token".into()], CHECK_TIMEOUT)
+        .await
+        .is_ok();
     CliStatus {
         installed: true,
         authenticated,
@@ -118,58 +135,67 @@ pub async fn github_check_cli() -> CliStatus {
 
 #[tauri::command]
 pub async fn github_pr_list(cwd: String) -> Value {
-    let args = [
+    let args = vec![
         "pr",
         "list",
         "--json",
         "number,title,state,author,createdAt,updatedAt,labels,headRefName,isDraft",
         "--limit",
         "50",
-    ];
-    json_or_error(run_gh(Some(&cwd), &args, READ_TIMEOUT))
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
 #[tauri::command]
 pub async fn github_issue_list(cwd: String) -> Value {
-    let args = [
+    let args = vec![
         "issue",
         "list",
         "--json",
         "number,title,state,author,createdAt,updatedAt,labels",
         "--limit",
         "50",
-    ];
-    json_or_error(run_gh(Some(&cwd), &args, READ_TIMEOUT))
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
 #[tauri::command]
 pub async fn github_pr_view(cwd: String, number: i64) -> Value {
     let n = number.to_string();
-    let args = [
-        "pr", "view", &n,
-        "--json", "number,title,state,author,body,comments,reviews,createdAt,headRefName,baseRefName,additions,deletions,files",
+    let args = vec![
+        "pr".into(),
+        "view".into(),
+        n,
+        "--json".into(),
+        "number,title,state,author,body,comments,reviews,createdAt,headRefName,baseRefName,additions,deletions,files".into(),
     ];
-    json_or_error(run_gh(Some(&cwd), &args, READ_TIMEOUT))
+    json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
 #[tauri::command]
 pub async fn github_issue_view(cwd: String, number: i64) -> Value {
     let n = number.to_string();
-    let args = [
-        "issue",
-        "view",
-        &n,
-        "--json",
-        "number,title,state,author,body,comments,createdAt,labels",
+    let args = vec![
+        "issue".into(),
+        "view".into(),
+        n,
+        "--json".into(),
+        "number,title,state,author,body,comments,createdAt,labels".into(),
     ];
-    json_or_error(run_gh(Some(&cwd), &args, READ_TIMEOUT))
+    json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
 #[tauri::command]
 pub async fn github_pr_comment(cwd: String, number: i64, body: String) -> Value {
     let n = number.to_string();
-    let args = ["pr", "comment", &n, "--body", &body];
-    match run_gh(Some(&cwd), &args, READ_TIMEOUT) {
+    let args = vec!["pr".into(), "comment".into(), n, "--body".into(), body];
+    match run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await {
         Ok(_) => serde_json::json!({ "success": true }),
         Err(e) => serde_json::json!({ "error": e }),
     }
@@ -178,8 +204,8 @@ pub async fn github_pr_comment(cwd: String, number: i64, body: String) -> Value 
 #[tauri::command]
 pub async fn github_issue_comment(cwd: String, number: i64, body: String) -> Value {
     let n = number.to_string();
-    let args = ["issue", "comment", &n, "--body", &body];
-    match run_gh(Some(&cwd), &args, READ_TIMEOUT) {
+    let args = vec!["issue".into(), "comment".into(), n, "--body".into(), body];
+    match run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await {
         Ok(_) => serde_json::json!({ "success": true }),
         Err(e) => serde_json::json!({ "error": e }),
     }
