@@ -302,8 +302,7 @@ fn cx_run_version(binary: &str) -> Result<String, String> {
     })
 }
 
-#[tauri::command]
-pub fn settings_detect_cx(app: tauri::AppHandle) -> Result<CxDetectionResult, CommandError> {
+fn settings_detect_cx_impl(app: tauri::AppHandle) -> Result<CxDetectionResult, CommandError> {
     let settings = read_cx_settings(&app);
     let dir = app
         .path()
@@ -340,6 +339,15 @@ pub fn settings_detect_cx(app: tauri::AppHandle) -> Result<CxDetectionResult, Co
             error: Some(msg),
         }),
     }
+}
+
+#[tauri::command]
+pub async fn settings_detect_cx(app: tauri::AppHandle) -> Result<CxDetectionResult, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || settings_detect_cx_impl(app))
+        .await
+        .map_err(|err| CommandError {
+            message: format!("settings.detectCx worker failed: {err}"),
+        })?
 }
 
 #[cfg(test)]

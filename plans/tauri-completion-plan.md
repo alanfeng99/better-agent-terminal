@@ -61,6 +61,7 @@
 - 2026-05-10：完成 Tauri Claude sidecar bridge 背景化收斂。除測試用 `claude.ping` 外，帳號、session state、permission/model/effort setter、fork/rewind、archive/history 與 MCP commands 都改成 async command + `spawn_blocking`；Claude namespace 不再有 renderer 會直接碰到的同步 sidecar bridge。
 - 2026-05-10：降低 Tauri PTY create/restart UI 阻塞風險。`pty.create` 與 `pty.restart` 會 spawn shell/ConPTY，已改成 async command + `spawn_blocking`；新增 terminal 與重啟 terminal 不再佔住 Tauri command handler，`pty.write/resize/kill/getCwd` 保持快速同步 metadata 操作。
 - 2026-05-10：降低 Tauri update check UI 阻塞風險。`update.check` 會透過 sidecar 打 GitHub Releases API，已改成 async command + `spawn_blocking`，UpdateNotification 查詢不再佔住 Tauri command handler。
+- 2026-05-10：降低 Tauri `settings.detectCx` UI 阻塞風險。`detectCx` 會讀 settings、查 PATH 並執行 `cx --version`，已改成 async command + `spawn_blocking`；設定頁偵測 semantic-navigation binary 不再佔住 Tauri command handler。
 
 ## 目前判斷
 
