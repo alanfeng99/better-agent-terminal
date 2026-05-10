@@ -11,12 +11,17 @@
 // crate::path_guard so we can unit-test it independently of Tauri.
 
 use crate::path_guard::is_sensitive_path;
+use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::Manager;
+use tauri::{AppHandle, State};
 
 const MAX_READ_BYTES: u64 = 512 * 1024;
+const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
 
 // Directory names we skip in listings/search — these are typically build
 // outputs or VCS internals, not anything the user wants to wade through.
@@ -120,7 +125,11 @@ pub struct FsEntry {
 fn entry_sort_key(a: &FsEntry, b: &FsEntry) -> std::cmp::Ordering {
     if a.is_directory != b.is_directory {
         // directories first
-        return if a.is_directory { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+        return if a.is_directory {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        };
     }
     a.name.to_lowercase().cmp(&b.name.to_lowercase())
 }
@@ -158,7 +167,11 @@ pub async fn fs_readdir(dir_path: String) -> Vec<FsEntry> {
             continue;
         }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        out.push(FsEntry { name, path: path_str, is_directory: is_dir });
+        out.push(FsEntry {
+            name,
+            path: path_str,
+            is_directory: is_dir,
+        });
     }
     out.sort_by(entry_sort_key);
     out
@@ -201,7 +214,12 @@ pub async fn fs_list_dirs(
     let expanded = expand_tilde(&dir_path, &home);
     let abs = match std::path::absolute(&expanded) {
         Ok(p) => p,
-        Err(e) => return ListDirsResult { error: Some(e.to_string()), ..Default::default() },
+        Err(e) => {
+            return ListDirsResult {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
     };
     if is_sensitive_path(&abs.to_string_lossy()) {
         return ListDirsResult {
@@ -211,7 +229,12 @@ pub async fn fs_list_dirs(
     }
     let read = match fs::read_dir(&abs) {
         Ok(r) => r,
-        Err(e) => return ListDirsResult { error: Some(e.to_string()), ..Default::default() },
+        Err(e) => {
+            return ListDirsResult {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
     };
     let mut entries: Vec<ListDirsItem> = Vec::new();
     for entry in read.flatten() {
@@ -230,7 +253,10 @@ pub async fn fs_list_dirs(
         if is_sensitive_path(&p.to_string_lossy()) {
             continue;
         }
-        entries.push(ListDirsItem { name, path: p.to_string_lossy().to_string() });
+        entries.push(ListDirsItem {
+            name,
+            path: p.to_string_lossy().to_string(),
+        });
     }
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     let parent = abs
@@ -257,7 +283,12 @@ pub struct PathOrError {
 
 fn validate_dir_name(name: &str) -> Result<(), &'static str> {
     let trimmed = name.trim();
-    if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') || trimmed == "." || trimmed == ".." {
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed == "."
+        || trimmed == ".."
+    {
         return Err("Invalid folder name");
     }
     Ok(())
@@ -267,19 +298,36 @@ fn validate_dir_name(name: &str) -> Result<(), &'static str> {
 pub async fn fs_mkdir(parent_path: String, name: String) -> PathOrError {
     let trimmed = name.trim();
     if let Err(msg) = validate_dir_name(&name) {
-        return PathOrError { error: Some(msg.into()), ..Default::default() };
+        return PathOrError {
+            error: Some(msg.into()),
+            ..Default::default()
+        };
     }
     let parent_abs = match std::path::absolute(&parent_path) {
         Ok(p) => p,
-        Err(e) => return PathOrError { error: Some(e.to_string()), ..Default::default() },
+        Err(e) => {
+            return PathOrError {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
     };
     if is_sensitive_path(&parent_abs.to_string_lossy()) {
-        return PathOrError { error: Some("Access denied (sensitive path)".into()), ..Default::default() };
+        return PathOrError {
+            error: Some("Access denied (sensitive path)".into()),
+            ..Default::default()
+        };
     }
     let target = parent_abs.join(trimmed);
     match fs::create_dir(&target) {
-        Ok(_) => PathOrError { path: Some(target.to_string_lossy().to_string()), error: None },
-        Err(e) => PathOrError { error: Some(e.to_string()), ..Default::default() },
+        Ok(_) => PathOrError {
+            path: Some(target.to_string_lossy().to_string()),
+            error: None,
+        },
+        Err(e) => PathOrError {
+            error: Some(e.to_string()),
+            ..Default::default()
+        },
     }
 }
 
@@ -287,21 +335,43 @@ pub async fn fs_mkdir(parent_path: String, name: String) -> PathOrError {
 pub async fn fs_delete_path(target_path: String) -> PathOrError {
     let abs = match std::path::absolute(&target_path) {
         Ok(p) => p,
-        Err(e) => return PathOrError { error: Some(e.to_string()), ..Default::default() },
+        Err(e) => {
+            return PathOrError {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
     };
     if is_sensitive_path(&abs.to_string_lossy()) {
-        return PathOrError { error: Some("Access denied (sensitive path)".into()), ..Default::default() };
+        return PathOrError {
+            error: Some("Access denied (sensitive path)".into()),
+            ..Default::default()
+        };
     }
     let metadata = match fs::symlink_metadata(&abs) {
         Ok(m) => m,
-        Err(e) => return PathOrError { error: Some(e.to_string()), ..Default::default() },
+        Err(e) => {
+            return PathOrError {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
     };
     if !metadata.is_dir() {
-        return PathOrError { error: Some("Only directories can be deleted here".into()), ..Default::default() };
+        return PathOrError {
+            error: Some("Only directories can be deleted here".into()),
+            ..Default::default()
+        };
     }
     match fs::remove_dir_all(&abs) {
-        Ok(_) => PathOrError { path: Some(abs.to_string_lossy().to_string()), error: None },
-        Err(e) => PathOrError { error: Some(e.to_string()), ..Default::default() },
+        Ok(_) => PathOrError {
+            path: Some(abs.to_string_lossy().to_string()),
+            error: None,
+        },
+        Err(e) => PathOrError {
+            error: Some(e.to_string()),
+            ..Default::default()
+        },
     }
 }
 
@@ -311,6 +381,24 @@ pub struct QuickLocation {
     pub name: String,
     pub path: String,
     pub kind: String,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_logical_drive_roots() -> Vec<String> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLogicalDrives() -> u32;
+    }
+
+    let mask = unsafe { GetLogicalDrives() };
+    let mut roots = Vec::new();
+    for idx in 0..26 {
+        if (mask & (1 << idx)) != 0 {
+            let letter = (b'A' + idx as u8) as char;
+            roots.push(format!("{letter}:\\"));
+        }
+    }
+    roots
 }
 
 #[tauri::command]
@@ -324,14 +412,21 @@ pub async fn fs_quick_locations(app: tauri::AppHandle) -> Vec<QuickLocation> {
         });
     }
     if cfg!(target_os = "windows") {
-        for letter in 'A'..='Z' {
-            let root = format!("{letter}:\\");
-            if Path::new(&root).exists() {
-                out.push(QuickLocation { name: format!("{letter}:"), path: root, kind: "drive".into() });
-            }
+        #[cfg(target_os = "windows")]
+        for root in windows_logical_drive_roots() {
+            let name = root.trim_end_matches('\\').to_string();
+            out.push(QuickLocation {
+                name,
+                path: root,
+                kind: "drive".into(),
+            });
         }
     } else {
-        out.push(QuickLocation { name: "/".into(), path: "/".into(), kind: "root".into() });
+        out.push(QuickLocation {
+            name: "/".into(),
+            path: "/".into(),
+            kind: "root".into(),
+        });
         if cfg!(target_os = "macos") {
             if let Ok(read) = fs::read_dir("/Volumes") {
                 for entry in read.flatten() {
@@ -384,7 +479,11 @@ fn search_walk(dir: &Path, lower_query: &str, depth: usize, results: &mut Vec<Fs
         }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if name.to_lowercase().contains(lower_query) {
-            results.push(FsEntry { name: name.clone(), path: p_str, is_directory: is_dir });
+            results.push(FsEntry {
+                name: name.clone(),
+                path: p_str,
+                is_directory: is_dir,
+            });
         }
         if is_dir {
             search_walk(&p, lower_query, depth + 1, results);
@@ -403,6 +502,50 @@ pub async fn fs_search(dir_path: String, query: String) -> Vec<FsEntry> {
     search_walk(&abs, &lower, 0, &mut results);
     results.sort_by(entry_sort_key);
     results
+}
+
+fn call_sidecar_fs(
+    app: &AppHandle,
+    state: &SidecarState,
+    method: &str,
+    params: Value,
+) -> Result<Value, BridgeError> {
+    let cfg = resolve_spawn_config(app)?;
+    let sink = app_handle_emit_sink(app.clone());
+    state.call_with_emit(&cfg, Some(sink), method, params, SIDECAR_TIMEOUT)
+}
+
+#[tauri::command]
+pub fn fs_resolve_path_links(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    cwd: String,
+    raw_paths: Vec<String>,
+) -> Result<Value, BridgeError> {
+    call_sidecar_fs(
+        &app,
+        &state,
+        "fs.resolvePathLinks",
+        json!({ "cwd": cwd, "rawPaths": raw_paths }),
+    )
+}
+
+#[tauri::command]
+pub fn fs_watch(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    dir_path: String,
+) -> Result<Value, BridgeError> {
+    call_sidecar_fs(&app, &state, "fs.watch", json!({ "dirPath": dir_path }))
+}
+
+#[tauri::command]
+pub fn fs_unwatch(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    dir_path: String,
+) -> Result<Value, BridgeError> {
+    call_sidecar_fs(&app, &state, "fs.unwatch", json!({ "dirPath": dir_path }))
 }
 
 #[cfg(test)]
@@ -477,7 +620,10 @@ mod tests {
         let home = Path::new("/home/me");
         assert_eq!(expand_tilde("~", home), PathBuf::from("/home/me"));
         assert_eq!(expand_tilde("~/docs", home), PathBuf::from("/home/me/docs"));
-        assert_eq!(expand_tilde("/etc/hosts", home), PathBuf::from("/etc/hosts"));
+        assert_eq!(
+            expand_tilde("/etc/hosts", home),
+            PathBuf::from("/etc/hosts")
+        );
         // A literal "~user" form should pass through; we only strip "~" or "~/".
         assert_eq!(expand_tilde("~user", home), PathBuf::from("~user"));
     }
@@ -485,10 +631,26 @@ mod tests {
     #[test]
     fn entry_sort_puts_directories_first() {
         let mut entries = vec![
-            FsEntry { name: "zfile".into(), path: "/a/zfile".into(), is_directory: false },
-            FsEntry { name: "ADir".into(), path: "/a/ADir".into(), is_directory: true },
-            FsEntry { name: "afile".into(), path: "/a/afile".into(), is_directory: false },
-            FsEntry { name: "bdir".into(), path: "/a/bdir".into(), is_directory: true },
+            FsEntry {
+                name: "zfile".into(),
+                path: "/a/zfile".into(),
+                is_directory: false,
+            },
+            FsEntry {
+                name: "ADir".into(),
+                path: "/a/ADir".into(),
+                is_directory: true,
+            },
+            FsEntry {
+                name: "afile".into(),
+                path: "/a/afile".into(),
+                is_directory: false,
+            },
+            FsEntry {
+                name: "bdir".into(),
+                path: "/a/bdir".into(),
+                is_directory: true,
+            },
         ];
         entries.sort_by(entry_sort_key);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -528,10 +690,8 @@ mod tests {
         let nested = dir.join("a/b/c/hello-deep.txt");
         fs::create_dir_all(nested.parent().unwrap()).unwrap();
         fs::write(&nested, b"x").unwrap();
-        let result = tauri::async_runtime::block_on(fs_search(
-            dir.to_string_lossy().into(),
-            "hello".into(),
-        ));
+        let result =
+            tauri::async_runtime::block_on(fs_search(dir.to_string_lossy().into(), "hello".into()));
         let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
         assert!(names.iter().any(|n| n.contains("hello-deep.txt")));
         assert!(result.len() >= 4);
@@ -542,9 +702,11 @@ mod tests {
     #[test]
     fn mkdir_rejects_invalid_names() {
         let parent = std::env::temp_dir();
-        let r = tauri::async_runtime::block_on(fs_mkdir(parent.to_string_lossy().into(), "..".into()));
+        let r =
+            tauri::async_runtime::block_on(fs_mkdir(parent.to_string_lossy().into(), "..".into()));
         assert_eq!(r.error.as_deref(), Some("Invalid folder name"));
-        let r = tauri::async_runtime::block_on(fs_mkdir(parent.to_string_lossy().into(), "a/b".into()));
+        let r =
+            tauri::async_runtime::block_on(fs_mkdir(parent.to_string_lossy().into(), "a/b".into()));
         assert_eq!(r.error.as_deref(), Some("Invalid folder name"));
     }
 
@@ -557,7 +719,10 @@ mod tests {
         fs::write(&file, b"x").unwrap();
         // File deletion should be refused.
         let r = tauri::async_runtime::block_on(fs_delete_path(file.to_string_lossy().into()));
-        assert_eq!(r.error.as_deref(), Some("Only directories can be deleted here"));
+        assert_eq!(
+            r.error.as_deref(),
+            Some("Only directories can be deleted here")
+        );
         // Directory deletion succeeds.
         let r = tauri::async_runtime::block_on(fs_delete_path(dir.to_string_lossy().into()));
         assert!(r.error.is_none());

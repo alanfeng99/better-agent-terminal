@@ -80,6 +80,11 @@ async function run() {
       if (cmd === 'fs_delete_path') return { path: '/x/foo' } as unknown as T
       if (cmd === 'fs_quick_locations') return [{ name: 'Home', path: '/home/me', kind: 'home' }] as unknown as T
       if (cmd === 'fs_search') return [{ name: 'hit.txt', path: '/x/hit.txt', isDirectory: false }] as unknown as T
+      if (cmd === 'fs_resolve_path_links') {
+        return [{ rawPath: 'src/main.ts:3', path: '/x/src/main.ts', exists: true, line: 3 }] as unknown as T
+      }
+      if (cmd === 'fs_watch') return true as unknown as T
+      if (cmd === 'fs_unwatch') return true as unknown as T
       if (cmd === 'image_read_as_data_url') return 'data:image/png;base64,xx' as unknown as T
       if (cmd === 'pty_create') return 'term-1' as unknown as T
       if (cmd === 'pty_write') return undefined as unknown as T
@@ -264,6 +269,14 @@ async function run() {
     assert.deepEqual(ql, [{ name: 'Home', path: '/home/me', kind: 'home' }])
     const found = await mod.host.fs.search('/x', 'hit')
     assert.deepEqual(found, [{ name: 'hit.txt', path: '/x/hit.txt', isDirectory: false }])
+    assert.deepEqual(await mod.host.fs.resolvePathLinks('/x', ['src/main.ts:3']), [
+      { rawPath: 'src/main.ts:3', path: '/x/src/main.ts', exists: true, line: 3 },
+    ])
+    assert.equal(await mod.host.fs.watch('/x'), true)
+    assert.equal(await mod.host.fs.unwatch('/x'), true)
+    const unsubFsChanged = mod.host.fs.onChanged(() => {})
+    assert.equal(typeof unsubFsChanged, 'function')
+    unsubFsChanged()
 
     const dataUrl = await mod.host.image.readAsDataUrl('/x/img.png')
     assert.equal(dataUrl, 'data:image/png;base64,xx')
@@ -530,6 +543,9 @@ async function run() {
       { cmd: 'fs_delete_path', args: { targetPath: '/x/foo' } },
       { cmd: 'fs_quick_locations', args: undefined },
       { cmd: 'fs_search', args: { dirPath: '/x', query: 'hit' } },
+      { cmd: 'fs_resolve_path_links', args: { cwd: '/x', rawPaths: ['src/main.ts:3'] } },
+      { cmd: 'fs_watch', args: { dirPath: '/x' } },
+      { cmd: 'fs_unwatch', args: { dirPath: '/x' } },
       { cmd: 'image_read_as_data_url', args: { path: '/x/img.png' } },
       { cmd: 'pty_create', args: { options: { id: 'term-1', cwd: '/x', type: 'terminal' } } },
       { cmd: 'pty_write', args: { id: 'term-1', data: 'echo hi\n' } },

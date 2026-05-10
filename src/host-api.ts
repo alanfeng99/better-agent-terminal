@@ -236,16 +236,17 @@ function createTauriHost(): BatAppAPI {
           'fs_search',
           { dirPath, query },
         ),
-      // Watcher + path-link resolution are not ported yet — they need an
-      // event-streaming bridge and language-aware path heuristics
-      // respectively. resolvePathLinks throws because callers await its
-      // result; watch/unwatch/onChanged are listener-style and panels
-      // call them unconditionally on mount, so a no-op stub keeps the
-      // tree from crashing — fs change notifications just won't fire.
-      resolvePathLinks: () => notImplemented('fs.resolvePathLinks'),
-      watch: () => {},
-      unwatch: () => {},
-      onChanged: () => () => {},
+      // Path-link resolution + file watching live in the Node sidecar
+      // because the exact heuristics and recursive fs.watch behaviour
+      // mirror Electron's JS implementation.
+      resolvePathLinks: (cwd: string, rawPaths: string[]) =>
+        getInvoke()<
+          { rawPath: string; path: string; exists: boolean; line?: number; column?: number }[]
+        >('fs_resolve_path_links', { cwd, rawPaths }),
+      watch: (dirPath: string) => getInvoke()<boolean>('fs_watch', { dirPath }),
+      unwatch: (dirPath: string) => getInvoke()<boolean>('fs_unwatch', { dirPath }),
+      onChanged: (callback: (dirPath: string) => void) =>
+        listenAdapter<string>('fs:changed', callback),
     },
     update: {
       getVersion: () => getInvoke()<string>('update_get_version'),

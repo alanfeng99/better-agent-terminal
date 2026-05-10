@@ -11,12 +11,11 @@ mod sidecar;
 
 use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
-    debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd,
-    github as github_cmd, image as image_cmd, notification as notification_cmd,
-    openai as openai_cmd, profile as profile_cmd, pty as pty_cmd, remote as remote_cmd,
-    settings, shell as shell_cmd, snippet as snippet_cmd, tunnel as tunnel_cmd,
-    update as update_cmd, worker_buffer as worker_buffer_cmd, workspace as workspace_cmd,
-    worktree as worktree_cmd,
+    debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd,
+    image as image_cmd, notification as notification_cmd, openai as openai_cmd,
+    profile as profile_cmd, pty as pty_cmd, remote as remote_cmd, settings, shell as shell_cmd,
+    snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
+    worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
 };
 
 pub fn run() {
@@ -47,7 +46,10 @@ pub fn run() {
             fs_cmd::fs_mkdir,
             fs_cmd::fs_delete_path,
             fs_cmd::fs_quick_locations,
+            fs_cmd::fs_resolve_path_links,
             fs_cmd::fs_search,
+            fs_cmd::fs_watch,
+            fs_cmd::fs_unwatch,
             clipboard_cmd::clipboard_write_text,
             image_cmd::image_read_as_data_url,
             pty_cmd::pty_create,

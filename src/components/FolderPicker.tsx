@@ -42,6 +42,7 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
   const [quickLocations, setQuickLocations] = useState<QuickLocation[]>([])
   const [quickError, setQuickError] = useState<string | null>(null)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
+  const didMountShowHiddenRef = useRef(false)
   const selectedEntries = entries.filter(entry => selected.has(entry.path))
   const deletableEntries = selectedEntries.filter(entry => entry.isDirectory)
   const canDeleteSelected = !loading && !creating && deletableEntries.length > 0 && deletableEntries.length === selectedEntries.length
@@ -92,6 +93,7 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
         try { start = await host.fs.home() }
         catch { start = '/' }
       }
+      void loadDir(start)
       try {
         const qls = await host.fs.quickLocations()
         setQuickLocations(qls)
@@ -105,7 +107,6 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
         setQuickLocations([])
         setQuickError(msg)
       }
-      loadDir(start)
     }
     init()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -113,6 +114,10 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
 
   // Reload when toggling hidden
   useEffect(() => {
+    if (!didMountShowHiddenRef.current) {
+      didMountShowHiddenRef.current = true
+      return
+    }
     if (currentPath) loadDir(currentPath)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHidden])
