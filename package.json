@@ -28,6 +28,8 @@
     "diagnose:ctrl-o:verbose": "electron tests/diagnose-ctrl-o.js --verbose",
     "test:node-resolver": "tsx tests/node-resolver.test.ts",
     "test:codex-resume": "tsx tests/codex-resume-fallback.test.ts",
+    "test:codex-panel": "tsx tests/codex-panel-regression.test.ts",
+    "test:openai-cleanup": "tsx tests/openai-direct-cleanup.test.ts",
     "test:host-api": "tsx tests/host-api.test.ts",
     "test:tauri-launch": "tsx tests/tauri-launch.test.ts",
     "test:tauri-rust": "cd src-tauri && cargo test --quiet",
