@@ -1,4 +1,5 @@
 import * as assert from 'assert'
+import { readFile } from 'fs/promises'
 
 type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -69,6 +70,24 @@ async function main() {
   assert.equal(state.workspaces[0]?.defaultAgent, 'codex-agent')
   assert.equal(state.terminals[0]?.agentPreset, 'codex-agent')
   assert.equal(state.terminals[0]?.title, 'Codex Agent')
+
+  const mainSource = await readFile('electron/main.ts', 'utf8')
+  const handlerSource = await readFile('electron/server-core/register-handlers.ts', 'utf8')
+  assert.equal(
+    mainSource.includes('OpenAIAgentManager'),
+    false,
+    'Electron main must not initialize the retired OpenAI Direct manager',
+  )
+  assert.equal(
+    handlerSource.includes('getOpenAIManager'),
+    false,
+    'Electron handlers must not route sessions to OpenAI Direct manager',
+  )
+  assert.equal(
+    handlerSource.includes("sessionManagerMap.set(sessionId, 'openai')"),
+    false,
+    'legacy openai-agent sessions must not be assigned OpenAI Direct ownership',
+  )
 
   console.log('OpenAI Direct cleanup migration: passed')
 }

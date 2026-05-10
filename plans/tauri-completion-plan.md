@@ -86,6 +86,7 @@
 - 2026-05-11：補 Rust-owned Codex metadata read-only route。`getSupportedModels` 對 Rust-owned Codex session 直接回 Codex model list，`getSupportedCommands/getSupportedAgents/getAccountInfo` 直接回空值，避免 Codex panel metadata refresh 落到 sidecar Claude SDK 路徑而顯示 Claude models 或產生不必要的 metadata latency。
 - 2026-05-11：補 Rust-owned Codex session controls。`resetSession` 會在 Rust app-server 建新 thread 並清空本地 turn/token/message state；`restSession` / `wakeSession` / `isResting` 由 Rust session state 直接處理，避免 Codex UI 控制落回 Node sidecar。
 - 2026-05-11：繼續 OpenAI Direct cleanup。Tauri `host.openai.listSessions/compactNow` 保留 renderer 相容方法但改成 host-level no-op，不再註冊 Rust command 或 sidecar handler；`getApiKeyStatus/setApiKey/clearApiKey` 保留作為 Codex auth fallback。
+- 2026-05-11：停用 Electron OpenAI Direct manager 初始化與 session routing。Electron main 不再建立 `OpenAIAgentManager`；server-core 遇到舊 `openai-agent` start/resume 會 normalize 到 Codex ownership，OpenAI list/compact IPC 回相容 no-op，API key handler 保留。
 
 ## 目前判斷
 
