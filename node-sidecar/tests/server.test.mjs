@@ -3729,6 +3729,165 @@ async function inProcess() {
     assert.equal(typeof remoteCli.authenticated, 'boolean')
   }
 
+  // settings.* — port of the Electron settings:* handlers (save / load /
+  // getShellPath / detectCx). Round-trip JSON via <dataDir>/settings.json,
+  // resolve a platform-correct shell path from a logical name (cached),
+  // and locate the optional `cx` semantic-navigation binary. Tests pin
+  // BAT_SIDECAR_DATA_DIR at a fresh tmpdir so the host's real settings
+  // file is never touched.
+  {
+    const { mkdtempSync, rmSync, readFileSync, writeFileSync } = await import('fs')
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const protocol = await import('../src/lib/remote-protocol.mjs')
+    const settingsMod = await import('../src/handlers/settings.mjs')
+    const settingsRoot = mkdtempSync(join(tmpdir(), 'sidecar-settings-'))
+    const savedDataDirS = process.env.BAT_SIDECAR_DATA_DIR
+    process.env.BAT_SIDECAR_DATA_DIR = settingsRoot
+    try {
+      // (a) load before save → null. The handler must swallow ENOENT,
+      //     not propagate — renderer treats null as "first run".
+      const loadEmpty = await dispatch({ jsonrpc: '2.0', id: 1100, method: 'settings.load', params: {} })
+      assert.equal(loadEmpty.result, null, 'settings.load missing file → null')
+
+      // (b) save round-trip. Tauri shape `{data}` is the canonical wire
+      //     form; the on-disk content must match byte-for-byte.
+      const payload = JSON.stringify({ theme: 'dark', cxBinaryPath: '', n: 42 })
+      const saveReply = await dispatch({ jsonrpc: '2.0', id: 1101, method: 'settings.save',
+        params: { data: payload } })
+      assert.equal(saveReply.result, true, 'settings.save → true')
+      const onDisk = readFileSync(join(settingsRoot, 'settings.json'), 'utf-8')
+      assert.equal(onDisk, payload, 'settings.json on disk must match the input bytes')
+      const loadReply = await dispatch({ jsonrpc: '2.0', id: 1102, method: 'settings.load', params: {} })
+      assert.equal(loadReply.result, payload, 'settings.load round-trips the saved string')
+
+      // (c) bare-string param fallback (Electron-style positional). The
+      //     bridge unwraps args[0] to a string; handler must accept.
+      const saveBare = await dispatch({ jsonrpc: '2.0', id: 1103, method: 'settings.save',
+        params: '{"alt":1}' })
+      assert.equal(saveBare.result, true)
+      assert.equal(readFileSync(join(settingsRoot, 'settings.json'), 'utf-8'), '{"alt":1}')
+
+      // (d) save with missing data → JSON-RPC error. Param validation
+      //     fires before the file write so a botched call doesn't
+      //     truncate settings.json to empty.
+      const saveBad = await dispatch({ jsonrpc: '2.0', id: 1104, method: 'settings.save', params: {} })
+      assert.ok(saveBad.error, 'settings.save with no data must error')
+      assert.match(saveBad.error.message, /missing data/)
+      // settings.json still has the previous content.
+      assert.equal(readFileSync(join(settingsRoot, 'settings.json'), 'utf-8'), '{"alt":1}',
+        'failed save must not truncate the existing settings file')
+
+      // (e) settings.getShellPath — logical name → platform-correct path.
+      //     The contract: 'auto' returns a non-empty string on every
+      //     platform, and the result is cached so two back-to-back calls
+      //     return strict-equal strings.
+      settingsMod.__resetShellPathCacheForTests()
+      const shellAuto1 = await dispatch({ jsonrpc: '2.0', id: 1110, method: 'settings.getShellPath',
+        params: { shellType: 'auto' } })
+      assert.equal(typeof shellAuto1.result, 'string')
+      assert.ok(shellAuto1.result.length > 0, 'auto shell must be non-empty')
+      const shellAuto2 = await dispatch({ jsonrpc: '2.0', id: 1111, method: 'settings.getShellPath',
+        params: { shellType: 'auto' } })
+      assert.equal(shellAuto2.result, shellAuto1.result, 'cache must return identical string')
+
+      // Platform-specific defaults:
+      if (process.platform === 'win32') {
+        // pwsh fallback: when no PowerShell 7 is installed, the handler
+        // returns the literal 'pwsh.exe' (not absolute) so the OS shell
+        // resolver kicks in. Either an absolute pwsh.exe path or the
+        // bare 'pwsh.exe' is acceptable.
+        const pwsh = await dispatch({ jsonrpc: '2.0', id: 1112, method: 'settings.getShellPath',
+          params: { shellType: 'pwsh' } })
+        assert.match(pwsh.result, /pwsh\.exe$/i)
+        const cmd = await dispatch({ jsonrpc: '2.0', id: 1113, method: 'settings.getShellPath',
+          params: { shellType: 'cmd' } })
+        assert.equal(cmd.result, 'cmd.exe')
+      } else {
+        // POSIX: zsh always at /bin/zsh, sh at /bin/sh — both are
+        // guaranteed by macOS / mainstream linux distros.
+        const zsh = await dispatch({ jsonrpc: '2.0', id: 1112, method: 'settings.getShellPath',
+          params: { shellType: 'zsh' } })
+        assert.equal(zsh.result, '/bin/zsh')
+        const sh = await dispatch({ jsonrpc: '2.0', id: 1113, method: 'settings.getShellPath',
+          params: { shellType: 'sh' } })
+        assert.equal(sh.result, '/bin/sh')
+        // POSIX hosts can't run pwsh — fall back to auto shell, not throw.
+        const pwsh = await dispatch({ jsonrpc: '2.0', id: 1114, method: 'settings.getShellPath',
+          params: { shellType: 'pwsh' } })
+        assert.equal(typeof pwsh.result, 'string')
+        assert.ok(pwsh.result.length > 0, 'pwsh on POSIX must fall back, not throw')
+      }
+
+      // Bare-string param too.
+      settingsMod.__resetShellPathCacheForTests()
+      const shellBare = await dispatch({ jsonrpc: '2.0', id: 1120, method: 'settings.getShellPath',
+        params: 'auto' })
+      assert.equal(typeof shellBare.result, 'string')
+      assert.ok(shellBare.result.length > 0)
+
+      // Missing shellType → error, not silent default.
+      const shellBad = await dispatch({ jsonrpc: '2.0', id: 1121, method: 'settings.getShellPath',
+        params: {} })
+      assert.ok(shellBad.error, 'missing shellType must error')
+      assert.match(shellBad.error.message, /missing shellType/)
+
+      // (f) settings.detectCx — must return a typed result no matter
+      //     what (cx installed or not). Both `cacheDir` and `enabled`
+      //     are always present; the rest depends on the host. With our
+      //     freshly-pinned BAT_SIDECAR_DATA_DIR / no settings written,
+      //     `enabled` defaults to false and cacheDir lives under our
+      //     temp dir.
+      writeFileSync(join(settingsRoot, 'settings.json'),
+        JSON.stringify({ cxSemanticNavigationEnabled: false }), 'utf-8')
+      const cxReply = await dispatch({ jsonrpc: '2.0', id: 1130, method: 'settings.detectCx',
+        params: {} })
+      assert.equal(typeof cxReply.result, 'object')
+      assert.equal(cxReply.result.enabled, false)
+      assert.equal(typeof cxReply.result.detected, 'boolean')
+      assert.equal(typeof cxReply.result.cacheDir, 'string')
+      assert.match(cxReply.result.cacheDir, /cx-cache/)
+      // Pinned dataDir → cacheDir lives under our temp root, never
+      // under the user's real Application Support dir.
+      assert.ok(cxReply.result.cacheDir.startsWith(settingsRoot),
+        'cacheDir must be inside the pinned BAT_SIDECAR_DATA_DIR')
+      // When detected:false, `error` must be a string explaining why.
+      if (!cxReply.result.detected) {
+        assert.equal(typeof cxReply.result.error, 'string')
+      }
+
+      // Configured-path that obviously doesn't exist → detected:false
+      // with a path field still set (renderer shows what was tried).
+      writeFileSync(join(settingsRoot, 'settings.json'),
+        JSON.stringify({ cxSemanticNavigationEnabled: true, cxBinaryPath: '/no/such/binary/cx-fake' }),
+        'utf-8')
+      const cxBad = await dispatch({ jsonrpc: '2.0', id: 1131, method: 'settings.detectCx', params: {} })
+      assert.equal(cxBad.result.enabled, true, 'enabled flag must reflect settings file')
+      assert.equal(cxBad.result.detected, false)
+      assert.equal(cxBad.result.path, '/no/such/binary/cx-fake')
+      assert.equal(typeof cxBad.result.error, 'string')
+
+      // Corrupt settings.json → detect-cx must NOT crash; returns the
+      // same enabled:false default. The handler swallows JSON.parse.
+      writeFileSync(join(settingsRoot, 'settings.json'), '{not json', 'utf-8')
+      const cxCorrupt = await dispatch({ jsonrpc: '2.0', id: 1132, method: 'settings.detectCx', params: {} })
+      assert.equal(cxCorrupt.result.enabled, false,
+        'corrupt settings.json must degrade to enabled:false, not throw')
+
+      // (g) End-to-end via remote bridge — confirms kebab→camel routing
+      //     for `settings:get-shell-path` lands at `settings.getShellPath`.
+      settingsMod.__resetShellPathCacheForTests()
+      const remoteShell = await protocol.invokeRemoteHandler('settings:get-shell-path',
+        [{ shellType: 'auto' }])
+      assert.equal(typeof remoteShell, 'string')
+      assert.ok(remoteShell.length > 0)
+    } finally {
+      if (savedDataDirS === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
+      else process.env.BAT_SIDECAR_DATA_DIR = savedDataDirS
+      rmSync(settingsRoot, { recursive: true, force: true })
+    }
+  }
+
   // remote-secrets — port of electron/remote/secrets.ts. The sidecar
   // version always writes `{enc:false, data:<JSON>}` (no safeStorage in
   // pure-Node) but must (a) round-trip JSON / string, (b) read legacy
