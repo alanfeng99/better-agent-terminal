@@ -55,6 +55,7 @@
 - 2026-05-10：補 Claude session worktree cleanup parity。Tauri sidecar `claude.cleanupWorktree` 現在會在移除 active worktree 後把 session cwd 從 worktree path 還原到 original cwd，清掉 worktree options，並 emit `claude:status` 與 `claude:worktree-info=null`；Workspace 關閉 worktree 後不再留下錯誤 cwd。
 - 2026-05-10：降低 Tauri worktree command UI 阻塞風險。`worktree.create/remove/status/merge/rehydrate` Rust commands 改成 async command，將 blocking sidecar bridge 放進 `spawn_blocking`，避免 git worktree 建立/移除或 sidecar cold start 佔住 Tauri command handler。
 - 2026-05-10：降低其他 Tauri sidecar bridge UI 阻塞風險。`openai.*`、`remote.*`、`tunnel.getConnection`、`agent.listPresets` Rust commands 改成 async command，將 blocking sidecar bridge 放進 `spawn_blocking`；設定頁、remote 狀態輪詢與 agent preset 查詢不再佔住 Tauri command handler。
+- 2026-05-10：降低 Tauri fs command UI 阻塞風險。`fs.resolvePathLinks/watch/unwatch` 的 sidecar bridge 與 `fs.search` 的同步目錄 walk 改進 `spawn_blocking`，避免 markdown path link resolve、FileTree watcher 或搜尋慢路徑佔住 Tauri command handler。
 
 ## 目前判斷
 

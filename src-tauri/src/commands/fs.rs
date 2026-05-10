@@ -513,8 +513,7 @@ fn search_walk(dir: &Path, lower_query: &str, depth: usize, results: &mut Vec<Fs
     }
 }
 
-#[tauri::command]
-pub async fn fs_search(dir_path: String, query: String) -> Vec<FsEntry> {
+fn fs_search_impl(dir_path: String, query: String) -> Vec<FsEntry> {
     let abs = match std::path::absolute(&dir_path) {
         Ok(p) => p,
         Err(_) => return vec![],
@@ -524,6 +523,13 @@ pub async fn fs_search(dir_path: String, query: String) -> Vec<FsEntry> {
     search_walk(&abs, &lower, 0, &mut results);
     results.sort_by(entry_sort_key);
     results
+}
+
+#[tauri::command]
+pub async fn fs_search(dir_path: String, query: String) -> Vec<FsEntry> {
+    tauri::async_runtime::spawn_blocking(move || fs_search_impl(dir_path, query))
+        .await
+        .unwrap_or_default()
 }
 
 fn call_sidecar_fs(
@@ -537,37 +543,52 @@ fn call_sidecar_fs(
     state.call_with_emit(&cfg, Some(sink), method, params, SIDECAR_TIMEOUT)
 }
 
+async fn call_sidecar_fs_blocking(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    method: &'static str,
+    params: Value,
+) -> Result<Value, BridgeError> {
+    let state = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || call_sidecar_fs(&app, &state, method, params))
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("{method} worker failed: {err}"),
+        })?
+}
+
 #[tauri::command]
-pub fn fs_resolve_path_links(
+pub async fn fs_resolve_path_links(
     app: AppHandle,
     state: State<'_, SidecarState>,
     cwd: String,
     raw_paths: Vec<String>,
 ) -> Result<Value, BridgeError> {
-    call_sidecar_fs(
-        &app,
-        &state,
+    call_sidecar_fs_blocking(
+        app,
+        state,
         "fs.resolvePathLinks",
         json!({ "cwd": cwd, "rawPaths": raw_paths }),
     )
+    .await
 }
 
 #[tauri::command]
-pub fn fs_watch(
+pub async fn fs_watch(
     app: AppHandle,
     state: State<'_, SidecarState>,
     dir_path: String,
 ) -> Result<Value, BridgeError> {
-    call_sidecar_fs(&app, &state, "fs.watch", json!({ "dirPath": dir_path }))
+    call_sidecar_fs_blocking(app, state, "fs.watch", json!({ "dirPath": dir_path })).await
 }
 
 #[tauri::command]
-pub fn fs_unwatch(
+pub async fn fs_unwatch(
     app: AppHandle,
     state: State<'_, SidecarState>,
     dir_path: String,
 ) -> Result<Value, BridgeError> {
-    call_sidecar_fs(&app, &state, "fs.unwatch", json!({ "dirPath": dir_path }))
+    call_sidecar_fs_blocking(app, state, "fs.unwatch", json!({ "dirPath": dir_path })).await
 }
 
 #[cfg(test)]
