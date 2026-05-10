@@ -159,6 +159,116 @@ pub fn settings_get_shell_path(shell_type: String) -> String {
     resolved
 }
 
+// settings:detect-cx — locate the optional `cx` semantic-navigation binary.
+//
+// Mirrors electron/semantic-navigation.ts:detectCx. Returns a structured
+// result regardless of whether cx is installed so the renderer can render
+// a settings row + status badge. The renderer's expected shape (string
+// fields are optional) is locked by the SettingsCxStatus interface in
+// src/types/index.ts; mirror it via #[serde(rename_all = "camelCase")].
+
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+struct CxSettings {
+    #[serde(default, rename = "cxSemanticNavigationEnabled")]
+    enabled: bool,
+    #[serde(default, rename = "cxBinaryPath")]
+    binary_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CxDetectionResult {
+    pub enabled: bool,
+    pub detected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub cache_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn read_cx_settings(app: &tauri::AppHandle) -> CxSettings {
+    let Ok(p) = settings_path(app) else { return CxSettings::default() };
+    let Ok(text) = fs::read_to_string(&p) else { return CxSettings::default() };
+    serde_json::from_str::<CxSettings>(&text).unwrap_or_default()
+}
+
+fn cx_resolve_from_path() -> Option<String> {
+    use std::process::Command;
+    let cmd = if cfg!(target_os = "windows") { "where.exe" } else { "which" };
+    let output = Command::new(cmd).arg("cx").output().ok()?;
+    if !output.status.success() { return None; }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines().map(|l| l.trim()).find(|l| !l.is_empty()).map(|s| s.to_string())
+}
+
+fn cx_resolve_configured(configured: Option<&str>) -> Option<String> {
+    let trimmed = configured.map(|s| s.trim()).unwrap_or("");
+    if trimmed.is_empty() { return cx_resolve_from_path(); }
+    let pb = PathBuf::from(trimmed);
+    if pb.is_absolute() { return Some(trimmed.to_string()); }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        // Relative path with separators — caller probably expects
+        // resolution relative to cwd. We don't know which cwd, so pass
+        // through as-is and let the OS shell resolve.
+        return Some(trimmed.to_string());
+    }
+    // Bare token like "cx" — pass through, OS will look it up on PATH
+    // when execFileSync runs it.
+    Some(trimmed.to_string())
+}
+
+fn cx_run_version(binary: &str) -> Result<String, String> {
+    use std::process::Command;
+    let output = Command::new(binary).arg("--version").output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!("cx --version exited {}", output.status));
+    }
+    let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if trimmed.is_empty() { "cx".to_string() } else { trimmed })
+}
+
+#[tauri::command]
+pub fn settings_detect_cx(app: tauri::AppHandle) -> Result<CxDetectionResult, CommandError> {
+    let settings = read_cx_settings(&app);
+    let dir = app.path().app_data_dir()
+        .map_err(|e| SettingsError::AppDataDir(e.to_string()))?;
+    let cache_dir = dir.join("cx-cache").to_string_lossy().to_string();
+    let enabled = settings.enabled;
+
+    let Some(binary) = cx_resolve_configured(settings.binary_path.as_deref()) else {
+        return Ok(CxDetectionResult {
+            enabled,
+            detected: false,
+            path: None,
+            version: None,
+            cache_dir,
+            error: Some("cx not found in PATH".into()),
+        });
+    };
+    match cx_run_version(&binary) {
+        Ok(version) => Ok(CxDetectionResult {
+            enabled,
+            detected: true,
+            path: Some(binary),
+            version: Some(version),
+            cache_dir,
+            error: None,
+        }),
+        Err(msg) => Ok(CxDetectionResult {
+            enabled,
+            detected: false,
+            path: Some(binary),
+            version: None,
+            cache_dir,
+            error: Some(msg),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +334,50 @@ mod tests {
         let none = exists_set(&[]);
         assert_eq!(resolve_shell_path("cmd", "windows", &none), "cmd.exe");
         assert_eq!(resolve_shell_path("powershell", "windows", &none), "powershell.exe");
+    }
+
+    #[test]
+    fn cx_resolve_configured_pass_through_for_abs_and_relative() {
+        // Empty / whitespace falls back to PATH lookup (None when PATH miss).
+        // We can't reliably trigger the PATH branch here because CI hosts may
+        // genuinely have `cx` installed — but configured strings always
+        // pass through.
+        let abs = if cfg!(target_os = "windows") { "C:\\bin\\cx.exe" } else { "/usr/bin/cx" };
+        assert_eq!(cx_resolve_configured(Some(abs)), Some(abs.into()));
+        // Relative with separator → returned as-is for the OS to resolve.
+        assert_eq!(cx_resolve_configured(Some("./tools/cx")), Some("./tools/cx".into()));
+        // Bare token → returned as-is; OS PATH lookup happens at exec time.
+        assert_eq!(cx_resolve_configured(Some("cx")), Some("cx".into()));
+        // Whitespace gets trimmed; a non-empty trimmed path is honored.
+        assert_eq!(cx_resolve_configured(Some("  /opt/cx  ")), Some("/opt/cx".into()));
+    }
+
+    #[test]
+    fn cx_settings_parses_minimal_and_full_shape() {
+        // The settings file shape Electron uses; deserialization must be
+        // lenient — missing keys default to off.
+        let empty: CxSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.enabled, false);
+        assert!(empty.binary_path.is_none());
+
+        let full: CxSettings = serde_json::from_str(
+            r#"{"cxSemanticNavigationEnabled":true,"cxBinaryPath":"/opt/cx"}"#,
+        ).unwrap();
+        assert_eq!(full.enabled, true);
+        assert_eq!(full.binary_path.as_deref(), Some("/opt/cx"));
+
+        // Other settings keys must not break parsing.
+        let mixed: CxSettings = serde_json::from_str(
+            r#"{"theme":"dark","cxSemanticNavigationEnabled":false,"unrelated":42}"#,
+        ).unwrap();
+        assert_eq!(mixed.enabled, false);
+    }
+
+    #[test]
+    fn cx_run_version_failure_returns_err() {
+        // A binary that definitely doesn't exist must not panic and must
+        // surface an error string the handler maps to result.error.
+        let r = cx_run_version("/no/such/path/cx-fake");
+        assert!(r.is_err(), "expected Err for missing binary");
     }
 }

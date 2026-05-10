@@ -33,6 +33,7 @@ pub fn run() {
             settings::settings_load,
             settings::settings_save,
             settings::settings_get_shell_path,
+            settings::settings_detect_cx,
             shell_cmd::shell_open_external,
             shell_cmd::shell_open_path,
             dialog_cmd::dialog_confirm,

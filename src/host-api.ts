@@ -166,7 +166,14 @@ function createTauriHost(): BatAppAPI {
       // Not yet ported — defer to Electron-shaped errors so callers see a
       // consistent failure mode.
       clearTerminalHistory: () => notImplemented('settings.clearTerminalHistory'),
-      detectCx: () => notImplemented('settings.detectCx'),
+      detectCx: () => getInvoke()<{
+        enabled: boolean
+        detected: boolean
+        path?: string
+        version?: string
+        cacheDir: string
+        error?: string
+      }>('settings_detect_cx'),
     },
     shell: {
       openExternal: (url: string) => getInvoke()<void>('shell_open_external', { url }),
