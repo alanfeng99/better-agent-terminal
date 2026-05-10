@@ -529,11 +529,20 @@ fn read_session_meta_id(path: &Path) -> Option<String> {
 }
 
 fn find_codex_session_log(root: &Path, thread_id: &str) -> Option<PathBuf> {
+    let mut path_match = None;
+    find_codex_session_log_exact(root, thread_id, &mut path_match).or(path_match)
+}
+
+fn find_codex_session_log_exact(
+    root: &Path,
+    thread_id: &str,
+    path_match: &mut Option<PathBuf>,
+) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if let Some(found) = find_codex_session_log(&path, thread_id) {
+            if let Some(found) = find_codex_session_log_exact(&path, thread_id, path_match) {
                 return Some(found);
             }
             continue;
@@ -541,11 +550,13 @@ fn find_codex_session_log(root: &Path, thread_id: &str) -> Option<PathBuf> {
         if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
             continue;
         }
-        let path_text = path.to_string_lossy();
-        if path_text.contains(thread_id)
-            || read_session_meta_id(&path).as_deref() == Some(thread_id)
-        {
+        let meta_id = read_session_meta_id(&path);
+        if meta_id.as_deref() == Some(thread_id) {
             return Some(path);
+        }
+        let path_text = path.to_string_lossy();
+        if meta_id.is_none() && path_text.contains(thread_id) && path_match.is_none() {
+            *path_match = Some(path);
         }
     }
     None
@@ -1857,6 +1868,7 @@ fn handle_turn_completed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn app_server_sandbox_uses_protocol_values() {
@@ -1931,5 +1943,35 @@ mod tests {
         assert_eq!(items[0]["content"], "ping");
         assert_eq!(items[1]["role"], "assistant");
         assert_eq!(items[1]["content"], "pong");
+    }
+
+    #[test]
+    fn codex_session_log_prefers_session_meta_over_path_match() {
+        let root = env::temp_dir().join(format!(
+            "bat-codex-log-test-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("create temp codex session dir");
+
+        let path_only_match = root.join("thread-1-stale.jsonl");
+        fs::write(
+            &path_only_match,
+            r#"{"type":"session_meta","payload":{"id":"different-thread"}}"#,
+        )
+        .expect("write path-only match");
+
+        let exact_match = nested.join("session.jsonl");
+        fs::write(
+            &exact_match,
+            r#"{"type":"session_meta","payload":{"id":"thread-1"}}"#,
+        )
+        .expect("write exact match");
+
+        let found = find_codex_session_log(&root, "thread-1").expect("find session log");
+        assert_eq!(found, exact_match);
+
+        fs::remove_dir_all(root).ok();
     }
 }
