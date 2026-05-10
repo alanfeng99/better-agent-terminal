@@ -32,7 +32,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../node-sidecar/src/": "node-sidecar/src/",
+      "../node-sidecar/dist/server.mjs": "node-sidecar/dist/server.mjs",
       "../node-sidecar/package.json": "node-sidecar/package.json",
       "../node-sidecar/node_modules/": "node-sidecar/node_modules/",
       "../node-sidecar/runtime/": "node-runtime/"

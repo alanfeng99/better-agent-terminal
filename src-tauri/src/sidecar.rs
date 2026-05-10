@@ -1,6 +1,6 @@
 // JSON-RPC bridge to the Node sidecar.
 //
-// Spawns `node node-sidecar/src/server.mjs` lazily on first call, sends
+// Spawns `node node-sidecar/dist/server.mjs` lazily on first call, sends
 // requests as line-delimited JSON over stdin, reads replies as
 // line-delimited JSON over stdout, and correlates by id. Server-pushed
 // events (id-less messages with method "event:foo") fan out to subscribers.
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -454,8 +454,10 @@ struct SidecarReplyError {
 // The Node binary is resolved from PATH (via the `node` symbol). The script
 // path falls back through:
 //   1) BAT_SIDECAR_SCRIPT environment variable (used in dev / tests).
-//   2) <resource_dir>/node-sidecar/src/server.mjs (production-bundled).
-//   3) <cwd>/node-sidecar/src/server.mjs (development fallback).
+//   2) <resource_dir>/node-sidecar/dist/server.mjs (production-bundled).
+//   3) <resource_dir>/node-sidecar/src/server.mjs (legacy bundled fallback).
+//   4) <cwd>/node-sidecar/src/server.mjs (development fallback).
+//   5) <cwd>/node-sidecar/dist/server.mjs (prepared-build fallback).
 // We keep this resolver outside SidecarState so the state struct stays
 // trivially constructible in tests.
 
@@ -495,11 +497,7 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let candidate = resource_dir
-            .join("node-sidecar")
-            .join("src")
-            .join("server.mjs");
-        if candidate.is_file() {
+        if let Some(candidate) = find_sidecar_script(&resource_dir, true) {
             return Ok(SpawnConfig {
                 node_path,
                 script_path: candidate,
@@ -510,8 +508,7 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let dev = cwd.join("node-sidecar").join("src").join("server.mjs");
-    if dev.is_file() {
+    if let Some(dev) = find_sidecar_script(&cwd, false) {
         return Ok(SpawnConfig {
             node_path,
             script_path: dev,
@@ -521,8 +518,22 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     }
 
     Err(BridgeError {
-        message: "sidecar: could not locate node-sidecar/src/server.mjs".into(),
+        message: "sidecar: could not locate node-sidecar dist/server.mjs or src/server.mjs".into(),
     })
+}
+
+fn find_sidecar_script(base_dir: &Path, prefer_dist: bool) -> Option<PathBuf> {
+    let dist = base_dir
+        .join("node-sidecar")
+        .join("dist")
+        .join("server.mjs");
+    let src = base_dir.join("node-sidecar").join("src").join("server.mjs");
+    let candidates = if prefer_dist {
+        [dist, src]
+    } else {
+        [src, dist]
+    };
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 // Look for a bundled Node runtime under <resource_dir>/node-runtime.
@@ -619,22 +630,33 @@ mod tests {
         which_node()
     }
 
-    // Sidecar got split in slice #40 from a single server.mjs into a tree
-    // with sibling lib/ and handlers/ subdirs. tauri.conf.json had been
-    // listing a single file under bundle.resources, which silently kept
-    // working in dev/release until #40 — when the new ESM imports
-    // (./lib/protocol.mjs etc.) couldn't resolve under target/debug/
-    // because Tauri only copied server.mjs there, not its siblings. The
-    // user-visible symptom: a flood of `[object Object]` unhandled
-    // promise rejections from every Tauri invoke, with the underlying
-    // sidecar stderr tail showing `ERR_MODULE_NOT_FOUND` for protocol.mjs.
-    //
-    // Pin the contract: bundle.resources must include the entire src/
-    // directory (and either of {lib,handlers} subdirs), never just
-    // server.mjs alone. If anyone reverts to a single-file entry, this
-    // turns red immediately and points at the right config line.
     #[test]
-    fn tauri_conf_bundles_full_sidecar_src_tree() {
+    fn find_sidecar_script_prefers_dist_for_resources() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bat-sidecar-script-{}-{}",
+            std::process::id(),
+            "dist"
+        ));
+        let root = tmp.join("node-sidecar");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        let src = root.join("src").join("server.mjs");
+        let dist = root.join("dist").join("server.mjs");
+        std::fs::write(&src, "").unwrap();
+        std::fs::write(&dist, "").unwrap();
+
+        assert_eq!(find_sidecar_script(&tmp, true), Some(dist));
+        assert_eq!(find_sidecar_script(&tmp, false), Some(src));
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    // Sidecar got split in slice #40 from a single server.mjs into a tree
+    // with sibling lib/ and handlers/ subdirs. A raw src/server.mjs resource
+    // is not enough; release builds must either ship the full src tree or the
+    // M2 bundled dist/server.mjs artifact.
+    #[test]
+    fn tauri_conf_bundles_sidecar_entry() {
         let conf_path = repo_root().join("src-tauri").join("tauri.conf.json");
         let raw = std::fs::read_to_string(&conf_path).expect("tauri.conf.json must be readable");
         let parsed: serde_json::Value =
@@ -644,17 +666,18 @@ mod tests {
             .and_then(|v| v.as_object())
             .expect("bundle.resources must be an object");
         let keys: Vec<&str> = resources.keys().map(|s| s.as_str()).collect();
-        assert!(
-            keys.iter().any(|k| *k == "../node-sidecar/src/"
+        let bundles_dist = keys.iter().any(|k| *k == "../node-sidecar/dist/server.mjs");
+        let bundles_full_src_tree = keys.iter().any(|k| {
+            *k == "../node-sidecar/src/"
                 || k.contains("node-sidecar/src/lib")
                 || k.contains("node-sidecar/src/handlers")
-                || *k == "../node-sidecar/src/**"),
-            "bundle.resources must ship the full node-sidecar/src/ tree (lib/ + handlers/), \
-             got keys: {keys:?}. Single-file `node-sidecar/src/server.mjs` regressed \
-             post-#40 split — see comment above.",
+                || *k == "../node-sidecar/src/**"
+        });
+        assert!(
+            bundles_dist || bundles_full_src_tree,
+            "bundle.resources must ship either bundled node-sidecar/dist/server.mjs or the full \
+             node-sidecar/src/ tree (lib/ + handlers/); got keys: {keys:?}",
         );
-        // Belt-and-braces: the single-file form must NOT be present, since
-        // it leaves siblings unbundled and reintroduces the bug.
         assert!(
             !keys.iter().any(|k| *k == "../node-sidecar/src/server.mjs"),
             "bundle.resources should not list server.mjs as a single file — it leaves \

@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises'
 import { accessSync, constants as fsConstants } from 'node:fs'
 import { platform } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -27,6 +27,18 @@ export const AUTH_LOGIN_TIMEOUT_MS = 180_000
 // (typically a printf-and-exit shim) so tests can verify the spawn path
 // without invoking the real CLI's network flow.
 let _claudeCliPathCache
+function candidateSidecarRoots(fromFile) {
+  const roots = []
+  let dir = dirname(fromFile)
+  for (let i = 0; i < 5; i += 1) {
+    roots.push(dir)
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return roots
+}
+
 export function resolveClaudeCliBinary() {
   if (process.env.BAT_SIDECAR_CLAUDE_BIN) return process.env.BAT_SIDECAR_CLAUDE_BIN
   if (_claudeCliPathCache !== undefined) return _claudeCliPathCache
@@ -52,16 +64,15 @@ export function resolveClaudeCliBinary() {
     here = null
   }
   if (here) {
-    // here = node-sidecar/src/handlers/claude-auth.mjs
-    // sidecarRoot = node-sidecar/
-    const sidecarRoot = join(here, '..', '..', '..')
-    for (const triple of tripleDirs) {
-      const candidate = join(sidecarRoot, 'node_modules', '@anthropic-ai', triple, exeName)
-      try {
-        accessSync(candidate, fsConstants.X_OK)
-        _claudeCliPathCache = candidate
-        return candidate
-      } catch { /* not present, try next */ }
+    for (const sidecarRoot of candidateSidecarRoots(here)) {
+      for (const triple of tripleDirs) {
+        const candidate = join(sidecarRoot, 'node_modules', '@anthropic-ai', triple, exeName)
+        try {
+          accessSync(candidate, fsConstants.X_OK)
+          _claudeCliPathCache = candidate
+          return candidate
+        } catch { /* not present, try next */ }
+      }
     }
   }
   _claudeCliPathCache = null
