@@ -99,6 +99,7 @@
 - 2026-05-11：補 regression test scripts。新增 `pnpm run test:codex-panel` 與 `pnpm run test:openai-cleanup`，讓 Codex resume UI guard 與 OpenAI Direct cleanup guard 可被後續 milestone/CI 明確呼叫。
 - 2026-05-11：補 Rust Codex resume history emit。Rust app-server `resume_session` 現在會從 `~/.codex/sessions/**/*.jsonl` 找 thread 對應 transcript，解析 user/assistant `event_msg` 並 emit `claude:history`，同時更新 Rust session message buffer；這補上先前只 resume thread 但 UI 沒歷史內容的缺口。
 - 2026-05-11：補 Codex regression aggregate script。新增 `pnpm run test:codex-auto-continue` 與 `pnpm run test:codex`，一次覆蓋 stale resume fallback、Codex `/resume` UI gate/參數保留、timeout auto-continue guard，避免 Codex porting 後續只跑到部分 regression。
+- 2026-05-11：收斂 agent panel renderer logging。Claude/Codex panel 的 IPC subscription debug logs 改走 `host.debug.log`，Codex tag 也從 `[Claude:*]` 修成 `[Codex:*]`；新增 `pnpm run test:renderer-logging` 防止 renderer `console.log` 回流。
 
 ## 目前判斷
 

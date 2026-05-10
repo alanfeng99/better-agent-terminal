@@ -610,16 +610,16 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   // Subscribe to IPC events
   useEffect(() => {
     const api = host.claude
-    const tag = `[Claude:${sessionId.slice(0, 8)}]`
+    const tag = `[Codex:${sessionId.slice(0, 8)}]`
     host.debug.log(`${tag} subscribing to IPC events`)
 
     const unsubs = [
       api.onMessage((sid: string, msg: unknown) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        console.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
+        host.debug.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
         workspaceStore.updateTerminalActivity(sessionId)
         const message = msg as ClaudeMessage
         // On restart, sys-init message arrives again — reset messages
@@ -992,7 +992,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
       api.onHistory((sid: string, items: unknown[]) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
           return
         }
         const dlog2 = (...args: unknown[]) => host.debug.log(...args)
@@ -1088,7 +1088,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     ]
 
     return () => {
-      console.log(`${tag} unsubscribing IPC events`)
+      host.debug.log(`${tag} unsubscribing IPC events`)
       unsubs.forEach(unsub => unsub())
     }
   }, [sessionId, isCodexSession])
@@ -1096,7 +1096,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   // Start session on mount (guarded against StrictMode double-mount)
   // If a saved sdkSessionId exists (from a previous /resume), auto-resume that session
   useEffect(() => {
-    const stag = `[Claude:${sessionId.slice(0, 8)}]`
+    const stag = `[Codex:${sessionId.slice(0, 8)}]`
     const dlog = (...args: unknown[]) => host.debug.log(...args)
     let cancelled = false
     dlog(`${stag} mount effect: startedRef=${sessionStartedRef.current} inSet=${startedSessions.has(sessionId)}`)

@@ -657,10 +657,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const unsubs = [
       api.onMessage((sid: string, msg: unknown) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        console.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
+        host.debug.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
         workspaceStore.updateTerminalActivity(sessionId)
         const message = msg as ClaudeMessage
         // On restart, sys-init message arrives again — reset messages
@@ -997,7 +997,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       api.onHistory((sid: string, items: unknown[]) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
           return
         }
         const dlog2 = (...args: unknown[]) => host.debug.log(...args)
@@ -1091,7 +1091,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     ]
 
     return () => {
-      console.log(`${tag} unsubscribing IPC events`)
+      host.debug.log(`${tag} unsubscribing IPC events`)
       unsubs.forEach(unsub => unsub())
     }
   }, [sessionId])
