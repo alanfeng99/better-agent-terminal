@@ -11,6 +11,7 @@
 - 2026-05-10：port `image.saveDataUrl` 到 Tauri Rust。行為對齊 Electron：只接受 `data:image/*;base64,...`、依 MIME 決定預設副檔名、清理非法檔名字元、使用 native save dialog，取消回 `null`、成功寫入 bytes 並回檔案路徑。Codex/OpenAI/Claude 圖片附件另存流程不再打到 Tauri `notImplemented`。
 - 2026-05-10：port `clipboard.saveImage/writeImage` 到 Tauri Rust。`saveImage` 從 OS clipboard 讀圖並寫入 temp `bat-clipboard-*.png`，無圖片時回 `null`；`writeImage` 從檔案載入圖片並寫回 OS clipboard，失敗回 `false`。Terminal/PromptBox/AgentPanel 的本機圖片貼上路徑不再打到 Tauri `notImplemented`。
 - 2026-05-10：port `pty.restart/getCwd` 到 Tauri Rust。行為對齊 Electron 的 instance metadata：`getCwd` 回建立/重啟時記錄的 cwd，session 不存在回 `null`；`restart` 會沿用既有 terminal type、kill 舊 session，再用指定 cwd/shell 建新 session，不存在回 `false`。WorkspaceView restart terminal 與 WorkerPanel cwd probe 不再打到 Tauri `notImplemented`。
+- 2026-05-10：Agent panels critical direct-call 收斂第一步。Claude/Codex/OpenAI 三個 panel 的 `stopTask`、`setCodexSandboxMode`、`setCodexApprovalPolicy` 已改走 `host.claude.*`，讓前面補好的 Tauri route 不再被 `window.batAppAPI` shim 旁路；其餘 direct calls 仍列在 M0/M3 持續收斂。
 
 ## 目前判斷
 

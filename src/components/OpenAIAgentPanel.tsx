@@ -2117,14 +2117,14 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const next = e.target.value as 'read-only' | 'workspace-write' | 'danger-full-access'
     setCodexSandboxMode(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { sandboxMode: next })
-    await window.batAppAPI.claude.setCodexSandboxMode(sessionId, next)
+    await host.claude.setCodexSandboxMode(sessionId, next)
   }, [sessionId])
 
   const handleCodexApprovalPolicyChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = e.target.value as 'untrusted' | 'on-request' | 'never'
     setCodexApprovalPolicy(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { approvalPolicy: next })
-    await window.batAppAPI.claude.setCodexApprovalPolicy(sessionId, next)
+    await host.claude.setCodexApprovalPolicy(sessionId, next)
   }, [sessionId])
 
   const showDontAskAgain = (pendingPermission?.suggestions?.length ?? 0) > 0
@@ -2841,7 +2841,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 <div className="claude-task-actions">
                   <button className="claude-task-stop-btn" onClick={(e) => {
                     e.stopPropagation()
-                    window.batAppAPI.claude.stopTask(sessionId, item.id)
+                    host.claude.stopTask(sessionId, item.id)
                   }}>{t('claude.stop')}</button>
                 </div>
               )}
@@ -3391,7 +3391,7 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 {Boolean(task.input.run_in_background) && <span className="claude-task-tag">{t('claude.bg')}</span>}
                 <button className="claude-task-stop-btn" onClick={(e) => {
                   e.stopPropagation()
-                  window.batAppAPI.claude.stopTask(sessionId, task.id)
+                  host.claude.stopTask(sessionId, task.id)
                 }}>Stop</button>
               </div>
             )
