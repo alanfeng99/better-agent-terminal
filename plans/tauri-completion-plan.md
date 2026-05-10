@@ -73,6 +73,7 @@
 - 2026-05-10：開始 Rust runtime pub-sub 中樞。Node sidecar 推來的 renderer event 現在先進 `RuntimeEventHub` 再 emit 給 renderer，`claude:*` event name/payload 保持不變；後續 Rust Codex app-server runtime 與 remote bridge 可作為 publisher 接入同一個 hub，fallback 仍藏在 renderer contract 之下。
 - 2026-05-10：開始 Rust Codex app-server controller MVP。`agentPreset=codex-agent` 的 Tauri `start/resume/send/abort/stop` 會優先嘗試由 Rust 管理 persistent `codex app-server` JSON-RPC subprocess，將 `thread/*`、`turn/*`、`item/*` notifications 轉回既有 `claude:*` event contract；啟動或 request 失敗會退回 Node sidecar Codex SDK 路徑，UI 呼叫點不變。`codex-agent-worktree` 暫時留在 sidecar，避免 worktree parity 退化。
 - 2026-05-10：補 Rust Codex app-server status metadata 與 UI statusline。Rust runtime 會回報 model、effort、sandbox、approval、turn count、token usage、首 token/turn duration 等 metadata；Claude/Codex/OpenAI panels 的內建 statusline 新增對應 renderer，並讓 Codex 在缺少 context window 時仍可用 input/output token fallback 顯示基本用量。
+- 2026-05-10：修正舊 Codex session 永久落回 sidecar 的 routing。`agentPreset=codex-agent` 在 Rust app-server `thread/resume` 失敗時，會先打 `sidecar:metric` 記錄 stale `sdkSessionId` 與錯誤，再用 Rust app-server fresh start 新 thread；只有 fresh start 也失敗才 fallback Node sidecar，避免舊 rollout id 讓後續每輪 send 都停在 sidecar path。
 
 ## 目前判斷
 

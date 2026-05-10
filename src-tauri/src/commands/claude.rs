@@ -16,9 +16,10 @@
 // up as { message } strings to the renderer.
 
 use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
+use crate::event_hub::publish_runtime_event;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, State};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -75,6 +76,28 @@ async fn call_with_timeout_blocking(
     })?
 }
 
+fn emit_codex_route_metric(
+    app: &AppHandle,
+    phase: &str,
+    method: &str,
+    session_id: &str,
+    elapsed: Duration,
+    ok: bool,
+    detail: Option<String>,
+) {
+    let mut payload = json!({
+        "phase": phase,
+        "method": method,
+        "sessionId": session_id,
+        "elapsedMs": elapsed.as_millis() as u64,
+        "ok": ok,
+    });
+    if let Some(detail) = detail {
+        payload["detail"] = Value::String(detail);
+    }
+    publish_runtime_event(app, "sidecar:metric", payload, "codex-route");
+}
+
 #[tauri::command]
 pub fn claude_ping(
     app: AppHandle,
@@ -113,6 +136,7 @@ pub async fn claude_start_session(
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
         let codex_options = options.clone();
+        let started = Instant::now();
         let result = tauri::async_runtime::spawn_blocking(move || {
             codex.start_session(&codex_app, codex_session_id, codex_options)
         })
@@ -120,8 +144,30 @@ pub async fn claude_start_session(
         .map_err(|err| BridgeError {
             message: format!("codex app-server start worker failed: {err}"),
         })?;
-        if let Ok(value) = result {
-            return Ok(value);
+        match result {
+            Ok(value) => {
+                emit_codex_route_metric(
+                    &app,
+                    "codexRuntime",
+                    "codex.startSession",
+                    &session_id,
+                    started.elapsed(),
+                    true,
+                    None,
+                );
+                return Ok(value);
+            }
+            Err(err) => {
+                emit_codex_route_metric(
+                    &app,
+                    "codexRuntime",
+                    "codex.startSession",
+                    &session_id,
+                    started.elapsed(),
+                    false,
+                    Some(format!("falling back to sidecar: {}", err.message)),
+                );
+            }
         }
         let _ = (*codex_state).stop_session(session_id.clone());
     }
@@ -838,12 +884,14 @@ pub async fn claude_resume_session(
     sdk_session_id: String,
     options: Option<Value>,
 ) -> Result<Value, BridgeError> {
-    if should_handle_codex(&options) || codex_state.is_owned(&session_id) {
+    let should_use_codex = should_handle_codex(&options);
+    if should_use_codex || codex_state.is_owned(&session_id) {
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
         let codex_sdk_session_id = sdk_session_id.clone();
         let codex_options = options.clone();
+        let resume_started = Instant::now();
         let result = tauri::async_runtime::spawn_blocking(move || {
             codex.resume_session(
                 &codex_app,
@@ -856,10 +904,89 @@ pub async fn claude_resume_session(
         .map_err(|err| BridgeError {
             message: format!("codex app-server resume worker failed: {err}"),
         })?;
-        if let Ok(value) = result {
-            return Ok(value);
+        match result {
+            Ok(value) => {
+                emit_codex_route_metric(
+                    &app,
+                    "codexRuntime",
+                    "codex.resumeSession",
+                    &session_id,
+                    resume_started.elapsed(),
+                    true,
+                    None,
+                );
+                return Ok(value);
+            }
+            Err(err) if should_use_codex => {
+                emit_codex_route_metric(
+                    &app,
+                    "codexRuntime",
+                    "codex.resumeSession",
+                    &session_id,
+                    resume_started.elapsed(),
+                    false,
+                    Some(format!(
+                        "resume failed for stale sdkSessionId {}; starting fresh: {}",
+                        sdk_session_id, err.message
+                    )),
+                );
+                let _ = (*codex_state).stop_session(session_id.clone());
+
+                let codex = (*codex_state).clone();
+                let codex_app = app.clone();
+                let codex_session_id = session_id.clone();
+                let codex_options = options.clone();
+                let fresh_started = Instant::now();
+                let fresh_result = tauri::async_runtime::spawn_blocking(move || {
+                    codex.start_session(&codex_app, codex_session_id, codex_options)
+                })
+                .await
+                .map_err(|err| BridgeError {
+                    message: format!("codex app-server fresh start worker failed: {err}"),
+                })?;
+                match fresh_result {
+                    Ok(value) => {
+                        emit_codex_route_metric(
+                            &app,
+                            "codexRuntime",
+                            "codex.freshStartAfterResumeFailure",
+                            &session_id,
+                            fresh_started.elapsed(),
+                            true,
+                            Some(format!("replaced stale sdkSessionId {}", sdk_session_id)),
+                        );
+                        return Ok(value);
+                    }
+                    Err(start_err) => {
+                        emit_codex_route_metric(
+                            &app,
+                            "codexRuntime",
+                            "codex.freshStartAfterResumeFailure",
+                            &session_id,
+                            fresh_started.elapsed(),
+                            false,
+                            Some(format!(
+                                "fresh start failed after stale sdkSessionId {}: {}",
+                                sdk_session_id, start_err.message
+                            )),
+                        );
+                        let _ = (*codex_state).stop_session(session_id.clone());
+                    }
+                }
+            }
+            Err(err) => {
+                emit_codex_route_metric(
+                    &app,
+                    "codexRuntime",
+                    "codex.resumeSession",
+                    &session_id,
+                    resume_started.elapsed(),
+                    false,
+                    Some(err.message),
+                );
+                let _ = (*codex_state).stop_session(session_id.clone());
+            }
         }
-        let _ = (*codex_state).stop_session(session_id.clone());
     }
     call_blocking(
         app,
