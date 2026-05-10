@@ -14,9 +14,6 @@
 // Windows). We keep one PtySession per id, hold the writer + master in a
 // shared map behind Arc<Mutex<…>>, and use background threads to pump
 // bytes into Tauri events and to wait on the child exit.
-//
-// Restart and getCwd are intentionally not ported in this MVP — they need
-// child-process tracking that's substantially more involved on Windows.
 
 use crate::commands::settings::resolve_shell_path;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -64,6 +61,8 @@ pub struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
+    cwd: String,
+    kind: String,
 }
 
 pub struct PtyState {
@@ -162,10 +161,9 @@ fn build_command(opts: &CreatePtyOptions) -> CommandBuilder {
     cmd
 }
 
-#[tauri::command]
-pub fn pty_create(
-    app: AppHandle,
-    state: State<'_, PtyState>,
+fn start_pty_session(
+    app: &AppHandle,
+    map_handle: Arc<Mutex<HashMap<String, PtySession>>>,
     options: CreatePtyOptions,
 ) -> Result<String, CommandError> {
     if !is_valid_pty_id(&options.id) {
@@ -174,7 +172,7 @@ pub fn pty_create(
         });
     }
     {
-        let map = state.inner.lock().map_err(|e| CommandError {
+        let map = map_handle.lock().map_err(|e| CommandError {
             message: e.to_string(),
         })?;
         if map.contains_key(&options.id) {
@@ -235,7 +233,7 @@ pub fn pty_create(
     // Insert the session before kicking off the exit watcher so the
     // watcher can find it.
     {
-        let mut map = state.inner.lock().map_err(|e| CommandError {
+        let mut map = map_handle.lock().map_err(|e| CommandError {
             message: e.to_string(),
         })?;
         map.insert(
@@ -244,6 +242,8 @@ pub fn pty_create(
                 writer,
                 master: pair.master,
                 child,
+                cwd: options.cwd.clone(),
+                kind: options.r#type.clone(),
             },
         );
     }
@@ -252,7 +252,6 @@ pub fn pty_create(
     // emit pty:exit with the exit code, and remove the session entry.
     let id_for_exit = options.id.clone();
     let app_for_exit = app.clone();
-    let map_handle = state.handle();
     std::thread::spawn(move || {
         loop {
             let status = {
@@ -289,6 +288,15 @@ pub fn pty_create(
     });
 
     Ok(options.id)
+}
+
+#[tauri::command]
+pub fn pty_create(
+    app: AppHandle,
+    state: State<'_, PtyState>,
+    options: CreatePtyOptions,
+) -> Result<String, CommandError> {
+    start_pty_session(&app, state.handle(), options)
 }
 
 #[tauri::command]
@@ -337,6 +345,51 @@ pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), CommandErr
         let _ = session.child.kill();
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn pty_restart(
+    app: AppHandle,
+    state: State<'_, PtyState>,
+    id: String,
+    cwd: String,
+    shell: Option<String>,
+) -> Result<bool, CommandError> {
+    let kind = {
+        let mut map = state.inner.lock().map_err(|e| CommandError {
+            message: e.to_string(),
+        })?;
+        let Some(mut session) = map.remove(&id) else {
+            return Ok(false);
+        };
+        let kind = session.kind.clone();
+        let _ = session.child.kill();
+        kind
+    };
+
+    start_pty_session(
+        &app,
+        state.handle(),
+        CreatePtyOptions {
+            id,
+            cwd,
+            r#type: kind,
+            shell,
+            agent_preset: None,
+            custom_env: None,
+            per_terminal_history: None,
+            history_key: None,
+        },
+    )?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn pty_get_cwd(state: State<'_, PtyState>, id: String) -> Result<Option<String>, CommandError> {
+    let map = state.inner.lock().map_err(|e| CommandError {
+        message: e.to_string(),
+    })?;
+    Ok(map.get(&id).map(|session| session.cwd.clone()))
 }
 
 #[cfg(test)]

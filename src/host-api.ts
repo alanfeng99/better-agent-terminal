@@ -817,10 +817,9 @@ function createTauriHost(): BatAppAPI {
       resize: (id: string, cols: number, rows: number) =>
         getInvoke()<void>('pty_resize', { id, cols, rows }),
       kill: (id: string) => getInvoke()<void>('pty_kill', { id }),
-      // restart / getCwd are not yet ported — they need child-process
-      // tracking that's substantially more involved on Windows ConPTY.
-      restart: () => notImplemented('pty.restart'),
-      getCwd: () => notImplemented('pty.getCwd'),
+      restart: (id: string, cwd: string, shell?: string) =>
+        getInvoke()<boolean>('pty_restart', { id, cwd, shell }),
+      getCwd: (id: string) => getInvoke()<string | null>('pty_get_cwd', { id }),
       onOutput: (callback: (id: string, data: string) => void) =>
         listenAdapter<PtyOutputPayload>('pty:output', p => callback(p.id, p.data)),
       onExit: (callback: (id: string, exitCode: number) => void) =>

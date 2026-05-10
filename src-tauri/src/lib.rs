@@ -60,6 +60,8 @@ pub fn run() {
             pty_cmd::pty_write,
             pty_cmd::pty_resize,
             pty_cmd::pty_kill,
+            pty_cmd::pty_restart,
+            pty_cmd::pty_get_cwd,
             workspace_cmd::workspace_load,
             workspace_cmd::workspace_save,
             update_cmd::update_get_version,

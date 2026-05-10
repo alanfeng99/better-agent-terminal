@@ -94,6 +94,8 @@ async function run() {
       if (cmd === 'pty_write') return undefined as unknown as T
       if (cmd === 'pty_resize') return undefined as unknown as T
       if (cmd === 'pty_kill') return undefined as unknown as T
+      if (cmd === 'pty_restart') return true as unknown as T
+      if (cmd === 'pty_get_cwd') return '/x' as unknown as T
       if (cmd === 'workspace_load') return null as unknown as T
       if (cmd === 'workspace_save') return true as unknown as T
       if (cmd === 'update_get_version') return '0.1.0' as unknown as T
@@ -299,6 +301,8 @@ async function run() {
     await mod.host.pty.write('term-1', 'echo hi\n')
     await mod.host.pty.resize('term-1', 120, 32)
     await mod.host.pty.kill('term-1')
+    assert.equal(await mod.host.pty.restart('term-1', '/x', '/bin/zsh'), true)
+    assert.equal(await mod.host.pty.getCwd('term-1'), '/x')
 
     const wsLoaded = await mod.host.workspace.load()
     assert.equal(wsLoaded, null)
@@ -569,6 +573,8 @@ async function run() {
       { cmd: 'pty_write', args: { id: 'term-1', data: 'echo hi\n' } },
       { cmd: 'pty_resize', args: { id: 'term-1', cols: 120, rows: 32 } },
       { cmd: 'pty_kill', args: { id: 'term-1' } },
+      { cmd: 'pty_restart', args: { id: 'term-1', cwd: '/x', shell: '/bin/zsh' } },
+      { cmd: 'pty_get_cwd', args: { id: 'term-1' } },
       { cmd: 'workspace_load', args: undefined },
       { cmd: 'workspace_save', args: { data: '{"workspaces":[]}' } },
       { cmd: 'update_get_version', args: undefined },
@@ -703,10 +709,10 @@ async function run() {
     // namespace that's still entirely unrouted (none right now — every
     // preload namespace is at least stub-routed). We retain the per-method
     // canaries below to cover that case explicitly.
-    // Within a ported namespace, individually unported entries (e.g.
-    // pty.restart) still throw the same way.
-    assert.throws(() => (mod.host as { pty: { restart: () => unknown } }).pty.restart(),
-      /pty\.restart is not yet implemented under Tauri/)
+    // Within a ported namespace, individually unported entries still throw
+    // the same way.
+    assert.throws(() => (mod.host as { workspace: { detach: () => unknown } }).workspace.detach(),
+      /workspace\.detach is not yet implemented under Tauri/)
     // claude.* unported methods used to throw, but the surface is too
     // large for that to be useful — unrecognized keys now return
     // Promise.resolve(null) with a one-time console.warn so panel
