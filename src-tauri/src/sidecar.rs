@@ -17,6 +17,7 @@
 // can add a richer supervisor (backoff, health probes) once we move actual
 // agent SDK calls into the sidecar.
 
+use crate::event_hub::publish_runtime_event;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -27,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 // Cap stderr tail buffer at this many lines. Enough to capture a typical
 // Node startup error trace (import failure, syntax error, etc.) while
@@ -278,7 +279,7 @@ pub type EventSink = Arc<dyn Fn(&str, &Value) + Send + Sync + 'static>;
 
 pub fn app_handle_emit_sink(app: AppHandle) -> EventSink {
     Arc::new(move |name: &str, params: &Value| {
-        let _ = app.emit(name, params.clone());
+        publish_runtime_event(&app, name, params.clone(), "node-sidecar");
     })
 }
 

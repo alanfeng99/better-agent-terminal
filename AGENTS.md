@@ -24,3 +24,12 @@ Follow the project guidance in `CLAUDE.md`. The most important operational notes
 - Do not replace the built-in status line implementation.
 - Renderer logs should use `window.electronAPI.debug.log(...)`; Electron/backend logs should use the project logger.
 - When modifying shared code such as stores, IPC handlers, or shared types, trace consumers before committing.
+
+## IPC Compatibility
+
+- Treat renderer-facing IPC as a compatibility contract. Existing `host.*`, `window.batAppAPI.*`, and event names/signatures should be additive-only unless a task explicitly includes a coordinated migration.
+- Do not rename or reshape existing agent events such as `claude:message`, `claude:stream`, `claude:status`, `claude:history`, `claude:resume-loading`, `claude:result`, or `claude:turn-end`; new runtimes must adapt to those event shapes.
+- Tauri/Rust runtime work should route behind the existing host API when possible. For example, a Rust Codex runtime may handle `claude_start_session` / `claude_send_message` internally for Codex sessions, but the renderer should keep calling the existing `host.claude.*` methods.
+- New IPC commands or events may be added for capabilities, diagnostics, metrics, or explicitly new UI features, but they must not be required to keep existing UI workflows functioning.
+- Keep runtime ownership per session explicit. A session should be owned by either Rust or the Node sidecar for its lifecycle; avoid mixing Rust and Node responses for the same running session except through deliberate fallback at session start.
+- Fallback should happen below the renderer contract. If Rust cannot handle a Codex capability yet, route or degrade inside Tauri/sidecar code without forcing renderer callsite changes.

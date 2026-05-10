@@ -70,6 +70,7 @@
 - 2026-05-10：開始把 Tauri Codex Agent 從 Claude SDK 路徑切出。sidecar 新增 `@openai/codex-sdk` backed Codex session manager，`agentPreset=codex-agent/codex-agent-worktree` 會透過既有 `claude:*` event contract 路由到 Codex SDK；Codex model 防呆避免沿用舊 Claude `claude-*` model，OpenAI Direct preset/API key 設定入口已停用。
 - 2026-05-10：修正 Tauri Codex stale resume。sidecar 會用 `~/.codex/sessions/*.jsonl` 的 `session_meta.payload.id` 作為真正 Codex thread id，resume 前若找不到對應 rollout 會清掉舊 `sdkSessionId` 並 fresh start；Codex panel 收到 `sdkSessionId=null` 會同步清除 persisted terminal session id，避免舊 OpenAI/Claude id 造成 `no rollout found` 循環失敗。
 - 2026-05-10：修正 Tauri Claude 首次開啟 resume history lookup。`claude.resumeSession/startSession` 仍優先讀 Electron 相容的 `<encoded cwd>/<sdkSessionId>.jsonl`，但 cwd/worktree/舊 terminal 狀態不一致時會 fallback 掃 `~/.claude/projects` 內同名 JSONL，避免首次開啟只拿到空 history；sidecar 測試新增 cwd mismatch resume 覆蓋。
+- 2026-05-10：開始 Rust runtime pub-sub 中樞。Node sidecar 推來的 renderer event 現在先進 `RuntimeEventHub` 再 emit 給 renderer，`claude:*` event name/payload 保持不變；後續 Rust Codex app-server runtime 與 remote bridge 可作為 publisher 接入同一個 hub，fallback 仍藏在 renderer contract 之下。
 
 ## 目前判斷
 

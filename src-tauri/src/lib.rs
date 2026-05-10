@@ -6,6 +6,7 @@
 // host-api adapter (src/host-api.ts). See plans/tauri-migration-plan.md.
 
 mod commands;
+mod event_hub;
 mod path_guard;
 mod sidecar;
 
@@ -27,6 +28,7 @@ pub fn run() {
         .manage(notification_cmd::NotificationState::default())
         .manage(snippet_cmd::SnippetState::default())
         .manage(worker_buffer_cmd::WorkerBufferState::default())
+        .manage(event_hub::RuntimeEventHubState::default())
         .manage(sidecar::SidecarState::new())
         .invoke_handler(tauri::generate_handler![
             settings::settings_load,
