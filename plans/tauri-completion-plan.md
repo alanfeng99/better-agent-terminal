@@ -91,6 +91,7 @@
 - 2026-05-11：補 Rust-owned Codex read/control no-op parity。`getContextUsage`、`forkSession`、`fetchSubagentMessages`、`rewindToPrompt`、`resolvePermission`、`resolveAskUser` 對 Rust-owned Codex session 直接回 Electron Codex 相容值，不再落回 sidecar Claude-only handlers。
 - 2026-05-11：補 Rust-owned Codex auto-continue / permission-mode no-op parity。`setAutoContinue`、`getAutoContinue`、`setPermissionMode` 對 Codex 直接回 Electron Codex 相容值，避免 Codex UI 控制寫進 sidecar Claude session state。
 - 2026-05-11：補 Codex session listing 的 Electron/Tauri host API parity。`host.claude.listSessions(cwd, 'codex')` 在 Electron preload 不再丟掉 `agentKind`，server handler 會路由到 `CodexAgentManager.listSessions()`；Tauri host-api 測試也鎖住 `agentKind` payload，避免 Codex resume picker 讀到 Claude 歷史。
+- 2026-05-11：清理 OpenAI Direct README 殘留。README 不再描述 `BAT_DEBUG` OpenAI Direct runtime、已刪除的 manager/panel，Tech Stack 也移除 `@ai-sdk/openai`；cleanup regression test 會防止這些廢棄入口重新出現在使用者文件。
 
 ## 目前判斷
 

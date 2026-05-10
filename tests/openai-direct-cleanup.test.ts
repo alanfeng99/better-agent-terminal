@@ -73,6 +73,7 @@ async function main() {
 
   const mainSource = await readFile('electron/main.ts', 'utf8')
   const handlerSource = await readFile('electron/server-core/register-handlers.ts', 'utf8')
+  const readmeSource = await readFile('README.md', 'utf8')
   assert.equal(
     mainSource.includes('OpenAIAgentManager'),
     false,
@@ -106,6 +107,18 @@ async function main() {
       readFile(removedFile, 'utf8'),
       undefined,
       `${removedFile} should be removed with OpenAI Direct runtime`,
+    )
+  }
+  for (const staleDoc of [
+    '### OpenAI Direct (debug)',
+    'openai-agent-manager.ts',
+    'OpenAIAgentPanel.tsx',
+    '@ai-sdk/openai',
+  ]) {
+    assert.equal(
+      readmeSource.includes(staleDoc),
+      false,
+      `README should not document removed OpenAI Direct artifact: ${staleDoc}`,
     )
   }
 
