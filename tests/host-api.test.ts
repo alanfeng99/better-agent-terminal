@@ -204,7 +204,7 @@ async function run() {
       if (cmd === 'claude_get_context_usage') return null as unknown as T
       if (cmd === 'claude_get_worktree_status') return null as unknown as T
       if (cmd === 'openai_get_api_key_status') return { hasKey: false } as unknown as T
-      if (cmd === 'openai_set_api_key') return false as unknown as T
+      if (cmd === 'openai_set_api_key') return true as unknown as T
       if (cmd === 'openai_clear_api_key') return true as unknown as T
       if (cmd === 'openai_list_sessions') return [] as unknown as T
       if (cmd === 'openai_compact_now') return false as unknown as T
@@ -514,14 +514,16 @@ async function run() {
     assert.equal(await mod.host.claude.getContextUsage('s-1'), null)
     assert.equal(await mod.host.claude.getWorktreeStatus('s-1'), null)
 
-    // openai.* — sidecar stubs.
+    // openai.* — sidecar-routed. API key storage is now real in the sidecar;
+    // listSessions/compact remain thin routes until the OpenAI runtime moves.
     assert.deepEqual(await mod.host.openai.getApiKeyStatus(), { hasKey: false })
-    assert.equal(await mod.host.openai.setApiKey('sk-x'), false)
+    assert.equal(await mod.host.openai.setApiKey('sk-x'), true)
     assert.equal(await mod.host.openai.clearApiKey(), true)
     assert.deepEqual(await mod.host.openai.listSessions('/cwd'), [])
     assert.equal(await mod.host.openai.compactNow('s-1'), false)
 
-    // worktree.* — sidecar stubs.
+    // worktree.* — sidecar-routed. The fixture returns shaped failures so
+    // this adapter test can focus on command names + payloads.
     assert.deepEqual(await mod.host.worktree.create('s-1', '/cwd'), {
       success: false, error: 'stub',
     })
@@ -564,7 +566,36 @@ async function run() {
     assert.deepEqual(await mod.host.remote.listProfiles('h', 9876, 't', 'fp'), { error: 'stub' })
     assert.deepEqual(await mod.host.tunnel.getConnection(), { error: 'stub' })
 
-    assert.deepEqual(invokeCalls, [
+    const calledCommands = new Set(invokeCalls.map(call => call.cmd))
+    for (const cmd of [
+      'fs_resolve_path_links',
+      'fs_watch',
+      'fs_unwatch',
+      'claude_stop_task',
+      'claude_set_codex_sandbox_mode',
+      'claude_set_codex_approval_policy',
+      'settings_clear_terminal_history',
+      'image_save_data_url',
+      'clipboard_save_image',
+      'clipboard_write_image',
+      'pty_restart',
+      'pty_get_cwd',
+      'openai_set_api_key',
+      'worktree_create',
+      'worktree_rehydrate',
+    ]) {
+      assert.ok(calledCommands.has(cmd), `${cmd} must route through Tauri invoke`)
+    }
+
+    const sendMessageLogs = invokeCalls.filter(call =>
+      call.cmd === 'debug_log'
+      && Array.isArray((call.args as { args?: unknown[] } | undefined)?.args)
+      && String((call.args as { args: unknown[] }).args[0]).startsWith('[tauri:claude.sendMessage]')
+    )
+    assert.equal(sendMessageLogs.length, 4, 'sendMessage should log start/end for both calls')
+    const stableInvokeCalls = invokeCalls.filter(call => !sendMessageLogs.includes(call))
+
+    assert.deepEqual(stableInvokeCalls, [
       { cmd: 'settings_load', args: undefined },
       { cmd: 'settings_save', args: { data: '{"theme":"dark"}' } },
       { cmd: 'shell_open_external', args: { url: 'https://example.com' } },
