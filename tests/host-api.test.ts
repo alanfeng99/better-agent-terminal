@@ -251,6 +251,21 @@ async function run() {
       mod.host.shell.getPathForFile({ webkitRelativePath: 'drop/file.txt' } as unknown as File),
       null,
     )
+    mod.registerTauriDroppedPaths(['C:\\Users\\me\\dropped-folder'])
+    assert.equal(
+      mod.host.shell.getPathForFile({ name: 'dropped-folder' } as unknown as File),
+      'C:\\Users\\me\\dropped-folder',
+    )
+    // Cached native paths are one-shot and ambiguous same-name drops are ignored.
+    assert.equal(
+      mod.host.shell.getPathForFile({ name: 'dropped-folder' } as unknown as File),
+      null,
+    )
+    mod.registerTauriDroppedPaths(['C:\\a\\same-name', 'D:\\b\\same-name'])
+    assert.equal(
+      mod.host.shell.getPathForFile({ name: 'same-name' } as unknown as File),
+      null,
+    )
     const ok = await mod.host.dialog.confirm('Proceed?', 'Heads up')
     assert.equal(ok, true)
     // title is optional — the adapter passes undefined through.

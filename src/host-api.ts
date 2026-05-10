@@ -79,6 +79,55 @@ function isAbsoluteLocalPath(value: string): boolean {
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(value)
 }
 
+const TAURI_DROP_PATH_TTL_MS = 5000
+const TAURI_DROP_PATH_MAX = 200
+type TauriDroppedPathEntry = {
+  path: string
+  name: string
+  createdAt: number
+  claimed: boolean
+}
+const tauriDroppedPathCache: TauriDroppedPathEntry[] = []
+let tauriDropPathListenerInstalled = false
+
+function basenameForPath(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, '')
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed
+}
+
+function pruneTauriDroppedPathCache(now = Date.now()): void {
+  for (let i = tauriDroppedPathCache.length - 1; i >= 0; i--) {
+    if (now - tauriDroppedPathCache[i].createdAt > TAURI_DROP_PATH_TTL_MS) {
+      tauriDroppedPathCache.splice(i, 1)
+    }
+  }
+  while (tauriDroppedPathCache.length > TAURI_DROP_PATH_MAX) {
+    tauriDroppedPathCache.shift()
+  }
+}
+
+export function registerTauriDroppedPaths(paths: string[], now = Date.now()): void {
+  pruneTauriDroppedPathCache(now)
+  for (const path of paths) {
+    if (!isAbsoluteLocalPath(path)) continue
+    const name = basenameForPath(path)
+    if (!name) continue
+    tauriDroppedPathCache.push({ path, name, createdAt: now, claimed: false })
+  }
+  pruneTauriDroppedPathCache(now)
+}
+
+function getPathFromRecentTauriDrop(file: File): string | null {
+  pruneTauriDroppedPathCache()
+  const name = (file as File & { name?: unknown }).name
+  if (typeof name !== 'string' || !name) return null
+  const matches = tauriDroppedPathCache.filter(entry => !entry.claimed && entry.name === name)
+  if (matches.length !== 1) return null
+  matches[0].claimed = true
+  return matches[0].path
+}
+
 function getPathFromDroppedFile(file: File): string | null {
   const candidate = file as File & {
     path?: unknown
@@ -92,7 +141,22 @@ function getPathFromDroppedFile(file: File): string | null {
     }
   }
   // webkitRelativePath is relative to the dropped folder, not a host path.
-  return null
+  return getPathFromRecentTauriDrop(file)
+}
+
+function installTauriDropPathCache(api: BatAppAPI): void {
+  if (tauriDropPathListenerInstalled) return
+  tauriDropPathListenerInstalled = true
+  import('@tauri-apps/api/webview')
+    .then(({ getCurrentWebview }) =>
+      getCurrentWebview().onDragDropEvent(event => {
+        if (event.payload.type !== 'drop') return
+        registerTauriDroppedPaths(event.payload.paths)
+        void api.debug.log('[tauri:drag-drop]', {
+          paths: event.payload.paths.length,
+        }).catch(() => {})
+      }))
+    .catch(() => {})
 }
 
 // We import @tauri-apps/api lazily so nothing in this module pulls Tauri's
@@ -936,6 +1000,7 @@ export function installTauriShim(): void {
   const api = createTauriHost()
   const real = api as unknown as Record<string, unknown>
   installTauriMetricLogger(api)
+  installTauriDropPathCache(api)
   const platform = detectPlatform()
   const shim = new Proxy({}, {
     get(_t, prop) {
