@@ -80,6 +80,7 @@
 - 2026-05-10：調整 Tauri porting scope：OpenAI Direct / `openai-agent` 已判定為廢棄方向，不再列為 Tauri parity blocker。後續工作應移除或隱藏 OpenAI Direct 的 UI/route/setting 殘留，只保留 Codex 所需的 OpenAI/Codex auth fallback，不再實作 `OpenAIAgentManager` parity。
 - 2026-05-10：開始 OpenAI Direct cleanup。`openai-agent` 從 renderer `AgentPresetId` 移除，`MainPanel` 不再 lazy import 或掛載 `OpenAIAgentPanel`，並刪除未被引用的 `OpenAIAgentPanel.tsx`；舊 workspace 若殘留 `openai-agent`，不會再啟動 OpenAI Direct runtime panel。
 - 2026-05-10：補 OpenAI Direct 舊資料 migration。settings 載入時若 `defaultAgent=openai-agent` 會轉成 `codex-agent`；workspace 載入時若 workspace default 或 terminal preset 殘留 `openai-agent`，也會轉成 `codex-agent`，避免重開後建立無效 OpenAI Direct panel。
+- 2026-05-10：補 OpenAI Direct cleanup regression test。`tests/openai-direct-cleanup.test.ts` 鎖住 `openai-agent` 不再註冊/顯示，並覆蓋 settings/workspace 舊資料 migration 到 `codex-agent`，避免後續重構把廢棄的 OpenAI Direct 入口帶回來。
 
 ## 目前判斷
 
