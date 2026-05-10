@@ -363,6 +363,21 @@ async function* walkJsonlFiles(root) {
 async function findSessionLog(threadId) {
   for await (const file of walkJsonlFiles(codexSessionsRoot())) {
     if (file.includes(threadId)) return file
+    const id = await readSessionIdFromLog(file)
+    if (id === threadId) return file
+  }
+  return null
+}
+
+async function readSessionIdFromLog(file) {
+  const content = await readFile(file, 'utf-8').catch(() => '')
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const entry = JSON.parse(line)
+      const id = entry?.type === 'session_meta' ? entry?.payload?.id : undefined
+      if (typeof id === 'string' && id) return id
+    } catch { /* ignore */ }
   }
   return null
 }
@@ -381,24 +396,33 @@ export async function listCodexSessions() {
   for await (const file of walkJsonlFiles(codexSessionsRoot())) {
     try {
       const st = await stat(file)
-      const id = file.replace(/\.jsonl$/, '').split(/[\\/]/).pop()
+      const fallbackId = file.replace(/\.jsonl$/, '').split(/[\\/]/).pop() || ''
       const content = await readFile(file, 'utf-8').catch(() => '')
+      let id = ''
       let preview = ''
       for (const line of content.split('\n')) {
         if (!line.trim()) continue
         try {
           const entry = JSON.parse(line)
+          if (!id && entry?.type === 'session_meta' && typeof entry?.payload?.id === 'string') {
+            id = entry.payload.id
+          }
           const input = entry?.payload?.input || entry?.payload?.message || entry?.payload?.op?.content?.find?.(c => c.type === 'input_text')?.text
           if (typeof input === 'string' && input.trim()) {
             preview = input.split('\n')[0].slice(0, 120)
-            break
           }
         } catch { /* ignore */ }
+        if (id && preview) break
       }
+      if (!id) id = fallbackId
       results.push({ sdkSessionId: id, timestamp: st.mtimeMs, preview: preview || `(${id.slice(0, 8)}...)`, messageCount: 0 })
     } catch { /* ignore */ }
   }
   return results.sort((a, b) => b.timestamp - a.timestamp).slice(0, 50)
+}
+
+async function codexThreadExists(threadId) {
+  return !!(await findSessionLog(threadId))
 }
 
 async function loadHistory(sessionId, threadId) {
@@ -498,7 +522,13 @@ export async function startCodexSession(params) {
   try {
     session.codexInstance = await createCodexInstance()
     const savedThreadId = sdkThreadIds.get(sessionId)
-    session.thread = savedThreadId
+    const canResume = savedThreadId ? await codexThreadExists(savedThreadId) : false
+    if (savedThreadId && !canResume) {
+      sdkThreadIds.delete(sessionId)
+      logWarn(`[codex:${sessionId.slice(0, 8)}] resume skipped: missing rollout for thread ${savedThreadId}`)
+      send('claude:status', sessionId, 'meta', { ...session.metadata, sdkSessionId: null })
+    }
+    session.thread = canResume
       ? session.codexInstance.resumeThread(savedThreadId, threadOptions(session))
       : session.codexInstance.startThread(threadOptions(session))
     const threadId = session.thread?.id
@@ -524,6 +554,19 @@ export async function resumeCodexSession(params) {
   const threadId = params?.sdkSessionId
   if (typeof sessionId !== 'string' || !sessionId) throw new Error('codex.resumeSession: missing sessionId')
   if (typeof threadId !== 'string' || !threadId) throw new Error('codex.resumeSession: missing thread id')
+  const canResume = await codexThreadExists(threadId)
+  if (!canResume) {
+    const existing = sessions.get(sessionId)
+    if (existing) {
+      existing.abortController.abort()
+      sessions.delete(sessionId)
+    }
+    sdkThreadIds.delete(sessionId)
+    logWarn(`[codex:${sessionId.slice(0, 8)}] resume skipped: missing rollout for thread ${threadId}`)
+    send('claude:resume-loading', sessionId, 'payload', false)
+    send('claude:status', sessionId, 'meta', { ...makeMetadata({ cwd: params?.options?.cwd || null }), sdkSessionId: null })
+    return startCodexSession({ sessionId, options: params?.options || {} })
+  }
   sdkThreadIds.set(sessionId, threadId)
   send('claude:resume-loading', sessionId, 'payload', true)
   const result = await startCodexSession({ sessionId, options: params?.options || {} })

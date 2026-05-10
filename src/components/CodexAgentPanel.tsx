@@ -936,6 +936,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (m.sdkSessionId) {
           setHasSdkSession(true)
           workspaceStore.setTerminalSdkSessionId(sessionId, m.sdkSessionId)
+        } else if (isCodexSession && Object.prototype.hasOwnProperty.call(m, 'sdkSessionId')) {
+          setHasSdkSession(false)
+          workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
         }
       }),
 
