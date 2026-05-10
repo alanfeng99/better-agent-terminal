@@ -105,7 +105,7 @@ impl SidecarHandle {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SidecarState {
     inner: Arc<Mutex<Option<Arc<SidecarHandle>>>>,
 }

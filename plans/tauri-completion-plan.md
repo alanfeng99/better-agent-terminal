@@ -36,6 +36,7 @@
 - 2026-05-10：接上 `ClaudeAgentPanel` native attachment drop。Tauri native dropped paths 會依副檔名走 `addImageByPath` 或 `addFileByPath`，remote session 保留既有限制；HTML5 `File` drop fallback 仍保留。
 - 2026-05-10：接上 `CodexAgentPanel` native attachment drop。行為對齊 Claude panel：Tauri native dropped paths 依副檔名轉成 image/file attachment，remote session 保留既有限制；HTML5 `File` drop fallback 仍保留。
 - 2026-05-10：接上 `OpenAIAgentPanel` native attachment drop。三個 agent panel 都已能消費 Tauri native dropped paths；下一步需評估開啟 Tauri `dragDropEnabled` 後是否會影響非檔案的既有 HTML5 drag/drop。
+- 2026-05-10：降低 Tauri Claude sendMessage UI 阻塞風險。`claude_send_message` Rust command 改成 async command，將既有 blocking sidecar bridge 放進 `spawn_blocking`，避免 sidecar cold start / SDK push 等待佔住 Tauri command handler 而讓 WebView 無法切換或更新。
 
 ## 目前判斷
 

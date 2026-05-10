@@ -90,7 +90,7 @@ pub fn claude_start_session(
 }
 
 #[tauri::command]
-pub fn claude_send_message(
+pub async fn claude_send_message(
     app: AppHandle,
     state: State<'_, SidecarState>,
     session_id: String,
@@ -98,18 +98,25 @@ pub fn claude_send_message(
     images: Option<Vec<String>>,
     auto_compact_window: Option<i64>,
 ) -> Result<Value, BridgeError> {
-    call_with_timeout(
-        &app,
-        &state,
-        "claude.sendMessage",
-        json!({
-            "sessionId": session_id,
-            "prompt": prompt,
-            "images": images.unwrap_or_default(),
-            "autoCompactWindow": auto_compact_window,
-        }),
-        SESSION_TIMEOUT,
-    )
+    let state = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        call_with_timeout(
+            &app,
+            &state,
+            "claude.sendMessage",
+            json!({
+                "sessionId": session_id,
+                "prompt": prompt,
+                "images": images.unwrap_or_default(),
+                "autoCompactWindow": auto_compact_window,
+            }),
+            SESSION_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|err| BridgeError {
+        message: format!("claude.sendMessage worker failed: {err}"),
+    })?
 }
 
 #[tauri::command]
