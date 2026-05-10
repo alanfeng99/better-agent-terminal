@@ -4,11 +4,42 @@
 // setPermissionMode, setModel, setEffort, getSessionState, getSessionMeta,
 // getContextUsage.
 
+import { existsSync } from 'node:fs'
+
 import { registerHandler, sendEvent } from '../lib/protocol.mjs'
 import { sessions, ensureSession, buildSessionMeta } from '../lib/state.mjs'
 import { expectedContextWindowForModel } from '../lib/models.mjs'
 import { closeLiveQuery } from './claude-send.mjs'
 import { warn as logWarn } from '../lib/logger.mjs'
+import { worktreeRehydrate } from './worktree.mjs'
+
+function applyWorktreeOptions(sessionId, session) {
+  const options = session?.options
+  if (!options || typeof options !== 'object') return
+  if (options.useWorktree !== true) return
+  if (typeof options.cwd !== 'string' || !options.cwd) return
+  if (typeof options.worktreePath !== 'string' || !options.worktreePath) return
+  if (!existsSync(options.worktreePath)) return
+  const branchName = typeof options.worktreeBranch === 'string' && options.worktreeBranch
+    ? options.worktreeBranch
+    : `bat/worktree-${sessionId.slice(0, 8)}`
+  const info = worktreeRehydrate(sessionId, options.cwd, options.worktreePath, branchName)
+  session.options = {
+    ...options,
+    originalCwd: options.cwd,
+    cwd: options.worktreePath,
+    worktreeBranch: info.branchName,
+  }
+  sendEvent('claude:worktree-info', {
+    sessionId,
+    payload: {
+      branchName: info.branchName,
+      worktreePath: info.worktreePath,
+      sourceBranch: info.sourceBranch,
+      gitRoot: info.gitRoot,
+    },
+  })
+}
 
 registerHandler('claude.startSession', async (params) => {
   const sessionId = params?.sessionId
@@ -33,6 +64,7 @@ registerHandler('claude.startSession', async (params) => {
     // identical: stash the SDK id so the next sendMessage uses
     // `resume: <id>` and the SDK reconstructs the conversation.
     if (typeof s.options.sdkSessionId === 'string') s.sdkSessionId = s.options.sdkSessionId
+    applyWorktreeOptions(sessionId, s)
   }
   return { ok: true, sessionId }
 })
@@ -78,6 +110,7 @@ registerHandler('claude.resumeSession', async (params) => {
     if (typeof s.options.autoCompactWindow === 'number') s.autoCompactWindow = s.options.autoCompactWindow
     if (typeof s.options.codexSandboxMode === 'string') s.codexSandboxMode = s.options.codexSandboxMode
     if (typeof s.options.codexApprovalPolicy === 'string') s.codexApprovalPolicy = s.options.codexApprovalPolicy
+    applyWorktreeOptions(sessionId, s)
   }
   return { ok: true, sessionId, sdkSessionId: sdkSessionIdToResume }
 })

@@ -954,6 +954,34 @@ async function inProcess() {
   assert.equal(initState.result.permissionMode, 'acceptEdits')
   assert.equal(initState.result.model, 'claude-sonnet-4-6')
 
+  // startSession/resumeSession with an existing worktree path should
+  // rehydrate sidecar worktree state and switch the SDK cwd to the
+  // worktree path, matching Electron's effectiveCwd behavior.
+  const wtRoot = mkdtempSync(join(tmpdir(), 'sidecar-session-wt-'))
+  const wtPath = join(wtRoot, '.bat-worktrees', 'state-wt')
+  mkdirSync(wtPath, { recursive: true })
+  const wtEvents = []
+  const restoreWorktreeSend = mod.__setSendEventForTests((name, payload) => wtEvents.push({ name, payload }))
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 2011, method: 'claude.startSession',
+      params: { sessionId: 'state-wt', options: {
+        cwd: wtRoot,
+        useWorktree: true,
+        worktreePath: wtPath,
+        worktreeBranch: 'feat/state-wt',
+      } } })
+    const wtMeta = await dispatch({ jsonrpc: '2.0', id: 2012, method: 'claude.getSessionMeta', params: { sessionId: 'state-wt' } })
+    assert.equal(wtMeta.result.cwd, wtPath)
+    assert.equal(mod.activeWorktrees.get('state-wt')?.worktreePath, wtPath)
+    const wtEvent = wtEvents.find(e => e.name === 'claude:worktree-info')
+    assert.equal(wtEvent?.payload.sessionId, 'state-wt')
+    assert.equal(wtEvent?.payload.payload.worktreePath, wtPath)
+  } finally {
+    restoreWorktreeSend()
+    mod.activeWorktrees.delete('state-wt')
+    rmSync(wtRoot, { recursive: true, force: true })
+  }
+
   // setAutoContinue persists; usage counter resets.
   await dispatch({ jsonrpc: '2.0', id: 202, method: 'claude.setAutoContinue',
     params: { sessionId: 'state-1', opts: { enabled: true, max: 5, prompt: 'continue' } } })
