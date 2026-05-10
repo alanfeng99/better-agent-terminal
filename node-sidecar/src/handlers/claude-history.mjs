@@ -2,7 +2,7 @@
 // rewindToPrompt, forkSession, fetchSubagentMessages, archiveMessages,
 // loadArchived, clearArchive.
 
-import { readFile, appendFile, mkdir, unlink } from 'node:fs/promises'
+import { readFile, appendFile, mkdir, readdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { registerHandler, sendEvent } from '../lib/protocol.mjs'
@@ -32,7 +32,34 @@ async function readHistoryFile(sdkSessionId, cwd) {
       // Try the next project-dir casing candidate.
     }
   }
+  const fallback = await findHistoryFileBySessionId(sdkSessionId)
+  if (fallback) {
+    logWarn(`claude.readHistoryFile: cwd lookup missed ${sdkSessionId}; using ${fallback}`)
+    return await readFile(fallback, 'utf-8')
+  }
   return null
+}
+
+async function findHistoryFileBySessionId(sdkSessionId) {
+  const filename = `${sdkSessionId}.jsonl`
+  async function walk(dir) {
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isFile() && entry.name === filename) return full
+      if (entry.isDirectory()) {
+        const found = await walk(full)
+        if (found) return found
+      }
+    }
+    return null
+  }
+  return walk(__resolveProjectsDir())
 }
 
 function textFromContent(content) {

@@ -1749,6 +1749,24 @@ async function inProcess() {
     assert.equal(resumeQueryCaptured.length, 1)
     assert.equal(resumeQueryCaptured[0].options.resume, 'sdk-historic-xyz')
 
+    // If the persisted terminal cwd no longer matches Claude's project dir
+    // (worktree reloads and old sessions can do this), resume should still
+    // find the JSONL by sdkSessionId instead of showing an empty history.
+    const fallbackProjectDir = join(resumeProjectsDir, 'C--fallback-project')
+    mkdirSync(fallbackProjectDir, { recursive: true })
+    writeFileSync(join(fallbackProjectDir, 'sdk-global-xyz.jsonl'), [
+      JSON.stringify({ type: 'user', uuid: 'hist-global-u', timestamp: '2026-05-10T00:00:02.000Z', message: { role: 'user', content: 'global ping' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'hist-global-a', timestamp: '2026-05-10T00:00:03.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'global pong' }] } }),
+    ].join('\n') + '\n')
+    resumeCaptured.length = 0
+    const globalResumeReply = await dispatch({ jsonrpc: '2.0', id: 2961, method: 'claude.resumeSession',
+      params: { sessionId: 'resume-global', sdkSessionId: 'sdk-global-xyz',
+        options: { cwd: '/wrong/cwd' } } })
+    assert.equal(globalResumeReply.result.ok, true)
+    const globalHistoryEvent = resumeCaptured.find(e => e.name === 'claude:history')
+    assert.ok(globalHistoryEvent, 'resumeSession must emit fallback claude:history')
+    assert.deepEqual(globalHistoryEvent.payload.items.map(i => `${i.role}:${i.content}`), ['user:global ping', 'assistant:global pong'])
+
     // Resume must reject missing sdkSessionId or sessionId.
     const noSdkReply = await dispatch({ jsonrpc: '2.0', id: 297, method: 'claude.resumeSession',
       params: { sessionId: 'r2' } })
