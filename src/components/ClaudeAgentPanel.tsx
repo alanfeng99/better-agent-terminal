@@ -15,6 +15,7 @@ import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
+import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
 import { autoCompactWindowForClaudeSelection, displayNameForClaudeSelection, normalizeClaudeModelSelection, sdkModelForClaudeSelection } from '../utils/claude-model-presets'
 import { firstMeaningfulLine, formatContentSize, truncateMiddle } from './CodexAgentPanel.helpers'
 import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
@@ -303,6 +304,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const streamingThinkingRef = useRef<HTMLPreElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const permissionCardRef = useRef<HTMLDivElement>(null)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
@@ -2443,6 +2445,37 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'])
 
+  const handleNativeDropPaths = useCallback(async (paths: string[]) => {
+    if (isRemoteConnected) {
+      window.alert('Remote sessions can only attach local dropped images. File paths must exist on the host.')
+      return
+    }
+    for (const filePath of paths) {
+      const extensionIndex = filePath.lastIndexOf('.')
+      const ext = extensionIndex >= 0 ? filePath.slice(extensionIndex).toLowerCase() : ''
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        await addImageByPath(filePath)
+      } else {
+        addFileByPath(filePath)
+      }
+    }
+  }, [addImageByPath, addFileByPath, isRemoteConnected])
+
+  useEffect(() => {
+    return listenTauriNativeDrop((detail) => {
+      if (!isTauriNativeDropInside(detail, panelRef.current)) {
+        if (detail.type === 'drop' || detail.type === 'leave') setIsDragOver(false)
+        return
+      }
+      if (detail.type === 'enter' || detail.type === 'over') {
+        setIsDragOver(true)
+        return
+      }
+      setIsDragOver(false)
+      if (detail.type === 'drop') void handleNativeDropPaths(detail.paths)
+    })
+  }, [handleNativeDropPaths])
+
   const handleSelectAttachments = useCallback(() => {
     setFilePickerMode('attach')
     setShowFilePicker(true)
@@ -3248,6 +3281,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   return (
     <div
+      ref={panelRef}
       className="claude-agent-panel"
       style={{
         '--claude-font-size': `${claudeFontSize}px`,
