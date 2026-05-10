@@ -34,6 +34,7 @@
 - 2026-05-10：補 Tauri dropped path cache。Tauri native drop event 若有提供 paths，renderer 會暫存 5 秒並讓 `host.shell.getPathForFile(File)` 以唯一檔名回填 absolute path；保留 `dragDropEnabled=false` 以避免破壞現有 HTML5 image drop，完整 native drop routing 仍列為 M1 待完成。
 - 2026-05-10：開始接 Tauri native drop routing。`host-api` 會把 Tauri webview drag/drop event 轉成 renderer custom event，`Sidebar` 已可直接用 native paths 新增 workspace；HTML5 drop fallback 保留不變。Agent attachment 區仍待接同一個 native event。
 - 2026-05-10：接上 `ClaudeAgentPanel` native attachment drop。Tauri native dropped paths 會依副檔名走 `addImageByPath` 或 `addFileByPath`，remote session 保留既有限制；HTML5 `File` drop fallback 仍保留。
+- 2026-05-10：接上 `CodexAgentPanel` native attachment drop。行為對齊 Claude panel：Tauri native dropped paths 依副檔名轉成 image/file attachment，remote session 保留既有限制；HTML5 `File` drop fallback 仍保留。
 
 ## 目前判斷
 

@@ -15,6 +15,7 @@ import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
+import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
 import { firstMeaningfulLine, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
@@ -241,6 +242,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const streamingThinkingRef = useRef<HTMLPreElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const permissionCardRef = useRef<HTMLDivElement>(null)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
@@ -2418,6 +2420,37 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
   const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'])
 
+  const handleNativeDropPaths = useCallback(async (paths: string[]) => {
+    if (isRemoteConnected) {
+      window.alert('Remote sessions can only attach local dropped images. File paths must exist on the host.')
+      return
+    }
+    for (const filePath of paths) {
+      const extensionIndex = filePath.lastIndexOf('.')
+      const ext = extensionIndex >= 0 ? filePath.slice(extensionIndex).toLowerCase() : ''
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        await addImageByPath(filePath)
+      } else {
+        addFileByPath(filePath)
+      }
+    }
+  }, [addImageByPath, addFileByPath, isRemoteConnected])
+
+  useEffect(() => {
+    return listenTauriNativeDrop((detail) => {
+      if (!isTauriNativeDropInside(detail, panelRef.current)) {
+        if (detail.type === 'drop' || detail.type === 'leave') setIsDragOver(false)
+        return
+      }
+      if (detail.type === 'enter' || detail.type === 'over') {
+        setIsDragOver(true)
+        return
+      }
+      setIsDragOver(false)
+      if (detail.type === 'drop') void handleNativeDropPaths(detail.paths)
+    })
+  }, [handleNativeDropPaths])
+
   const handleSelectAttachments = useCallback(() => {
     setFilePickerMode('attach')
     setShowFilePicker(true)
@@ -3152,6 +3185,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
   return (
     <div
+      ref={panelRef}
       className="claude-agent-panel codex-agent-panel"
       style={{
         '--claude-font-size': `${Math.max(11, claudeFontSize - 1)}px`,
