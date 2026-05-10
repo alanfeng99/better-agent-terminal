@@ -1,4 +1,4 @@
-import { host } from '../host-api'
+import { host, isTauri } from '../host-api'
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment, cloneElement, isValidElement } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -122,6 +122,15 @@ type MessageItem = ClaudeMessage | ClaudeToolCall
 
 // Track sessions that have been started to prevent duplicate calls across StrictMode remounts
 const startedSessions = new Set<string>()
+
+function scheduleAgentMetadataRefresh(callback: () => void): () => void {
+  if (!isTauri()) {
+    callback()
+    return () => {}
+  }
+  const timer = window.setTimeout(callback, 1500)
+  return () => window.clearTimeout(timer)
+}
 
 export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose, showUserMsg = true, showAssistantMsg = true, showToolMsg = true, showThinkingMsg = true, isRemoteConnected = false, targetAgent }: Readonly<ClaudeAgentPanelProps>) {
   const { t } = useTranslation()
@@ -1194,28 +1203,38 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [sessionId, isCodexSession])
 
   useEffect(() => {
-    if (sessionMeta?.sdkSessionId && availableModels.length === 0) {
+    if (!(sessionMeta?.sdkSessionId && availableModels.length === 0)) return
+    let cancelled = false
+    const cancelRefresh = scheduleAgentMetadataRefresh(() => {
       host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+        if (cancelled) return
         if (models && models.length > 0) {
           setAvailableModels(models)
         }
       }).catch(() => {})
       if (!isCodexSession) {
         host.claude.getAccountInfo(sessionId).then(info => {
+          if (cancelled) return
           if (info) setAccountInfo(info)
         }).catch(() => {})
         host.claude.getSupportedCommands(sessionId).then((cmds: SlashCommandInfo[]) => {
+          if (cancelled) return
           if (cmds && cmds.length > 0) {
             setSlashCommands(cmds)
             window.dispatchEvent(new CustomEvent('claude-skills-updated', { detail: { sessionId, commands: cmds } }))
           }
         }).catch(() => {})
         host.claude.getSupportedAgents(sessionId).then((agentList) => {
+          if (cancelled) return
           if (agentList && agentList.length > 0) {
             window.dispatchEvent(new CustomEvent('claude-agents-updated', { detail: { sessionId, agents: agentList } }))
           }
         }).catch(() => {})
       }
+    })
+    return () => {
+      cancelled = true
+      cancelRefresh()
     }
   }, [sessionId, sessionMeta?.sdkSessionId, availableModels.length, isCodexSession])
 

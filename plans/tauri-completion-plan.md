@@ -43,6 +43,7 @@
 - 2026-05-10：降低 FolderPicker / fs listing 對 Tauri runtime 的阻塞風險。`fs.readdir`、`fs.listDirs`、`fs.quickLocations` 的同步檔案列目錄工作改丟 Rust blocking worker，避免慢磁碟、網路磁碟、Windows drive probe 或 macOS `/Volumes` 掃描佔住 async command runtime；UI API 與 Electron 回傳 shape 不變。
 - 2026-05-10：補 FolderPicker performance marker。renderer 會在 `home`、`listDirs/readdir`、`quickLocations` 任一步超過 50ms 時寫 debug log，包含 path、mode、hidden flag、entry count 與 outcome，用來定位首次 Choose Folder 慢在 home resolve、目錄 listing，還是 quick locations 掃描。
 - 2026-05-10：補 Claude SDK import timing。Node sidecar 第一次 `loadAnthropicSdk()` 會在 `sidecar.log` 記錄 `claude.sdkLoad` 的 ok/failed/disabled 與 elapsedMs，讓 first send / metadata 慢可以拆成 Node spawn、SDK import、LiveQuery/CLI turn 三段觀察。
+- 2026-05-10：Agent metadata 背景化第一步。Claude/Codex/OpenAI 三個 panel 在 Tauri 下收到 `sdkSessionId` 後，model/account/commands/agents metadata refresh 延後 1.5 秒背景執行；Electron 保持立即刷新。這讓 panel mount / first status 不會立刻與 sidecar warm-up、SDK import 或首輪 send 搶同一段時間。
 
 ## 目前判斷
 
