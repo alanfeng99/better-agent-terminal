@@ -8,6 +8,7 @@
 - 2026-05-10：接上 `claude.stopTask` 的 Tauri 路徑：renderer `host.claude.stopTask()` → Rust `claude_stop_task` → Node sidecar `claude.stopTask`。Rust command 會把 sidecar `{ok:boolean}` 正規化成 Electron preload 相容的 `boolean`，讓 Agent/Task 停止按鈕不因 host kind 拿到不同回傳 shape。
 - 2026-05-10：把 `setCodexSandboxMode` / `setCodexApprovalPolicy` 從 Tauri permissive `null` shim 拉成明確 Rust command route；目前因 CodexAgentManager 尚未 port 到 sidecar，兩者回 Electron-shaped `false` 表示 unsupported。完整 Codex sandbox/approval 生效仍歸 M3 Codex parity。
 - 2026-05-10：port `settings.clearTerminalHistory` 到 Tauri Rust。行為對齊 Electron：清 `<app-data>/terminal-history` 內所有項目但保留 `.zsh-wrapper`，目錄不存在也回 `true`。SettingsPanel 的清除歷史按鈕在 Tauri 下不再 throw。
+- 2026-05-10：port `image.saveDataUrl` 到 Tauri Rust。行為對齊 Electron：只接受 `data:image/*;base64,...`、依 MIME 決定預設副檔名、清理非法檔名字元、使用 native save dialog，取消回 `null`、成功寫入 bytes 並回檔案路徑。Codex/OpenAI/Claude 圖片附件另存流程不再打到 Tauri `notImplemented`。
 
 ## 目前判斷
 

@@ -53,6 +53,7 @@ pub fn run() {
             fs_cmd::fs_unwatch,
             clipboard_cmd::clipboard_write_text,
             image_cmd::image_read_as_data_url,
+            image_cmd::image_save_data_url,
             pty_cmd::pty_create,
             pty_cmd::pty_write,
             pty_cmd::pty_resize,

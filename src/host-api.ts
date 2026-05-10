@@ -201,8 +201,8 @@ function createTauriHost(): BatAppAPI {
     image: {
       readAsDataUrl: (filePath: string) =>
         getInvoke()<string>('image_read_as_data_url', { path: filePath }),
-      // saveDataUrl needs a save-file picker + raw bytes write; pending.
-      saveDataUrl: () => notImplemented('image.saveDataUrl'),
+      saveDataUrl: (dataUrl: string, defaultName?: string) =>
+        getInvoke()<string | null>('image_save_data_url', { dataUrl, defaultName }),
     },
     fs: {
       readFile: (filePath: string) =>

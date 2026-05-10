@@ -87,6 +87,7 @@ async function run() {
       if (cmd === 'fs_watch') return true as unknown as T
       if (cmd === 'fs_unwatch') return true as unknown as T
       if (cmd === 'image_read_as_data_url') return 'data:image/png;base64,xx' as unknown as T
+      if (cmd === 'image_save_data_url') return '/x/saved.png' as unknown as T
       if (cmd === 'pty_create') return 'term-1' as unknown as T
       if (cmd === 'pty_write') return undefined as unknown as T
       if (cmd === 'pty_resize') return undefined as unknown as T
@@ -285,6 +286,7 @@ async function run() {
 
     const dataUrl = await mod.host.image.readAsDataUrl('/x/img.png')
     assert.equal(dataUrl, 'data:image/png;base64,xx')
+    assert.equal(await mod.host.image.saveDataUrl('data:image/png;base64,xx', 'saved.png'), '/x/saved.png')
 
     const ptyId = await mod.host.pty.create({
       id: 'term-1', cwd: '/x', type: 'terminal',
@@ -556,6 +558,7 @@ async function run() {
       { cmd: 'fs_watch', args: { dirPath: '/x' } },
       { cmd: 'fs_unwatch', args: { dirPath: '/x' } },
       { cmd: 'image_read_as_data_url', args: { path: '/x/img.png' } },
+      { cmd: 'image_save_data_url', args: { dataUrl: 'data:image/png;base64,xx', defaultName: 'saved.png' } },
       { cmd: 'pty_create', args: { options: { id: 'term-1', cwd: '/x', type: 'terminal' } } },
       { cmd: 'pty_write', args: { id: 'term-1', data: 'echo hi\n' } },
       { cmd: 'pty_resize', args: { id: 'term-1', cols: 120, rows: 32 } },
