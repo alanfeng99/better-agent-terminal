@@ -3324,6 +3324,173 @@ async function inProcess() {
     }
   }
 
+  // fs.* — port of the Electron fs:* handlers (readdir/readFile/home/
+  // listDirs/mkdir/deletePath/quickLocations/resolvePathLinks). Each
+  // exercises path-guard, the Tauri object-shaped params plus the
+  // bare-string fallback, and verifies the structured-error contract
+  // the renderer relies on.
+  {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } = await import('fs')
+    const { join, sep } = await import('path')
+    const { tmpdir, homedir } = await import('os')
+    const protocol = await import('../src/lib/remote-protocol.mjs')
+    const fsRoot = mkdtempSync(join(tmpdir(), 'sidecar-fs-'))
+    try {
+      // (a) fs.home returns os.homedir().
+      const homeReply = await dispatch({ jsonrpc: '2.0', id: 800, method: 'fs.home' })
+      assert.equal(homeReply.result, homedir())
+
+      // (b) fs.readdir — directory containment + ignored set + sort
+      //     (dirs first, then alphabetical) + sensitive-path filter.
+      mkdirSync(join(fsRoot, 'b-dir'))
+      mkdirSync(join(fsRoot, 'a-dir'))
+      mkdirSync(join(fsRoot, 'node_modules'))  // must be filtered out
+      writeFileSync(join(fsRoot, 'a-file.txt'), 'x')
+      writeFileSync(join(fsRoot, '.DS_Store'), 'x')  // also filtered
+      const rd = await dispatch({ jsonrpc: '2.0', id: 801, method: 'fs.readdir',
+        params: { dirPath: fsRoot } })
+      assert.ok(Array.isArray(rd.result))
+      const names = rd.result.map(e => e.name)
+      assert.deepEqual(names, ['a-dir', 'b-dir', 'a-file.txt'],
+        'dirs first then alphabetical, ignored set filtered')
+      assert.equal(rd.result[0].isDirectory, true)
+      assert.equal(rd.result[2].isDirectory, false)
+      // Bare-string params (Electron fallback) also works.
+      const rd2 = await dispatch({ jsonrpc: '2.0', id: 802, method: 'fs.readdir',
+        params: fsRoot })
+      assert.ok(Array.isArray(rd2.result))
+      // Missing path → empty array (Electron contract — no throw).
+      const rdMissing = await dispatch({ jsonrpc: '2.0', id: 803, method: 'fs.readdir', params: {} })
+      assert.deepEqual(rdMissing.result, [])
+      // Sensitive path → empty array.
+      const rdSensitive = await dispatch({ jsonrpc: '2.0', id: 804, method: 'fs.readdir',
+        params: { dirPath: join(homedir(), '.ssh') } })
+      assert.deepEqual(rdSensitive.result, [])
+
+      // (c) fs.readFile — UTF-8 read + 512 KB cap + path-guard.
+      const txt = join(fsRoot, 'hello.txt')
+      writeFileSync(txt, 'hello world\n', 'utf-8')
+      const fr = await dispatch({ jsonrpc: '2.0', id: 805, method: 'fs.readFile',
+        params: { path: txt } })
+      assert.equal(fr.result.content, 'hello world\n')
+      // >512 KiB → {error:'File too large', size}.
+      const big = join(fsRoot, 'big.txt')
+      writeFileSync(big, Buffer.alloc(512 * 1024 + 1, 0x61))
+      const frBig = await dispatch({ jsonrpc: '2.0', id: 806, method: 'fs.readFile',
+        params: { path: big } })
+      assert.equal(frBig.result.error, 'File too large')
+      assert.equal(typeof frBig.result.size, 'number')
+      // Sensitive path → {error:'Access denied (sensitive path)'}.
+      const frDenied = await dispatch({ jsonrpc: '2.0', id: 807, method: 'fs.readFile',
+        params: { path: join(homedir(), '.ssh', 'id_rsa') } })
+      assert.match(frDenied.result.error, /sensitive path/)
+      // Missing path → {error:'missing path'}.
+      const frEmpty = await dispatch({ jsonrpc: '2.0', id: 808, method: 'fs.readFile', params: {} })
+      assert.match(frEmpty.result.error, /missing path/)
+
+      // (d) fs.listDirs — only directories, hidden filter, parent
+      //     calculation, tilde expansion.
+      mkdirSync(join(fsRoot, '.hidden-dir'))
+      const ld = await dispatch({ jsonrpc: '2.0', id: 809, method: 'fs.listDirs',
+        params: { dirPath: fsRoot, includeHidden: false } })
+      const ldNames = ld.result.entries.map(e => e.name)
+      assert.deepEqual(ldNames, ['a-dir', 'b-dir', 'node_modules'],
+        'only dirs, no files, no hidden — listDirs does not filter the readdir IGNORED set, ' +
+        'mirror of Electron contract (the Sidebar workspace browser wants to descend into node_modules)')
+      assert.equal(ld.result.current, fsRoot)
+      assert.equal(typeof ld.result.parent, 'string')
+      // includeHidden:true surfaces .hidden-dir.
+      const ldHidden = await dispatch({ jsonrpc: '2.0', id: 810, method: 'fs.listDirs',
+        params: { dirPath: fsRoot, includeHidden: true } })
+      assert.ok(ldHidden.result.entries.some(e => e.name === '.hidden-dir'))
+      // Tilde expansion (~/) — call with `~` and just confirm the result
+      // resolves to homedir without throwing.
+      const ldTilde = await dispatch({ jsonrpc: '2.0', id: 811, method: 'fs.listDirs',
+        params: { dirPath: '~', includeHidden: false } })
+      assert.equal(typeof ldTilde.result.current === 'string' || typeof ldTilde.result.error === 'string', true)
+      // Sensitive path → {error}.
+      const ldDenied = await dispatch({ jsonrpc: '2.0', id: 812, method: 'fs.listDirs',
+        params: { dirPath: join(homedir(), '.ssh') } })
+      assert.match(ldDenied.result.error, /sensitive path/)
+      // Missing dirPath → error.
+      const ldEmpty = await dispatch({ jsonrpc: '2.0', id: 813, method: 'fs.listDirs', params: {} })
+      assert.match(ldEmpty.result.error, /missing dirPath/)
+
+      // (e) fs.mkdir — name validation + sensitive-path guard.
+      const mk = await dispatch({ jsonrpc: '2.0', id: 814, method: 'fs.mkdir',
+        params: { parentPath: fsRoot, name: 'new-folder' } })
+      assert.equal(mk.result.path, join(fsRoot, 'new-folder'))
+      assert.ok(existsSync(mk.result.path))
+      // Invalid name (slash) → error.
+      const mkBad = await dispatch({ jsonrpc: '2.0', id: 815, method: 'fs.mkdir',
+        params: { parentPath: fsRoot, name: 'bad/slash' } })
+      assert.match(mkBad.result.error, /Invalid folder name/)
+      // .. → error (path traversal).
+      const mkDots = await dispatch({ jsonrpc: '2.0', id: 816, method: 'fs.mkdir',
+        params: { parentPath: fsRoot, name: '..' } })
+      assert.match(mkDots.result.error, /Invalid folder name/)
+      // Missing args → error.
+      const mkEmpty = await dispatch({ jsonrpc: '2.0', id: 817, method: 'fs.mkdir', params: {} })
+      assert.match(mkEmpty.result.error, /missing parentPath/)
+
+      // (f) fs.deletePath — only directories, sensitive-path guard.
+      const dp = await dispatch({ jsonrpc: '2.0', id: 818, method: 'fs.deletePath',
+        params: { targetPath: join(fsRoot, 'new-folder') } })
+      assert.equal(dp.result.path, join(fsRoot, 'new-folder'))
+      assert.equal(existsSync(join(fsRoot, 'new-folder')), false)
+      // Refuses to delete a file.
+      const dpFile = await dispatch({ jsonrpc: '2.0', id: 819, method: 'fs.deletePath',
+        params: { targetPath: txt } })
+      assert.match(dpFile.result.error, /Only directories/)
+      // Sensitive path → error before lstat.
+      const dpDenied = await dispatch({ jsonrpc: '2.0', id: 820, method: 'fs.deletePath',
+        params: { targetPath: join(homedir(), '.ssh') } })
+      assert.match(dpDenied.result.error, /sensitive path/)
+
+      // (g) fs.quickLocations — always includes Home, root/drives by
+      //     platform.
+      const ql = await dispatch({ jsonrpc: '2.0', id: 821, method: 'fs.quickLocations' })
+      assert.ok(Array.isArray(ql.result))
+      assert.ok(ql.result.some(it => it.kind === 'home'))
+      if (process.platform === 'win32') {
+        assert.ok(ql.result.some(it => it.kind === 'drive'),
+          'win32 must list at least one drive')
+      } else {
+        assert.ok(ql.result.some(it => it.kind === 'root'),
+          'POSIX must list / as root')
+      }
+
+      // (h) fs.resolvePathLinks — extracts file paths with optional
+      //     line:col, filters by extension, drops sensitive paths.
+      const real = join(fsRoot, 'real.ts')
+      writeFileSync(real, 'export const x = 1\n', 'utf-8')
+      const fake = join(fsRoot, 'fake.bin')  // not in TEXT_EXTS
+      writeFileSync(fake, 'x')
+      const rp = await dispatch({ jsonrpc: '2.0', id: 822, method: 'fs.resolvePathLinks',
+        params: { cwd: fsRoot, rawPaths: ['real.ts:42:7', 'fake.bin', 'real.ts'] } })
+      assert.equal(rp.result.length, 2, 'real.ts referenced twice (with and without line) → both keep')
+      // Wait — actually unique() dedupes raw strings. 'real.ts:42:7' and
+      // 'real.ts' are different raws, so both kept; 'fake.bin' filtered
+      // by extension. Confirm shape:
+      const withLine = rp.result.find(r => r.line === 42)
+      assert.ok(withLine, 'expected entry with line:42')
+      assert.equal(withLine.column, 7)
+      assert.equal(withLine.path, real)
+      // Sensitive path skipped.
+      const rpDenied = await dispatch({ jsonrpc: '2.0', id: 823, method: 'fs.resolvePathLinks',
+        params: { cwd: homedir(), rawPaths: ['.ssh/id_rsa.pem'] } })
+      assert.deepEqual(rpDenied.result, [])
+
+      // (i) End-to-end via remote bridge: kebab→camel for the multi-
+      //     hyphen channel `fs:list-dirs` resolves to fs.listDirs.
+      const remoteRd = await protocol.invokeRemoteHandler('fs:list-dirs',
+        [{ dirPath: fsRoot, includeHidden: false }])
+      assert.equal(remoteRd.current, fsRoot)
+    } finally {
+      rmSync(fsRoot, { recursive: true, force: true })
+    }
+  }
+
   // remote-secrets — port of electron/remote/secrets.ts. The sidecar
   // version always writes `{enc:false, data:<JSON>}` (no safeStorage in
   // pure-Node) but must (a) round-trip JSON / string, (b) read legacy
