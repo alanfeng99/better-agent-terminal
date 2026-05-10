@@ -17,6 +17,8 @@ export function ensureSession(sessionId) {
       autoCompactWindow: null,
       effort: undefined,
       permissionMode: 'default',
+      codexSandboxMode: undefined,
+      codexApprovalPolicy: undefined,
       autoContinue: { enabled: false, max: 0, used: 0, prompt: '' },
       // SDK session id captured from the first SDKResultMessage; used as
       // `resume` on subsequent sendMessage calls so the SDK preserves

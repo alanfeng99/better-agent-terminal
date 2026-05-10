@@ -973,10 +973,25 @@ async function inProcess() {
     params: { sessionId: 'state-1', model: 'claude-haiku-4-5-20251001', autoCompactWindow: 100000 } })
   await dispatch({ jsonrpc: '2.0', id: 207, method: 'claude.setEffort',
     params: { sessionId: 'state-1', effort: 'high' } })
+  const sandboxSet = await dispatch({ jsonrpc: '2.0', id: 2071, method: 'claude.setCodexSandboxMode',
+    params: { sessionId: 'state-1', mode: 'danger-full-access' } })
+  assert.equal(sandboxSet.result, true)
+  const approvalSet = await dispatch({ jsonrpc: '2.0', id: 2072, method: 'claude.setCodexApprovalPolicy',
+    params: { sessionId: 'state-1', policy: 'never' } })
+  assert.equal(approvalSet.result, true)
+  const badSandboxSet = await dispatch({ jsonrpc: '2.0', id: 2073, method: 'claude.setCodexSandboxMode',
+    params: { sessionId: 'state-1', mode: 'root' } })
+  assert.equal(badSandboxSet.result, false)
+  const missingSandboxSet = await dispatch({ jsonrpc: '2.0', id: 2074, method: 'claude.setCodexSandboxMode',
+    params: { sessionId: 'missing-state', mode: 'workspace-write' } })
+  assert.equal(missingSandboxSet.result, false)
   const meta2 = await dispatch({ jsonrpc: '2.0', id: 208, method: 'claude.getSessionMeta', params: { sessionId: 'state-1' } })
   assert.equal(meta2.result.model, 'claude-haiku-4-5-20251001')
   assert.equal(meta2.result.effort, 'high')
   assert.equal(meta2.result.autoCompactWindow, 100000)
+  const state2 = await dispatch({ jsonrpc: '2.0', id: 2081, method: 'claude.getSessionState', params: { sessionId: 'state-1' } })
+  assert.equal(state2.result.codexSandboxMode, 'danger-full-access')
+  assert.equal(state2.result.codexApprovalPolicy, 'never')
   // The renderer's status line reads inputTokens/outputTokens/numTurns/
   // contextTokens/durationMs etc. with `.toLocaleString()` directly (no
   // optional chaining), so before-the-first-turn the meta must still

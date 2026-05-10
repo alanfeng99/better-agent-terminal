@@ -25,6 +25,8 @@ registerHandler('claude.startSession', async (params) => {
     if (typeof s.options.permissionMode === 'string') s.permissionMode = s.options.permissionMode
     if (typeof s.options.effort === 'string') s.effort = s.options.effort
     if (typeof s.options.autoCompactWindow === 'number') s.autoCompactWindow = s.options.autoCompactWindow
+    if (typeof s.options.codexSandboxMode === 'string') s.codexSandboxMode = s.options.codexSandboxMode
+    if (typeof s.options.codexApprovalPolicy === 'string') s.codexApprovalPolicy = s.options.codexApprovalPolicy
     // startSession can also pre-populate sdkSessionId for the resume
     // path. The renderer's reload-from-history flow goes through
     // claude.resumeSession (below), but the underlying mechanism is
@@ -74,6 +76,8 @@ registerHandler('claude.resumeSession', async (params) => {
     if (typeof s.options.permissionMode === 'string') s.permissionMode = s.options.permissionMode
     if (typeof s.options.effort === 'string') s.effort = s.options.effort
     if (typeof s.options.autoCompactWindow === 'number') s.autoCompactWindow = s.options.autoCompactWindow
+    if (typeof s.options.codexSandboxMode === 'string') s.codexSandboxMode = s.options.codexSandboxMode
+    if (typeof s.options.codexApprovalPolicy === 'string') s.codexApprovalPolicy = s.options.codexApprovalPolicy
   }
   return { ok: true, sessionId, sdkSessionId: sdkSessionIdToResume }
 })
@@ -216,6 +220,31 @@ registerHandler('claude.setPermissionMode', async (params) => {
   return true
 })
 
+const CODEX_SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access'])
+const CODEX_APPROVAL_POLICIES = new Set(['untrusted', 'on-request', 'never'])
+
+registerHandler('claude.setCodexSandboxMode', async (params) => {
+  const sessionId = params?.sessionId
+  const mode = params?.mode
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  if (typeof mode !== 'string' || !CODEX_SANDBOX_MODES.has(mode)) return false
+  const s = sessions.get(sessionId)
+  if (!s) return false
+  s.codexSandboxMode = mode
+  return true
+})
+
+registerHandler('claude.setCodexApprovalPolicy', async (params) => {
+  const sessionId = params?.sessionId
+  const policy = params?.policy
+  if (typeof sessionId !== 'string' || !sessionId) return false
+  if (typeof policy !== 'string' || !CODEX_APPROVAL_POLICIES.has(policy)) return false
+  const s = sessions.get(sessionId)
+  if (!s) return false
+  s.codexApprovalPolicy = policy
+  return true
+})
+
 registerHandler('claude.setModel', async (params) => {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) return false
@@ -276,6 +305,8 @@ registerHandler('claude.getSessionState', async (params) => {
     model: s.model,
     effort: s.effort,
     autoCompactWindow: s.autoCompactWindow,
+    codexSandboxMode: s.codexSandboxMode,
+    codexApprovalPolicy: s.codexApprovalPolicy,
   }
 })
 

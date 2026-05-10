@@ -191,8 +191,8 @@ async function run() {
       if (cmd === 'claude_set_auto_continue') return true as unknown as T
       if (cmd === 'claude_get_auto_continue') return { enabled: false, max: 0, used: 0, prompt: '' } as unknown as T
       if (cmd === 'claude_set_permission_mode') return true as unknown as T
-      if (cmd === 'claude_set_codex_sandbox_mode') return false as unknown as T
-      if (cmd === 'claude_set_codex_approval_policy') return false as unknown as T
+      if (cmd === 'claude_set_codex_sandbox_mode') return true as unknown as T
+      if (cmd === 'claude_set_codex_approval_policy') return true as unknown as T
       if (cmd === 'claude_set_model') return true as unknown as T
       if (cmd === 'claude_set_effort') return true as unknown as T
       if (cmd === 'claude_reset_session') return true as unknown as T
@@ -519,8 +519,8 @@ async function run() {
     assert.equal(await mod.host.claude.setAutoContinue('s-1', { enabled: true }), true)
     assert.deepEqual(await mod.host.claude.getAutoContinue('s-1'), { enabled: false, max: 0, used: 0, prompt: '' })
     assert.equal(await mod.host.claude.setPermissionMode('s-1', 'acceptEdits'), true)
-    assert.equal(await mod.host.claude.setCodexSandboxMode('s-1', 'workspace-write'), false)
-    assert.equal(await mod.host.claude.setCodexApprovalPolicy('s-1', 'on-request'), false)
+    assert.equal(await mod.host.claude.setCodexSandboxMode('s-1', 'workspace-write'), true)
+    assert.equal(await mod.host.claude.setCodexApprovalPolicy('s-1', 'on-request'), true)
     assert.equal(await mod.host.claude.setModel('s-1', 'claude-opus-4-7'), true)
     assert.equal(await mod.host.claude.setEffort('s-1', 'high'), true)
     assert.equal(await mod.host.claude.resetSession('s-1'), true)
