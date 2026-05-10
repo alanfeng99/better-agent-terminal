@@ -82,6 +82,7 @@
 - 2026-05-10：補 OpenAI Direct 舊資料 migration。settings 載入時若 `defaultAgent=openai-agent` 會轉成 `codex-agent`；workspace 載入時若 workspace default 或 terminal preset 殘留 `openai-agent`，也會轉成 `codex-agent`，避免重開後建立無效 OpenAI Direct panel。
 - 2026-05-10：補 OpenAI Direct cleanup regression test。`tests/openai-direct-cleanup.test.ts` 鎖住 `openai-agent` 不再註冊/顯示，並覆蓋 settings/workspace 舊資料 migration 到 `codex-agent`，避免後續重構把廢棄的 OpenAI Direct 入口帶回來。
 - 2026-05-11：擴大 Rust Codex app-server routing 到已建立 worktree 的 `codex-agent-worktree`。若 options 內已有 `worktreePath`，Rust runtime 會使用該路徑作為 effective cwd 並 emit `claude:worktree-info`；若缺少 `worktreePath`，仍 fallback Node sidecar，保留 sidecar 自動建立 worktree 的既有行為。
+- 2026-05-11：補 Rust-owned Codex worktree 的 sidecar rehydrate。`claude.startSession/resumeSession` 由 Rust app-server 接手 `codex-agent-worktree` 前，會 best-effort 呼叫 `worktree.rehydrate`，讓既有 Diff/close cleanup 等 worktree sidecar commands 在重開後仍有 activeWorktree state。
 
 ## 目前判斷
 

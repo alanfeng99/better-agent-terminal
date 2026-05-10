@@ -98,6 +98,85 @@ fn emit_codex_route_metric(
     publish_runtime_event(app, "sidecar:metric", payload, "codex-route");
 }
 
+fn codex_worktree_rehydrate_params(session_id: &str, options: &Option<Value>) -> Option<Value> {
+    let options = options.as_ref()?;
+    if options.get("agentPreset").and_then(Value::as_str) != Some("codex-agent-worktree") {
+        return None;
+    }
+    let worktree_path = options
+        .get("worktreePath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())?;
+    let cwd = options
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or(worktree_path);
+    let branch_name = options
+        .get("worktreeBranch")
+        .and_then(Value::as_str)
+        .filter(|branch| !branch.trim().is_empty())
+        .unwrap_or("worktree");
+    Some(json!({
+        "sessionId": session_id,
+        "cwd": cwd,
+        "worktreePath": worktree_path,
+        "branchName": branch_name,
+    }))
+}
+
+async fn rehydrate_codex_worktree_if_needed(
+    app: &AppHandle,
+    sidecar_state: SidecarState,
+    session_id: &str,
+    options: &Option<Value>,
+) {
+    let Some(params) = codex_worktree_rehydrate_params(session_id, options) else {
+        return;
+    };
+    let app_for_call = app.clone();
+    let started = Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        call_with_timeout(
+            &app_for_call,
+            &sidecar_state,
+            "worktree.rehydrate",
+            params,
+            DEFAULT_TIMEOUT,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => emit_codex_route_metric(
+            app,
+            "codexWorktree",
+            "worktree.rehydrate",
+            session_id,
+            started.elapsed(),
+            true,
+            None,
+        ),
+        Ok(Err(err)) => emit_codex_route_metric(
+            app,
+            "codexWorktree",
+            "worktree.rehydrate",
+            session_id,
+            started.elapsed(),
+            false,
+            Some(err.message),
+        ),
+        Err(err) => emit_codex_route_metric(
+            app,
+            "codexWorktree",
+            "worktree.rehydrate",
+            session_id,
+            started.elapsed(),
+            false,
+            Some(format!("worktree.rehydrate worker failed: {err}")),
+        ),
+    }
+}
+
 #[tauri::command]
 pub fn claude_ping(
     app: AppHandle,
@@ -132,6 +211,7 @@ pub async fn claude_start_session(
     options: Option<Value>,
 ) -> Result<Value, BridgeError> {
     if should_handle_codex(&options) {
+        rehydrate_codex_worktree_if_needed(&app, (*state).clone(), &session_id, &options).await;
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
@@ -906,6 +986,7 @@ pub async fn claude_resume_session(
 ) -> Result<Value, BridgeError> {
     let should_use_codex = should_handle_codex(&options);
     if should_use_codex || codex_state.is_owned(&session_id) {
+        rehydrate_codex_worktree_if_needed(&app, (*state).clone(), &session_id, &options).await;
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
@@ -1087,4 +1168,39 @@ pub async fn claude_enable_all_project_mcp(
         json!({ "cwd": cwd }),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_worktree_rehydrate_params_require_existing_worktree_path() {
+        assert!(codex_worktree_rehydrate_params(
+            "s-1",
+            &Some(json!({
+                "agentPreset": "codex-agent-worktree",
+                "cwd": "/repo",
+                "useWorktree": true
+            }))
+        )
+        .is_none());
+
+        let params = codex_worktree_rehydrate_params(
+            "s-1",
+            &Some(json!({
+                "agentPreset": "codex-agent-worktree",
+                "cwd": "/repo",
+                "useWorktree": true,
+                "worktreePath": "/repo/.bat-worktrees/s-1",
+                "worktreeBranch": "bat/worktree-s-1"
+            })),
+        )
+        .expect("rehydrate params");
+
+        assert_eq!(params["sessionId"], "s-1");
+        assert_eq!(params["cwd"], "/repo");
+        assert_eq!(params["worktreePath"], "/repo/.bat-worktrees/s-1");
+        assert_eq!(params["branchName"], "bat/worktree-s-1");
+    }
 }
