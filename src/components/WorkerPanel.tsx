@@ -181,7 +181,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (batch.length === 0) return
     pendingBatchRef.current = []
     const lines = batch.map(e => JSON.stringify(e)).join('\n') + '\n'
-    await window.batAppAPI.workerBuffer.append(terminalId, lines)
+    await host.workerBuffer.append(terminalId, lines)
   }, [terminalId])
 
   // Schedule a flush (debounced 500ms)
@@ -236,7 +236,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     }
     await flushToDisk()
 
-    const raw = await window.batAppAPI.workerBuffer.readAll(terminalId)
+    const raw = await host.workerBuffer.readAll(terminalId)
     const entries: Array<{ name: string; color: string; data: string }> = raw
       ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
       : []
@@ -255,7 +255,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     }
     await flushToDisk()
 
-    const raw = await window.batAppAPI.workerBuffer.readAll(terminalId)
+    const raw = await host.workerBuffer.readAll(terminalId)
     const entries: Array<{ name: string; color: string; data: string }> = raw
       ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
       : []
@@ -274,7 +274,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       flushTimerRef.current = null
     }
     pendingBatchRef.current = []
-    await window.batAppAPI.workerBuffer.clear(terminalId)
+    await host.workerBuffer.clear(terminalId)
 
     midLineRef.current = new Map()
     const headerText = buildWorkerHeader(procfilePath, processesRef.current.length)
@@ -633,9 +633,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     // --- Async: read Procfile and start processes ---
     ;(async () => {
       // Init worker buffer file on disk
-      await window.batAppAPI.workerBuffer.init(terminalId)
+      await host.workerBuffer.init(terminalId)
 
-      const remoteStatus = await window.batAppAPI.remote.clientStatus().catch(() => ({ connected: false }))
+      const remoteStatus = await host.remote.clientStatus().catch(() => ({ connected: false }))
       const isRemoteClient = remoteStatus.connected === true
       isRemoteClientRef.current = isRemoteClient
 
@@ -710,7 +710,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       terminal.dispose()
       terminalRef.current = null
       fitAddonRef.current = null
-      window.batAppAPI.workerBuffer.clear(terminalId)
+      host.workerBuffer.clear(terminalId)
       if (isRemoteClientRef.current) return
       const idsToKill = new Set([
         ...ptyIdsRef.current,
