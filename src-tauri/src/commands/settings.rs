@@ -51,8 +51,7 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, SettingsError> {
     Ok(dir.join("settings.json"))
 }
 
-#[tauri::command]
-pub fn settings_load(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
+fn settings_load_impl(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
     let path = settings_path(&app)?;
     if !path.exists() {
         return Ok(None);
@@ -62,13 +61,30 @@ pub fn settings_load(app: tauri::AppHandle) -> Result<Option<String>, CommandErr
 }
 
 #[tauri::command]
-pub fn settings_save(app: tauri::AppHandle, data: String) -> Result<(), CommandError> {
+pub async fn settings_load(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || settings_load_impl(app))
+        .await
+        .map_err(|err| CommandError {
+            message: format!("settings.load worker failed: {err}"),
+        })?
+}
+
+fn settings_save_impl(app: tauri::AppHandle, data: String) -> Result<(), CommandError> {
     let path = settings_path(&app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(SettingsError::from)?;
     }
     fs::write(&path, data).map_err(SettingsError::from)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn settings_save(app: tauri::AppHandle, data: String) -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(move || settings_save_impl(app, data))
+        .await
+        .map_err(|err| CommandError {
+            message: format!("settings.save worker failed: {err}"),
+        })?
 }
 
 fn clear_terminal_history_dir(history_dir: &Path) -> bool {
@@ -90,13 +106,21 @@ fn clear_terminal_history_dir(history_dir: &Path) -> bool {
     true
 }
 
-#[tauri::command]
-pub fn settings_clear_terminal_history(app: tauri::AppHandle) -> Result<bool, CommandError> {
+fn settings_clear_terminal_history_impl(app: tauri::AppHandle) -> Result<bool, CommandError> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| SettingsError::AppDataDir(e.to_string()))?;
     Ok(clear_terminal_history_dir(&dir.join("terminal-history")))
+}
+
+#[tauri::command]
+pub async fn settings_clear_terminal_history(app: tauri::AppHandle) -> Result<bool, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || settings_clear_terminal_history_impl(app))
+        .await
+        .map_err(|err| CommandError {
+            message: format!("settings.clearTerminalHistory worker failed: {err}"),
+        })?
 }
 
 // settings:get-shell-path — resolve a shell type to a concrete executable.
