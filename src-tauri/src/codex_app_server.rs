@@ -1157,30 +1157,81 @@ impl CodexAppServerState {
     pub fn set_model(&self, app: &AppHandle, session_id: &str, model: String) -> Option<Value> {
         let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
         let session = sessions.get_mut(session_id)?;
+        if session.model == model {
+            return Some(json!(true));
+        }
         session.model = model;
         let meta = session.metadata();
+        let msg = make_system_message(
+            session_id,
+            format!("Codex model updated to {}.", session.model),
+        );
+        session.messages.push(msg.clone());
+        emit(app, "claude:message", session_id, "message", msg);
         emit(app, "claude:status", session_id, "meta", meta.clone());
         Some(json!(true))
     }
 
-    pub fn set_effort(&self, session_id: &str, effort: String) -> Option<Value> {
+    pub fn set_effort(&self, app: &AppHandle, session_id: &str, effort: String) -> Option<Value> {
         let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
         let session = sessions.get_mut(session_id)?;
-        session.effort = normalize_effort(Some(&effort));
+        let next = normalize_effort(Some(&effort));
+        if session.effort == next {
+            return Some(json!(true));
+        }
+        session.effort = next;
+        let meta = session.metadata();
+        let msg = make_system_message(
+            session_id,
+            format!("Codex reasoning effort updated to {}.", session.effort),
+        );
+        session.messages.push(msg.clone());
+        emit(app, "claude:message", session_id, "message", msg);
+        emit(app, "claude:status", session_id, "meta", meta);
         Some(json!(true))
     }
 
-    pub fn set_sandbox_mode(&self, session_id: &str, mode: String) -> Option<Value> {
+    pub fn set_sandbox_mode(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        mode: String,
+    ) -> Option<Value> {
         let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
         let session = sessions.get_mut(session_id)?;
-        session.sandbox_mode = normalize_sandbox(Some(&mode));
+        let next = normalize_sandbox(Some(&mode));
+        if session.sandbox_mode == next {
+            return Some(json!(true));
+        }
+        session.sandbox_mode = next;
+        let msg = make_system_message(
+            session_id,
+            format!("Codex sandbox updated to {}.", session.sandbox_mode),
+        );
+        session.messages.push(msg.clone());
+        emit(app, "claude:message", session_id, "message", msg);
         Some(json!(true))
     }
 
-    pub fn set_approval_policy(&self, session_id: &str, policy: String) -> Option<Value> {
+    pub fn set_approval_policy(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        policy: String,
+    ) -> Option<Value> {
         let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
         let session = sessions.get_mut(session_id)?;
-        session.approval_policy = normalize_approval(Some(&policy));
+        let next = normalize_approval(Some(&policy));
+        if session.approval_policy == next {
+            return Some(json!(true));
+        }
+        session.approval_policy = next;
+        let msg = make_system_message(
+            session_id,
+            format!("Codex approval updated to {}.", session.approval_policy),
+        );
+        session.messages.push(msg.clone());
+        emit(app, "claude:message", session_id, "message", msg);
         Some(json!(true))
     }
 

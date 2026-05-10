@@ -739,7 +739,7 @@ pub async fn claude_set_codex_sandbox_mode(
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
         return tauri::async_runtime::spawn_blocking(move || {
-            let _ = codex.set_sandbox_mode(&codex_session_id, mode);
+            let _ = codex.set_sandbox_mode(&codex_app, &codex_session_id, mode);
             codex.reconfigure_session(&codex_app, &codex_session_id)
         })
         .await
@@ -771,7 +771,7 @@ pub async fn claude_set_codex_approval_policy(
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
         return tauri::async_runtime::spawn_blocking(move || {
-            let _ = codex.set_approval_policy(&codex_session_id, policy);
+            let _ = codex.set_approval_policy(&codex_app, &codex_session_id, policy);
             codex.reconfigure_session(&codex_app, &codex_session_id)
         })
         .await
@@ -821,7 +821,7 @@ pub async fn claude_set_effort(
     session_id: String,
     effort: String,
 ) -> Result<Value, BridgeError> {
-    if let Some(value) = codex_state.set_effort(&session_id, effort.clone()) {
+    if let Some(value) = codex_state.set_effort(&app, &session_id, effort.clone()) {
         return Ok(value);
     }
     call_blocking(
