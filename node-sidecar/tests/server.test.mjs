@@ -313,6 +313,14 @@ async function inProcess() {
     writeFileSync(join(fakeData, 'claude-accounts.json'), '{ this is not json')
     const corrupt = await readAccountIndex()
     assert.deepEqual(corrupt, { accounts: [], activeAccountId: null, switchWarningShown: false })
+
+    // accountMarkWarningShown persists the warning flag even when the
+    // previous index was corrupt, matching the renderer's expectation
+    // that the one-time warning does not reappear after acknowledgement.
+    const marked = await dispatch({ jsonrpc: '2.0', id: 34, method: 'claude.accountMarkWarningShown' })
+    assert.equal(marked.result, true)
+    const afterMark = await readAccountIndex()
+    assert.deepEqual(afterMark, { accounts: [], activeAccountId: null, switchWarningShown: true })
   } finally {
     rmSync(fakeData, { recursive: true, force: true })
     if (savedDataDir2 === undefined) delete process.env.BAT_SIDECAR_DATA_DIR

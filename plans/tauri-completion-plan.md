@@ -46,6 +46,7 @@
 - 2026-05-10：Agent metadata 背景化第一步。Claude/Codex/OpenAI 三個 panel 在 Tauri 下收到 `sdkSessionId` 後，model/account/commands/agents metadata refresh 延後 1.5 秒背景執行；Electron 保持立即刷新。這讓 panel mount / first status 不會立刻與 sidecar warm-up、SDK import 或首輪 send 搶同一段時間。
 - 2026-05-10：補 Tauri `claude.sendMessage` adapter start/end marker。renderer 送出時會記錄 prompt/image/autoCompactWindow 與 invoke elapsed/ok/error，可和 `sidecar:metric`、`claude.sdkLoad`、sidecar send lifecycle log 串起來定位按送出時 UI 卡頓是在 renderer 同步段、Tauri invoke、Node spawn、SDK import，還是 LiveQuery push。
 - 2026-05-10：開始 M3 OpenAI parity。`openai.getApiKeyStatus/setApiKey/clearApiKey` sidecar handler 不再是 stub，會在 Tauri data dir 寫入/清除 `openai-api-key.bin`，並保留 `OPENAI_API_KEY` 與 Codex OAuth token fallback；Settings 的 OpenAI key 設定在 Tauri 下開始有實際持久化效果。
+- 2026-05-10：Account management stub reduction。`claude.accountMarkWarningShown` sidecar handler 會持久化 `claude-accounts.json` 的 `switchWarningShown=true`，不再只是回傳成功；Tauri Settings 的帳號切換一次性警告不會因重開 app 重複出現。完整 account import/switch/remove 仍待安全憑證儲存方案。
 
 ## 目前判斷
 

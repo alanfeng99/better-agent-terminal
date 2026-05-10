@@ -1,7 +1,7 @@
 // claude.* auth + account handlers. Also exports the Claude CLI binary
 // resolver / spawner used by other handlers (sendMessage, forkSession).
 
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { accessSync, constants as fsConstants } from 'node:fs'
 import { platform } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -139,6 +139,19 @@ export async function readAccountIndex() {
   }
 }
 
+async function writeAccountIndex(store) {
+  const dir = resolveDataDir()
+  const path = join(dir, 'claude-accounts.json')
+  await mkdir(dir, { recursive: true })
+  await writeFile(path, JSON.stringify(store, null, 2), { encoding: 'utf-8', mode: 0o600 })
+}
+
+async function markSwitchWarningShown() {
+  const store = await readAccountIndex()
+  await writeAccountIndex({ ...store, switchWarningShown: true })
+  return true
+}
+
 // Exported for tests.
 export function __resetClaudeCliCacheForTests() { _claudeCliPathCache = undefined }
 
@@ -207,4 +220,4 @@ registerHandler('claude.accountRemove', async (params) => {
   invalidateAccountMetadataCache()
   return false
 })
-registerHandler('claude.accountMarkWarningShown', async () => true)
+registerHandler('claude.accountMarkWarningShown', async () => markSwitchWarningShown())
