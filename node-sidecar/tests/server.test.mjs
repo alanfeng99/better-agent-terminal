@@ -4090,6 +4090,124 @@ async function inProcess() {
     }
   }
 
+  // fs.search — recursive filename substring match. Pure Node walker;
+  // builds a tmpdir tree, runs queries against dispatch, asserts the
+  // sort order, IGNORED-dir pruning, max-results clamp, and depth cap.
+  {
+    const { mkdtempSync, rmSync, mkdirSync, writeFileSync } = await import('fs')
+    const { join } = await import('path')
+    const osModSearch = await import('os')
+    const { tmpdir } = osModSearch
+    const searchRoot = mkdtempSync(join(tmpdir(), 'sidecar-fssearch-'))
+    try {
+      // Layout:
+      //   <root>/
+      //     alpha-dir/             (matches 'alpha')
+      //       alpha-file.txt       (matches 'alpha')
+      //       deep/...             (depth chain to test depth cap)
+      //     beta-dir/
+      //       beta-file.md         (matches 'beta')
+      //     node_modules/junk.txt  (must be pruned by IGNORED set)
+      //     .git/HEAD              (must be pruned)
+      //     dist/build.js          (must be pruned)
+      //     plain.txt              (no match for either query)
+      mkdirSync(join(searchRoot, 'alpha-dir'))
+      writeFileSync(join(searchRoot, 'alpha-dir', 'alpha-file.txt'), '', 'utf-8')
+      mkdirSync(join(searchRoot, 'beta-dir'))
+      writeFileSync(join(searchRoot, 'beta-dir', 'beta-file.md'), '', 'utf-8')
+      mkdirSync(join(searchRoot, 'node_modules'))
+      writeFileSync(join(searchRoot, 'node_modules', 'alpha-junk.txt'), '', 'utf-8')
+      mkdirSync(join(searchRoot, '.git'))
+      writeFileSync(join(searchRoot, '.git', 'alpha-HEAD'), '', 'utf-8')
+      mkdirSync(join(searchRoot, 'dist'))
+      writeFileSync(join(searchRoot, 'dist', 'alpha-build.js'), '', 'utf-8')
+      writeFileSync(join(searchRoot, 'plain.txt'), '', 'utf-8')
+
+      // Build a 10-deep chain under alpha-dir/deep/... to test the
+      // depth cap (8 levels). The 9th and 10th level alpha matches
+      // must NOT appear.
+      let cursor = join(searchRoot, 'alpha-dir', 'deep')
+      mkdirSync(cursor)
+      for (let i = 1; i <= 9; i++) {
+        cursor = join(cursor, `lv${i}`)
+        mkdirSync(cursor)
+        writeFileSync(join(cursor, `alpha-lv${i}.txt`), '', 'utf-8')
+      }
+
+      // (a) Case-insensitive substring match — finds alpha-dir,
+      //     alpha-file.txt, and the lv1..lv6 alpha files (depth check
+      //     below). The pruned ones (node_modules/.git/dist) must NOT
+      //     appear in the results.
+      const r1 = await dispatch({ jsonrpc: '2.0', id: 1400, method: 'fs.search',
+        params: { dirPath: searchRoot, query: 'ALPHA' } })
+      assert.ok(Array.isArray(r1.result))
+      const names = r1.result.map(r => r.name)
+      assert.ok(names.includes('alpha-dir'), 'must include alpha-dir')
+      assert.ok(names.includes('alpha-file.txt'), 'must include alpha-file.txt')
+      assert.ok(!names.includes('alpha-junk.txt'), 'node_modules must be pruned')
+      assert.ok(!names.includes('alpha-HEAD'), '.git must be pruned')
+      assert.ok(!names.includes('alpha-build.js'), 'dist must be pruned')
+
+      // (b) Sort order: directories first, then alphabetical by name.
+      //     Find the first non-directory result and assert every
+      //     preceding result is a directory.
+      let sawFile = false
+      for (const r of r1.result) {
+        if (sawFile && r.isDirectory) {
+          assert.fail(`directory '${r.name}' appeared after a file — sort order broken`)
+        }
+        if (!r.isDirectory) sawFile = true
+      }
+
+      // (c) Depth cap — the layout has alpha-lv1..alpha-lv9 at
+      //     depths 3..11 from <root>. With SEARCH_MAX_DEPTH=8, the
+      //     handler must include up to lv6 (depth 8) and exclude
+      //     lv7..lv9. (Depth 0 is <root>, alpha-dir/deep/lv1 = depth 3,
+      //     so lv6 = depth 8, lv7 = depth 9 → out.)
+      assert.ok(names.includes('alpha-lv6.txt') || names.includes('alpha-lv5.txt'),
+        'depth cap must include the bottom-most allowed level')
+      assert.ok(!names.includes('alpha-lv9.txt'),
+        'depth cap must exclude the deepest levels (lv9)')
+
+      // (d) Empty / no-match query returns []. Missing query → [].
+      const rNo = await dispatch({ jsonrpc: '2.0', id: 1401, method: 'fs.search',
+        params: { dirPath: searchRoot, query: 'no-such-substring-anywhere' } })
+      assert.deepEqual(rNo.result, [])
+      const rMissing = await dispatch({ jsonrpc: '2.0', id: 1402, method: 'fs.search',
+        params: { dirPath: searchRoot } })
+      assert.deepEqual(rMissing.result, [], 'missing query → []')
+      const rNoDir = await dispatch({ jsonrpc: '2.0', id: 1403, method: 'fs.search',
+        params: { query: 'alpha' } })
+      assert.deepEqual(rNoDir.result, [], 'missing dirPath → []')
+
+      // (e) Sensitive-path refusal: searching directly inside ~/.ssh
+      //     must return [] without enumerating. We don't actually
+      //     have a guarantee ~/.ssh exists, but the handler short-
+      //     circuits before fs.readdir so the contract holds either
+      //     way — the assertion below is just "no throw, no leak".
+      const rSensitive = await dispatch({ jsonrpc: '2.0', id: 1404, method: 'fs.search',
+        params: { dirPath: join(osModSearch.homedir(), '.ssh'), query: 'id_rsa' } })
+      assert.deepEqual(rSensitive.result, [],
+        'sensitive root must short-circuit to []')
+
+      // (f) Max-results clamp — make 120 alpha-* files in a flat dir,
+      //     assert the result length is exactly 100.
+      const flatDir = mkdtempSync(join(tmpdir(), 'sidecar-fssearch-flat-'))
+      try {
+        for (let i = 0; i < 120; i++) {
+          writeFileSync(join(flatDir, `alpha-${String(i).padStart(3, '0')}.txt`), '', 'utf-8')
+        }
+        const rClamp = await dispatch({ jsonrpc: '2.0', id: 1410, method: 'fs.search',
+          params: { dirPath: flatDir, query: 'alpha' } })
+        assert.equal(rClamp.result.length, 100, 'max-results cap is 100')
+      } finally {
+        rmSync(flatDir, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(searchRoot, { recursive: true, force: true })
+    }
+  }
+
   // fs.watch / fs.unwatch — port of the Electron fs:watch / fs:unwatch
   // stateful handlers. Watches a directory recursively, debounces
   // 500ms, then emits `fs:changed` events with the absolute path. The

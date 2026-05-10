@@ -202,3 +202,48 @@ registerHandler('fs.resolvePathLinks', async (params) => {
   }
   return results
 })
+
+// fs.search — recursive filename substring match. Pure Node walker
+// (no ripgrep dep). Used by FileTree / Agent panel file pickers.
+// Hard caps: depth ≤ 8, results ≤ 100. IGNORED dirs match Electron.
+// Path-guard runs at every level so a sensitive subtree is silently
+// pruned. Result is sorted dirs-first then alphabetical by name.
+const SEARCH_IGNORED = new Set([
+  '.git', 'node_modules', '.next', 'dist', 'dist-electron',
+  '.cache', '__pycache__', '.DS_Store', 'release',
+])
+const SEARCH_MAX_DEPTH = 8
+const SEARCH_MAX_RESULTS = 100
+
+registerHandler('fs.search', async (params) => {
+  const dirPath = pickPath(params, 'dirPath', 'path')
+  const query = (params && typeof params === 'object' && typeof params.query === 'string')
+    ? params.query
+    : null
+  if (!dirPath || query === null) return []
+  const lowerQuery = query.toLowerCase()
+  const results = []
+  async function walk(dir, depth) {
+    if (depth > SEARCH_MAX_DEPTH || results.length >= SEARCH_MAX_RESULTS) return
+    if (isSensitivePath(dir)) return
+    let entries
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch { return }
+    for (const e of entries) {
+      if (results.length >= SEARCH_MAX_RESULTS) return
+      if (SEARCH_IGNORED.has(e.name)) continue
+      const fullPath = path.join(dir, e.name)
+      if (isSensitivePath(fullPath)) continue
+      if (e.name.toLowerCase().includes(lowerQuery)) {
+        results.push({ name: e.name, path: fullPath, isDirectory: e.isDirectory() })
+      }
+      if (e.isDirectory()) await walk(fullPath, depth + 1)
+    }
+  }
+  await walk(path.resolve(dirPath), 0)
+  return results.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+})
