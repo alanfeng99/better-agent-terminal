@@ -176,6 +176,7 @@ async function run() {
       if (cmd === 'claude_stop_session') return { ok: true, existed: true } as unknown as T
       if (cmd === 'claude_abort_session') return { ok: true } as unknown as T
       if (cmd === 'claude_stop_task') return true as unknown as T
+      if (cmd === 'claude_resume_session') return { ok: true } as unknown as T
       if (cmd === 'claude_auth_login') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'claude_auth_logout') return { success: true } as unknown as T
       if (cmd === 'claude_account_import_current') return null as unknown as T
@@ -464,6 +465,24 @@ async function run() {
     assert.deepEqual(await mod.host.claude.stopSession('s-1'), { ok: true, existed: true })
     await mod.host.claude.abortSession('s-1')
     assert.equal(await mod.host.claude.stopTask('s-1', 'task-1'), true)
+    assert.deepEqual(
+      await mod.host.claude.resumeSession(
+        's-1',
+        'sdk-1',
+        '/cwd',
+        'claude-sonnet-4-6',
+        'v2',
+        true,
+        '/wt',
+        'feat',
+        'codex-agent-worktree',
+        'workspace-write',
+        'on-request',
+        'plan',
+        'high',
+      ),
+      { ok: true },
+    )
     // Event listener registration returns a synchronous unsubscriber.
     const unsubMsg = mod.host.claude.onMessage(() => {})
     assert.equal(typeof unsubMsg, 'function')
@@ -572,6 +591,7 @@ async function run() {
       'fs_watch',
       'fs_unwatch',
       'claude_stop_task',
+      'claude_resume_session',
       'claude_set_codex_sandbox_mode',
       'claude_set_codex_approval_policy',
       'settings_clear_terminal_history',
@@ -699,6 +719,26 @@ async function run() {
       { cmd: 'claude_stop_session', args: { sessionId: 's-1' } },
       { cmd: 'claude_abort_session', args: { sessionId: 's-1' } },
       { cmd: 'claude_stop_task', args: { sessionId: 's-1', taskId: 'task-1' } },
+      {
+        cmd: 'claude_resume_session',
+        args: {
+          sessionId: 's-1',
+          sdkSessionId: 'sdk-1',
+          options: {
+            cwd: '/cwd',
+            model: 'claude-sonnet-4-6',
+            apiVersion: 'v2',
+            useWorktree: true,
+            worktreePath: '/wt',
+            worktreeBranch: 'feat',
+            agentPreset: 'codex-agent-worktree',
+            codexSandboxMode: 'workspace-write',
+            codexApprovalPolicy: 'on-request',
+            permissionMode: 'plan',
+            effort: 'high',
+          },
+        },
+      },
       { cmd: 'claude_auth_login', args: undefined },
       { cmd: 'claude_auth_logout', args: undefined },
       { cmd: 'claude_account_import_current', args: undefined },

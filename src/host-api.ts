@@ -654,13 +654,23 @@ function createTauriHost(): BatAppAPI {
             worktreePath?: string,
             worktreeBranch?: string,
             agentPreset?: string,
+            codexSandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access',
+            codexApprovalPolicy?: 'untrusted' | 'on-request' | 'never',
+            permissionMode?: string,
+            effort?: string,
           ) => getInvoke()<unknown>('claude_resume_session', {
             sessionId,
             sdkSessionId,
             options: {
-              cwd, model, apiVersion,
+              cwd,
+              model,
+              apiVersion,
               ...(useWorktree ? { useWorktree, worktreePath, worktreeBranch } : {}),
               ...(agentPreset ? { agentPreset } : {}),
+              ...(codexSandboxMode ? { codexSandboxMode } : {}),
+              ...(codexApprovalPolicy ? { codexApprovalPolicy } : {}),
+              ...(permissionMode ? { permissionMode } : {}),
+              ...(effort ? { effort } : {}),
             },
           })
         }
