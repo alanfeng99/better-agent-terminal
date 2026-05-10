@@ -15,13 +15,7 @@ pub struct RuntimeEventHubState {
 }
 
 impl RuntimeEventHubState {
-    pub fn publish(
-        &self,
-        app: &AppHandle,
-        topic: &str,
-        payload: Value,
-        _origin: &'static str,
-    ) {
+    pub fn publish(&self, app: &AppHandle, topic: &str, payload: Value, _origin: &'static str) {
         // Keep a monotonic sequence internally so future buffering/replay can
         // be added without changing renderer event payloads.
         let _seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -29,12 +23,7 @@ impl RuntimeEventHubState {
     }
 }
 
-pub fn publish_runtime_event(
-    app: &AppHandle,
-    topic: &str,
-    payload: Value,
-    origin: &'static str,
-) {
+pub fn publish_runtime_event(app: &AppHandle, topic: &str, payload: Value, origin: &'static str) {
     let hub = app.state::<RuntimeEventHubState>();
     hub.publish(app, topic, payload, origin);
 }

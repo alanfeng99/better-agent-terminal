@@ -15,6 +15,7 @@
 // find both `node` on PATH and the bundled sidecar script. Failures bubble
 // up as { message } strings to the renderer.
 
+use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -103,9 +104,27 @@ pub async fn claude_account_list(
 pub async fn claude_start_session(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     options: Option<Value>,
 ) -> Result<Value, BridgeError> {
+    if should_handle_codex(&options) {
+        let codex = (*codex_state).clone();
+        let codex_app = app.clone();
+        let codex_session_id = session_id.clone();
+        let codex_options = options.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            codex.start_session(&codex_app, codex_session_id, codex_options)
+        })
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("codex app-server start worker failed: {err}"),
+        })?;
+        if let Ok(value) = result {
+            return Ok(value);
+        }
+        let _ = (*codex_state).stop_session(session_id.clone());
+    }
     call_with_timeout_blocking(
         app,
         state,
@@ -120,11 +139,26 @@ pub async fn claude_start_session(
 pub async fn claude_send_message(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     prompt: String,
     images: Option<Vec<String>>,
     auto_compact_window: Option<i64>,
 ) -> Result<Value, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        let codex = (*codex_state).clone();
+        let codex_app = app.clone();
+        let codex_session_id = session_id.clone();
+        let codex_prompt = prompt.clone();
+        let codex_images = images.clone().unwrap_or_default();
+        return tauri::async_runtime::spawn_blocking(move || {
+            codex.send_message(&codex_app, codex_session_id, codex_prompt, codex_images)
+        })
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("codex app-server send worker failed: {err}"),
+        })?;
+    }
     let state = (*state).clone();
     tauri::async_runtime::spawn_blocking(move || {
         call_with_timeout(
@@ -150,8 +184,12 @@ pub async fn claude_send_message(
 pub async fn claude_stop_session(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        return Ok(codex_state.stop_session(session_id));
+    }
     call_blocking(
         app,
         state,
@@ -165,8 +203,21 @@ pub async fn claude_stop_session(
 pub async fn claude_abort_session(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        let codex = (*codex_state).clone();
+        let codex_app = app.clone();
+        let codex_session_id = session_id.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            codex.abort_session(&codex_app, codex_session_id)
+        })
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("codex app-server abort worker failed: {err}"),
+        })?;
+    }
     call_blocking(
         app,
         state,
@@ -180,9 +231,23 @@ pub async fn claude_abort_session(
 pub async fn claude_stop_task(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     task_id: String,
 ) -> Result<bool, BridgeError> {
+    if codex_state.is_owned(&session_id) {
+        let codex = (*codex_state).clone();
+        let codex_app = app.clone();
+        let codex_session_id = session_id.clone();
+        let value = tauri::async_runtime::spawn_blocking(move || {
+            codex.abort_session(&codex_app, codex_session_id)
+        })
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("codex app-server stopTask worker failed: {err}"),
+        })??;
+        return Ok(value.get("ok").and_then(Value::as_bool).unwrap_or(true));
+    }
     let value = call_blocking(
         app,
         state,
@@ -358,8 +423,12 @@ pub async fn claude_get_account_info(
 pub async fn claude_get_session_state(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    if let Some(value) = codex_state.get_session_state(&session_id) {
+        return Ok(value);
+    }
     call_blocking(
         app,
         state,
@@ -373,8 +442,12 @@ pub async fn claude_get_session_state(
 pub async fn claude_get_session_meta(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    if let Some(value) = codex_state.get_session_meta(&session_id) {
+        return Ok(value);
+    }
     call_blocking(
         app,
         state,
@@ -499,9 +572,13 @@ pub async fn claude_set_permission_mode(
 pub async fn claude_set_codex_sandbox_mode(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     mode: String,
 ) -> Result<Value, BridgeError> {
+    if let Some(value) = codex_state.set_sandbox_mode(&session_id, mode.clone()) {
+        return Ok(value);
+    }
     call_blocking(
         app,
         state,
@@ -517,9 +594,13 @@ pub async fn claude_set_codex_sandbox_mode(
 pub async fn claude_set_codex_approval_policy(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     policy: String,
 ) -> Result<Value, BridgeError> {
+    if let Some(value) = codex_state.set_approval_policy(&session_id, policy.clone()) {
+        return Ok(value);
+    }
     call_blocking(
         app,
         state,
@@ -535,10 +616,14 @@ pub async fn claude_set_codex_approval_policy(
 pub async fn claude_set_model(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     model: String,
     auto_compact_window: Option<i64>,
 ) -> Result<Value, BridgeError> {
+    if let Some(value) = codex_state.set_model(&app, &session_id, model.clone()) {
+        return Ok(value);
+    }
     call_blocking(
         app,
         state,
@@ -554,9 +639,13 @@ pub async fn claude_set_model(
 pub async fn claude_set_effort(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     effort: String,
 ) -> Result<Value, BridgeError> {
+    if let Some(value) = codex_state.set_effort(&session_id, effort.clone()) {
+        return Ok(value);
+    }
     call_blocking(
         app,
         state,
@@ -744,10 +833,34 @@ pub async fn claude_rewind_to_prompt(
 pub async fn claude_resume_session(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
     session_id: String,
     sdk_session_id: String,
     options: Option<Value>,
 ) -> Result<Value, BridgeError> {
+    if should_handle_codex(&options) || codex_state.is_owned(&session_id) {
+        let codex = (*codex_state).clone();
+        let codex_app = app.clone();
+        let codex_session_id = session_id.clone();
+        let codex_sdk_session_id = sdk_session_id.clone();
+        let codex_options = options.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            codex.resume_session(
+                &codex_app,
+                codex_session_id,
+                codex_sdk_session_id,
+                codex_options,
+            )
+        })
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("codex app-server resume worker failed: {err}"),
+        })?;
+        if let Ok(value) = result {
+            return Ok(value);
+        }
+        let _ = (*codex_state).stop_session(session_id.clone());
+    }
     call_blocking(
         app,
         state,

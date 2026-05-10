@@ -5,6 +5,7 @@
 // a strongly typed signature, and the renderer reaches it via the
 // host-api adapter (src/host-api.ts). See plans/tauri-migration-plan.md.
 
+mod codex_app_server;
 mod commands;
 mod event_hub;
 mod path_guard;
@@ -29,6 +30,7 @@ pub fn run() {
         .manage(snippet_cmd::SnippetState::default())
         .manage(worker_buffer_cmd::WorkerBufferState::default())
         .manage(event_hub::RuntimeEventHubState::default())
+        .manage(codex_app_server::CodexAppServerState::default())
         .manage(sidecar::SidecarState::new())
         .invoke_handler(tauri::generate_handler![
             settings::settings_load,
