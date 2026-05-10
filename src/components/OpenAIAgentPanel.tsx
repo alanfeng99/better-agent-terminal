@@ -855,9 +855,17 @@ export function OpenAIAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const rd = resultData as { result?: string; subtype?: string } | undefined
         if (rd?.result && rd.subtype === 'success') {
           setMessages(prev => {
-            // Skip if any assistant message contains the result text (already shown via onMessage)
+            // Skip only when this turn already produced the same assistant
+            // text via onMessage. Repeated legitimate replies like
+            // "ping" -> "pong" must still append one result per turn.
             const resultText = rd.result!
-            const alreadyShown = prev.some(m =>
+            const currentTurnIdx = currentTurnMsgIdRef.current
+              ? prev.findIndex(m => m.id === currentTurnMsgIdRef.current)
+              : -1
+            const candidates = currentTurnIdx >= 0
+              ? prev.slice(currentTurnIdx + 1)
+              : prev.filter(m => 'timestamp' in m && Date.now() - (m as ClaudeMessage).timestamp < 3000)
+            const alreadyShown = candidates.some(m =>
               'role' in m && m.role === 'assistant' && typeof m.content === 'string' &&
               (m.content === resultText || m.content.includes(resultText) || resultText.includes(m.content))
             )
