@@ -14,6 +14,11 @@ async function main() {
     true,
     'Codex resume list should render when /resume opens showResumeList',
   )
+  assert.match(
+    source,
+    /resumeSession\([\s\S]*effectiveModel \|\| savedModel[\s\S]*permissionMode,\s*effectiveEffort as EffortLevel\)/,
+    'Codex auto-resume should preserve effective model, permission mode, and effort',
+  )
 
   console.log('Codex panel regression: passed')
 }

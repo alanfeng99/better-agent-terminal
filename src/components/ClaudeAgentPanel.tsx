@@ -1125,8 +1125,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       if (savedSdkSessionId) {
         dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
         historyLoadedRef.current = true
-        host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, savedModel, apiVersion,
-          useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset)
+        host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, effectiveModel || savedModel, apiVersion,
+          useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset,
+          undefined, undefined, permissionMode, effectiveEffort as EffortLevel)
       } else {
         dlog(`${stag} FRESH startSession`)
         host.claude.startSession(sessionId, {

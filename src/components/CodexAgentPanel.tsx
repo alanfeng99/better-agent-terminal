@@ -1142,9 +1142,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (savedSdkSessionId) {
           dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
           historyLoadedRef.current = true
-          host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, savedModel, apiVersion,
+          host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, effectiveModel || savedModel, apiVersion,
             useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset,
-            codexSandboxMode, codexApprovalPolicy)
+            codexSandboxMode, codexApprovalPolicy, permissionMode, effectiveEffort as EffortLevel)
         } else {
           dlog(`${stag} FRESH startSession`)
           host.claude.startSession(sessionId, {
