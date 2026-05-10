@@ -177,14 +177,72 @@ fn bridge_error(message: impl Into<String>) -> BridgeError {
 }
 
 fn is_codex_agent_preset(options: &Value) -> bool {
-    matches!(
-        options.get("agentPreset").and_then(Value::as_str),
-        Some("codex-agent")
-    )
+    match options.get("agentPreset").and_then(Value::as_str) {
+        Some("codex-agent") => true,
+        Some("codex-agent-worktree") => options
+            .get("worktreePath")
+            .and_then(Value::as_str)
+            .map(|path| !path.trim().is_empty())
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 pub fn should_handle_codex(options: &Option<Value>) -> bool {
     options.as_ref().map(is_codex_agent_preset).unwrap_or(false)
+}
+
+fn effective_cwd(options: &Value, context: &str) -> Result<String, BridgeError> {
+    if options
+        .get("useWorktree")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if let Some(path) = options
+            .get("worktreePath")
+            .and_then(Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+        {
+            return Ok(path.to_string());
+        }
+    }
+    let cwd = options
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| bridge_error(format!("codex app-server {context}: missing cwd")))?
+        .to_string();
+    Ok(cwd)
+}
+
+fn worktree_payload(options: &Value) -> Option<Value> {
+    if !options
+        .get("useWorktree")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let worktree_path = options
+        .get("worktreePath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())?;
+    let branch_name = options
+        .get("worktreeBranch")
+        .and_then(Value::as_str)
+        .filter(|branch| !branch.trim().is_empty())
+        .unwrap_or("worktree");
+    let git_root = Path::new(worktree_path)
+        .parent()
+        .and_then(Path::parent)
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Some(json!({
+        "branchName": branch_name,
+        "worktreePath": worktree_path,
+        "sourceBranch": "",
+        "gitRoot": git_root,
+    }))
 }
 
 fn normalize_effort(value: Option<&str>) -> String {
@@ -598,11 +656,7 @@ impl CodexAppServerState {
         options: Option<Value>,
     ) -> Result<Value, BridgeError> {
         let options = options.unwrap_or(Value::Null);
-        let cwd = options
-            .get("cwd")
-            .and_then(Value::as_str)
-            .ok_or_else(|| bridge_error("codex app-server startSession: missing cwd"))?
-            .to_string();
+        let cwd = effective_cwd(&options, "startSession")?;
         let model = options
             .get("model")
             .and_then(Value::as_str)
@@ -691,6 +745,9 @@ impl CodexAppServerState {
                     "meta",
                     session.metadata(),
                 );
+                if let Some(payload) = worktree_payload(&options) {
+                    emit(app, "claude:worktree-info", &session_id, "payload", payload);
+                }
             }
         }
         self.inner
@@ -715,11 +772,7 @@ impl CodexAppServerState {
         options: Option<Value>,
     ) -> Result<Value, BridgeError> {
         let options = options.unwrap_or(Value::Null);
-        let cwd = options
-            .get("cwd")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        let cwd = effective_cwd(&options, "resumeSession")?;
         let model = options
             .get("model")
             .and_then(Value::as_str)
@@ -800,6 +853,9 @@ impl CodexAppServerState {
             "meta",
             session.metadata(),
         );
+        if let Some(payload) = worktree_payload(&options) {
+            emit(app, "claude:worktree-info", &session_id, "payload", payload);
+        }
         emit(
             app,
             "claude:resume-loading",
@@ -1481,6 +1537,39 @@ mod tests {
         assert_eq!(
             app_server_sandbox("danger-full-access"),
             "danger-full-access"
+        );
+    }
+
+    #[test]
+    fn codex_worktree_preset_routes_to_rust_only_after_worktree_exists() {
+        assert!(should_handle_codex(&Some(json!({
+            "agentPreset": "codex-agent",
+            "cwd": "/repo"
+        }))));
+        assert!(!should_handle_codex(&Some(json!({
+            "agentPreset": "codex-agent-worktree",
+            "cwd": "/repo",
+            "useWorktree": true
+        }))));
+        assert!(should_handle_codex(&Some(json!({
+            "agentPreset": "codex-agent-worktree",
+            "cwd": "/repo",
+            "useWorktree": true,
+            "worktreePath": "/repo/.bat-worktrees/abc12345"
+        }))));
+    }
+
+    #[test]
+    fn codex_worktree_uses_worktree_path_as_effective_cwd() {
+        let options = json!({
+            "agentPreset": "codex-agent-worktree",
+            "cwd": "/repo",
+            "useWorktree": true,
+            "worktreePath": "/repo/.bat-worktrees/abc12345"
+        });
+        assert_eq!(
+            effective_cwd(&options, "test").expect("cwd"),
+            "/repo/.bat-worktrees/abc12345"
         );
     }
 }

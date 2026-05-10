@@ -1,6 +1,6 @@
 # Tauri 補完計畫
 
-更新日期：2026-05-10
+更新日期：2026-05-11
 
 ## 進度紀錄
 
@@ -81,6 +81,7 @@
 - 2026-05-10：開始 OpenAI Direct cleanup。`openai-agent` 從 renderer `AgentPresetId` 移除，`MainPanel` 不再 lazy import 或掛載 `OpenAIAgentPanel`，並刪除未被引用的 `OpenAIAgentPanel.tsx`；舊 workspace 若殘留 `openai-agent`，不會再啟動 OpenAI Direct runtime panel。
 - 2026-05-10：補 OpenAI Direct 舊資料 migration。settings 載入時若 `defaultAgent=openai-agent` 會轉成 `codex-agent`；workspace 載入時若 workspace default 或 terminal preset 殘留 `openai-agent`，也會轉成 `codex-agent`，避免重開後建立無效 OpenAI Direct panel。
 - 2026-05-10：補 OpenAI Direct cleanup regression test。`tests/openai-direct-cleanup.test.ts` 鎖住 `openai-agent` 不再註冊/顯示，並覆蓋 settings/workspace 舊資料 migration 到 `codex-agent`，避免後續重構把廢棄的 OpenAI Direct 入口帶回來。
+- 2026-05-11：擴大 Rust Codex app-server routing 到已建立 worktree 的 `codex-agent-worktree`。若 options 內已有 `worktreePath`，Rust runtime 會使用該路徑作為 effective cwd 並 emit `claude:worktree-info`；若缺少 `worktreePath`，仍 fallback Node sidecar，保留 sidecar 自動建立 worktree 的既有行為。
 
 ## 目前判斷
 
