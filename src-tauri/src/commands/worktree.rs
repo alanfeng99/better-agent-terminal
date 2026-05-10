@@ -23,67 +23,85 @@ fn call(
     state.call_with_emit(&cfg, Some(sink), method, params, DEFAULT_TIMEOUT)
 }
 
+async fn call_blocking(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    method: &'static str,
+    params: Value,
+) -> Result<Value, BridgeError> {
+    let state = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || call(&app, &state, method, params))
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("{method} worker failed: {err}"),
+        })?
+}
+
 #[tauri::command]
-pub fn worktree_create(
+pub async fn worktree_create(
     app: AppHandle,
     state: State<'_, SidecarState>,
     session_id: String,
     cwd: String,
 ) -> Result<Value, BridgeError> {
-    call(
-        &app,
-        &state,
+    call_blocking(
+        app,
+        state,
         "worktree.create",
         json!({ "sessionId": session_id, "cwd": cwd }),
     )
+    .await
 }
 
 #[tauri::command]
-pub fn worktree_remove(
+pub async fn worktree_remove(
     app: AppHandle,
     state: State<'_, SidecarState>,
     session_id: String,
     delete_branch: bool,
 ) -> Result<Value, BridgeError> {
-    call(
-        &app,
-        &state,
+    call_blocking(
+        app,
+        state,
         "worktree.remove",
         json!({ "sessionId": session_id, "deleteBranch": delete_branch }),
     )
+    .await
 }
 
 #[tauri::command]
-pub fn worktree_status(
+pub async fn worktree_status(
     app: AppHandle,
     state: State<'_, SidecarState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    call(
-        &app,
-        &state,
+    call_blocking(
+        app,
+        state,
         "worktree.status",
         json!({ "sessionId": session_id }),
     )
+    .await
 }
 
 #[tauri::command]
-pub fn worktree_merge(
+pub async fn worktree_merge(
     app: AppHandle,
     state: State<'_, SidecarState>,
     session_id: String,
     strategy: String,
 ) -> Result<Value, BridgeError> {
-    call(
-        &app,
-        &state,
+    call_blocking(
+        app,
+        state,
         "worktree.merge",
         json!({ "sessionId": session_id, "strategy": strategy }),
     )
+    .await
 }
 
 #[tauri::command]
-pub fn worktree_rehydrate(
+pub async fn worktree_rehydrate(
     app: AppHandle,
     state: State<'_, SidecarState>,
     session_id: String,
@@ -91,9 +109,9 @@ pub fn worktree_rehydrate(
     worktree_path: String,
     branch_name: String,
 ) -> Result<Value, BridgeError> {
-    call(
-        &app,
-        &state,
+    call_blocking(
+        app,
+        state,
         "worktree.rehydrate",
         json!({
             "sessionId": session_id,
@@ -102,4 +120,5 @@ pub fn worktree_rehydrate(
             "branchName": branch_name,
         }),
     )
+    .await
 }

@@ -53,6 +53,7 @@
 - 2026-05-10：補 Codex sandbox/approval 的 Tauri state-level parity。`claude.setCodexSandboxMode` / `claude.setCodexApprovalPolicy` 不再由 Rust 固定回 `false`，改走 sidecar handler；sidecar 會驗證合法值、既有 session 才回 `true`，並保存到 session state，讓 Codex/OpenAI panel 的切換與 resume/start options 在完整 Codex runtime 搬移前仍有一致狀態。
 - 2026-05-10：補 Claude session worktree rehydrate parity。Tauri sidecar `claude.startSession/resumeSession` 現在遇到 `useWorktree + worktreePath` 且路徑存在時，會 rehydrate `activeWorktrees`、把 session effective cwd 切到 worktree path，並 emit `claude:worktree-info`；這讓 reload/resume 已有 worktree 的 Agent session 不再回到原始 repo cwd。
 - 2026-05-10：補 Claude session worktree cleanup parity。Tauri sidecar `claude.cleanupWorktree` 現在會在移除 active worktree 後把 session cwd 從 worktree path 還原到 original cwd，清掉 worktree options，並 emit `claude:status` 與 `claude:worktree-info=null`；Workspace 關閉 worktree 後不再留下錯誤 cwd。
+- 2026-05-10：降低 Tauri worktree command UI 阻塞風險。`worktree.create/remove/status/merge/rehydrate` Rust commands 改成 async command，將 blocking sidecar bridge 放進 `spawn_blocking`，避免 git worktree 建立/移除或 sidecar cold start 佔住 Tauri command handler。
 
 ## 目前判斷
 
