@@ -3888,6 +3888,208 @@ async function inProcess() {
     }
   }
 
+  // snippet.* — port of the Electron snippet:* handlers (10 channels).
+  // Backed by a JSON file (`<dataDir>/snippets.json`) with debounced
+  // writes. Tests pin BAT_SIDECAR_DATA_DIR at a fresh tmpdir so the
+  // host's real snippets file is never touched, then exercise the
+  // CRUD + search + favorite + by-workspace flows end-to-end through
+  // dispatch (so param-shape unwrap is exercised too).
+  {
+    const { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } = await import('fs')
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const protocol = await import('../src/lib/remote-protocol.mjs')
+    const { snippetDb } = await import('../src/lib/snippet-db.mjs')
+    const snipRoot = mkdtempSync(join(tmpdir(), 'sidecar-snippet-'))
+    const savedDataDirSn = process.env.BAT_SIDECAR_DATA_DIR
+    process.env.BAT_SIDECAR_DATA_DIR = snipRoot
+    snippetDb.__resetForTests()
+    try {
+      // Helper to flush the 300ms debounce so we can assert on disk.
+      const flush = () => snippetDb.flushNow()
+
+      // (a) getAll on empty store → []. Exercises lazy-load with no file.
+      const getAllEmpty = await dispatch({ jsonrpc: '2.0', id: 1200, method: 'snippet.getAll', params: {} })
+      assert.deepEqual(getAllEmpty.result, [])
+
+      // (b) create — returns the saved snippet with id=1, default
+      //     format='plaintext', default action='terminal', isFavorite=false,
+      //     timestamps set.
+      const created = await dispatch({ jsonrpc: '2.0', id: 1201, method: 'snippet.create',
+        params: { input: { title: 'first', content: 'hello world' } } })
+      assert.equal(typeof created.result, 'object')
+      assert.equal(created.result.id, 1)
+      assert.equal(created.result.title, 'first')
+      assert.equal(created.result.content, 'hello world')
+      assert.equal(created.result.format, 'plaintext')
+      assert.equal(created.result.action, 'terminal')
+      assert.equal(created.result.isFavorite, false)
+      assert.equal(typeof created.result.createdAt, 'number')
+      assert.equal(created.result.createdAt, created.result.updatedAt)
+
+      // (c) Bare-form input (Electron-style positional). Should be
+      //     accepted because the object has title+content.
+      const created2 = await dispatch({ jsonrpc: '2.0', id: 1202, method: 'snippet.create',
+        params: { title: 'second', content: 'cmd', action: 'clipboard', tags: 'foo,bar' } })
+      assert.equal(created2.result.id, 2)
+      assert.equal(created2.result.action, 'clipboard')
+      assert.equal(created2.result.tags, 'foo,bar')
+
+      // (d) Missing input → JSON-RPC error.
+      const createBad = await dispatch({ jsonrpc: '2.0', id: 1203, method: 'snippet.create', params: {} })
+      assert.ok(createBad.error)
+      assert.match(createBad.error.message, /missing input/)
+
+      // (e) On-disk shape: flush the debounce, read snippets.json, assert
+      //     {snippets:[2], nextId:3}.
+      flush()
+      const onDisk = JSON.parse(readFileSync(join(snipRoot, 'snippets.json'), 'utf-8'))
+      assert.equal(onDisk.nextId, 3)
+      assert.equal(onDisk.snippets.length, 2)
+
+      // (f) getById — both Tauri object form and bare-number form.
+      const byId = await dispatch({ jsonrpc: '2.0', id: 1210, method: 'snippet.getById',
+        params: { id: 1 } })
+      assert.equal(byId.result.title, 'first')
+      const byIdBare = await dispatch({ jsonrpc: '2.0', id: 1211, method: 'snippet.getById', params: 1 })
+      assert.equal(byIdBare.result.title, 'first')
+      const missing = await dispatch({ jsonrpc: '2.0', id: 1212, method: 'snippet.getById',
+        params: { id: 999 } })
+      assert.equal(missing.result, null)
+
+      // (g) update — must merge fields, bump updatedAt, leave createdAt
+      //     untouched. Caller passes only the changed fields.
+      const beforeUpd = byId.result
+      // Sleep 5ms to ensure a different ms timestamp.
+      await new Promise(r => setTimeout(r, 5))
+      const updated = await dispatch({ jsonrpc: '2.0', id: 1220, method: 'snippet.update',
+        params: { id: 1, updates: { title: 'first-renamed' } } })
+      assert.equal(updated.result.title, 'first-renamed')
+      assert.equal(updated.result.content, 'hello world', 'unchanged content must persist')
+      assert.equal(updated.result.createdAt, beforeUpd.createdAt, 'createdAt must not move')
+      assert.ok(updated.result.updatedAt > beforeUpd.updatedAt, 'updatedAt must advance')
+
+      // Update missing id → null result, missing updates → error.
+      const updMissingId = await dispatch({ jsonrpc: '2.0', id: 1221, method: 'snippet.update',
+        params: { updates: { title: 'x' } } })
+      assert.ok(updMissingId.error)
+      assert.match(updMissingId.error.message, /missing id/)
+      const updMissingUpdates = await dispatch({ jsonrpc: '2.0', id: 1222, method: 'snippet.update',
+        params: { id: 1 } })
+      assert.ok(updMissingUpdates.error)
+      assert.match(updMissingUpdates.error.message, /missing updates/)
+
+      // (h) toggleFavorite — flip; idempotent fav state via two flips.
+      const fav1 = await dispatch({ jsonrpc: '2.0', id: 1230, method: 'snippet.toggleFavorite',
+        params: { id: 1 } })
+      assert.equal(fav1.result.isFavorite, true)
+      const fav2 = await dispatch({ jsonrpc: '2.0', id: 1231, method: 'snippet.toggleFavorite',
+        params: { id: 1 } })
+      assert.equal(fav2.result.isFavorite, false)
+      // toggle missing id → null.
+      const favBad = await dispatch({ jsonrpc: '2.0', id: 1232, method: 'snippet.toggleFavorite',
+        params: { id: 999 } })
+      assert.equal(favBad.result, null)
+
+      // (i) getFavorites — set fav on #2, expect 1-element array.
+      await dispatch({ jsonrpc: '2.0', id: 1240, method: 'snippet.toggleFavorite',
+        params: { id: 2 } })
+      const favs = await dispatch({ jsonrpc: '2.0', id: 1241, method: 'snippet.getFavorites', params: {} })
+      assert.ok(Array.isArray(favs.result))
+      assert.equal(favs.result.length, 1)
+      assert.equal(favs.result[0].id, 2)
+
+      // (j) search — case-insensitive substring on title / content / tags.
+      const sTitle = await dispatch({ jsonrpc: '2.0', id: 1250, method: 'snippet.search',
+        params: { query: 'RENAMED' } })
+      assert.equal(sTitle.result.length, 1)
+      assert.equal(sTitle.result[0].id, 1)
+      const sTag = await dispatch({ jsonrpc: '2.0', id: 1251, method: 'snippet.search',
+        params: { query: 'foo' } })
+      assert.equal(sTag.result.length, 1)
+      assert.equal(sTag.result[0].id, 2)
+      // Bare-string param.
+      const sBare = await dispatch({ jsonrpc: '2.0', id: 1252, method: 'snippet.search',
+        params: 'hello' })
+      assert.equal(sBare.result.length, 1)
+      assert.equal(sBare.result[0].id, 1, 'content match for "hello"')
+      // Missing query → []. Don't throw — UI uses search-as-you-type.
+      const sNone = await dispatch({ jsonrpc: '2.0', id: 1253, method: 'snippet.search', params: {} })
+      assert.deepEqual(sNone.result, [])
+
+      // (k) getCategories — distinct, sorted.
+      await dispatch({ jsonrpc: '2.0', id: 1260, method: 'snippet.update',
+        params: { id: 1, updates: { category: 'beta' } } })
+      await dispatch({ jsonrpc: '2.0', id: 1261, method: 'snippet.update',
+        params: { id: 2, updates: { category: 'alpha' } } })
+      const cats = await dispatch({ jsonrpc: '2.0', id: 1262, method: 'snippet.getCategories', params: {} })
+      assert.deepEqual(cats.result, ['alpha', 'beta'])
+
+      // (l) getByWorkspace — filter by workspaceId, BUT snippets without
+      //     workspaceId are visible everywhere (this is the Electron
+      //     contract — workspace filter is opt-in per snippet).
+      await dispatch({ jsonrpc: '2.0', id: 1270, method: 'snippet.update',
+        params: { id: 1, updates: { workspaceId: 'ws-A' } } })
+      // #2 still has no workspaceId — should appear in any workspace.
+      const wsA = await dispatch({ jsonrpc: '2.0', id: 1271, method: 'snippet.getByWorkspace',
+        params: { workspaceId: 'ws-A' } })
+      assert.equal(wsA.result.length, 2, 'ws-A snippet + global #2')
+      const wsB = await dispatch({ jsonrpc: '2.0', id: 1272, method: 'snippet.getByWorkspace',
+        params: { workspaceId: 'ws-B' } })
+      // #1 belongs to ws-A → not in ws-B; #2 is global → still visible.
+      assert.equal(wsB.result.length, 1)
+      assert.equal(wsB.result[0].id, 2)
+
+      // (m) delete — true / false branches, and on-disk shape after flush.
+      const del = await dispatch({ jsonrpc: '2.0', id: 1280, method: 'snippet.delete',
+        params: { id: 1 } })
+      assert.equal(del.result, true)
+      const delMissing = await dispatch({ jsonrpc: '2.0', id: 1281, method: 'snippet.delete',
+        params: { id: 999 } })
+      assert.equal(delMissing.result, false)
+      flush()
+      const after = JSON.parse(readFileSync(join(snipRoot, 'snippets.json'), 'utf-8'))
+      assert.equal(after.snippets.length, 1)
+      assert.equal(after.snippets[0].id, 2)
+      // nextId must NOT decrement after delete — id reuse is forbidden.
+      assert.equal(after.nextId, 3, 'nextId must keep climbing past deleted ids')
+
+      // (n) External edit detection: write a synthetic file with a third
+      //     snippet, bump mtime; refreshIfChanged must reload it.
+      const mutated = {
+        snippets: [
+          ...after.snippets,
+          { id: 7, title: 'external', content: 'from outside', format: 'plaintext',
+            action: 'terminal', isFavorite: false, createdAt: 1, updatedAt: Date.now() + 1000 },
+        ],
+        nextId: 8,
+      }
+      writeFileSync(join(snipRoot, 'snippets.json'), JSON.stringify(mutated, null, 2), 'utf-8')
+      // Bump mtime by ~10ms so the > comparison fires reliably on
+      // filesystems with coarse mtime precision (some Linux fs are 1s).
+      const future = new Date(Date.now() + 1500)
+      const { utimesSync } = await import('fs')
+      utimesSync(join(snipRoot, 'snippets.json'), future, future)
+      const externalReload = await dispatch({ jsonrpc: '2.0', id: 1290, method: 'snippet.getAll', params: {} })
+      assert.equal(externalReload.result.length, 2)
+      assert.ok(externalReload.result.some(s => s.id === 7),
+        'external mutation must be picked up via mtime check')
+
+      // (o) End-to-end via remote bridge: `snippet:getAll` →
+      //     `snippet.getAll`. The channel has no hyphens so the
+      //     kebab→camel rule passes through; this still verifies
+      //     bridge wiring + dispatch is connected for snippet.* fully.
+      const remoteAll = await protocol.invokeRemoteHandler('snippet:getAll', [])
+      assert.ok(Array.isArray(remoteAll))
+      assert.equal(remoteAll.length, 2)
+    } finally {
+      snippetDb.__resetForTests()
+      if (savedDataDirSn === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
+      else process.env.BAT_SIDECAR_DATA_DIR = savedDataDirSn
+      rmSync(snipRoot, { recursive: true, force: true })
+    }
+  }
+
   // remote-secrets — port of electron/remote/secrets.ts. The sidecar
   // version always writes `{enc:false, data:<JSON>}` (no safeStorage in
   // pure-Node) but must (a) round-trip JSON / string, (b) read legacy
