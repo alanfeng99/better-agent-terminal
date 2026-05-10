@@ -143,6 +143,12 @@ pub fn fs_home(app: tauri::AppHandle) -> String {
 
 #[tauri::command]
 pub async fn fs_readdir(dir_path: String) -> Vec<FsEntry> {
+    tauri::async_runtime::spawn_blocking(move || fs_readdir_impl(dir_path))
+        .await
+        .unwrap_or_default()
+}
+
+fn fs_readdir_impl(dir_path: String) -> Vec<FsEntry> {
     let abs = match std::path::absolute(&dir_path) {
         Ok(p) => p,
         Err(_) => return vec![],
@@ -211,6 +217,15 @@ pub async fn fs_list_dirs(
     include_hidden: bool,
 ) -> ListDirsResult {
     let home = home_string(&app).unwrap_or_else(|| PathBuf::from("/"));
+    tauri::async_runtime::spawn_blocking(move || fs_list_dirs_impl(home, dir_path, include_hidden))
+        .await
+        .unwrap_or_else(|e| ListDirsResult {
+            error: Some(format!("list dirs task failed: {e}")),
+            ..Default::default()
+        })
+}
+
+fn fs_list_dirs_impl(home: PathBuf, dir_path: String, include_hidden: bool) -> ListDirsResult {
     let expanded = expand_tilde(&dir_path, &home);
     let abs = match std::path::absolute(&expanded) {
         Ok(p) => p,
@@ -403,8 +418,15 @@ fn windows_logical_drive_roots() -> Vec<String> {
 
 #[tauri::command]
 pub async fn fs_quick_locations(app: tauri::AppHandle) -> Vec<QuickLocation> {
+    let home = home_string(&app);
+    tauri::async_runtime::spawn_blocking(move || fs_quick_locations_impl(home))
+        .await
+        .unwrap_or_default()
+}
+
+fn fs_quick_locations_impl(home: Option<PathBuf>) -> Vec<QuickLocation> {
     let mut out: Vec<QuickLocation> = Vec::new();
-    if let Some(home) = home_string(&app) {
+    if let Some(home) = home {
         out.push(QuickLocation {
             name: "Home".into(),
             path: home.to_string_lossy().to_string(),
@@ -675,6 +697,51 @@ mod tests {
         // src is a directory, README.md is a file → src first.
         assert_eq!(names[0], "src");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_dirs_impl_filters_and_expands_home() {
+        let base = std::env::temp_dir().join(format!("bat-list-dirs-{}", std::process::id()));
+        let home = base.join("home");
+        let docs = home.join("docs");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(docs.join("Visible")).unwrap();
+        fs::create_dir_all(docs.join(".hidden")).unwrap();
+        fs::write(docs.join("file.txt"), b"hi").unwrap();
+
+        let visible = fs_list_dirs_impl(home.clone(), "~/docs".into(), false);
+        let names: Vec<&str> = visible
+            .entries
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        let docs_str = docs.to_string_lossy().to_string();
+        assert_eq!(visible.current.as_deref(), Some(docs_str.as_str()));
+        assert!(names.contains(&"Visible"));
+        assert!(!names.contains(&".hidden"));
+        assert!(!names.contains(&"file.txt"));
+
+        let with_hidden = fs_list_dirs_impl(home, docs.to_string_lossy().into(), true);
+        let hidden_names: Vec<&str> = with_hidden
+            .entries
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(hidden_names.contains(&".hidden"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn quick_locations_impl_includes_home() {
+        let home = PathBuf::from("/tmp/bat-home");
+        let locations = fs_quick_locations_impl(Some(home.clone()));
+        assert_eq!(locations[0].name, "Home");
+        assert_eq!(locations[0].path, home.to_string_lossy().to_string());
+        assert_eq!(locations[0].kind, "home");
     }
 
     #[test]
