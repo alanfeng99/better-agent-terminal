@@ -1,7 +1,8 @@
 # Tauri development and verification tasks.
 # WorkerPanel auto-start is off by default, so start only the task you need.
+# tauri-dev prepares the latest sidecar/runtime resources before launching.
 
-tauri-dev: pnpm run tauri:dev
+tauri-dev: pnpm run tauri:dev:latest
 typecheck: pnpm exec tsc --noEmit --pretty false
 tauri-rust-test: pnpm run test:tauri-rust
 sidecar-test: pnpm run test:sidecar

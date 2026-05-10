@@ -40,6 +40,7 @@
     "prepare:tauri-bundle": "node scripts/fetch-node-runtime.mjs && pnpm --dir node-sidecar install && pnpm run prune:tauri-sidecar && pnpm run build:tauri-sidecar",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
+    "tauri:dev:latest": "pnpm run prepare:tauri-bundle && tauri dev",
     "tauri:build": "pnpm run prepare:tauri-bundle && tauri build",
     "tauri:build:debug": "pnpm run prepare:tauri-bundle && tauri build --debug"
   },
