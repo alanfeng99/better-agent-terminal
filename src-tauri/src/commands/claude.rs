@@ -130,6 +130,25 @@ pub fn claude_abort_session(
     call(&app, &state, "claude.abortSession", json!({ "sessionId": session_id }))
 }
 
+#[tauri::command]
+pub fn claude_stop_task(
+    app: AppHandle,
+    state: State<'_, SidecarState>,
+    session_id: String,
+    task_id: String,
+) -> Result<bool, BridgeError> {
+    let value = call(
+        &app,
+        &state,
+        "claude.stopTask",
+        json!({ "sessionId": session_id, "taskId": task_id }),
+    )?;
+    Ok(value
+        .as_bool()
+        .or_else(|| value.get("ok").and_then(Value::as_bool))
+        .unwrap_or(false))
+}
+
 // --- account / auth ops ---------------------------------------------------
 
 #[tauri::command]

@@ -120,6 +120,7 @@ pub fn run() {
             claude_cmd::claude_send_message,
             claude_cmd::claude_stop_session,
             claude_cmd::claude_abort_session,
+            claude_cmd::claude_stop_task,
             claude_cmd::claude_auth_login,
             claude_cmd::claude_auth_logout,
             claude_cmd::claude_account_import_current,

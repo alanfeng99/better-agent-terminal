@@ -442,6 +442,10 @@ function createTauriHost(): BatAppAPI {
           return (sessionId: string) =>
             getInvoke()<unknown>('claude_abort_session', { sessionId })
         }
+        if (key === 'stopTask') {
+          return (sessionId: string, taskId: string) =>
+            getInvoke()<boolean>('claude_stop_task', { sessionId, taskId })
+        }
         // rewindToPrompt: cut the SDK session transcript at the given
         // user-prompt index and rebuild as a new SDK session id.
         if (key === 'rewindToPrompt') {

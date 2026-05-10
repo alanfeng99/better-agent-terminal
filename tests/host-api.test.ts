@@ -169,6 +169,7 @@ async function run() {
       if (cmd === 'claude_send_message') return { ok: true } as unknown as T
       if (cmd === 'claude_stop_session') return { ok: true, existed: true } as unknown as T
       if (cmd === 'claude_abort_session') return { ok: true } as unknown as T
+      if (cmd === 'claude_stop_task') return true as unknown as T
       if (cmd === 'claude_auth_login') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'claude_auth_logout') return { success: true } as unknown as T
       if (cmd === 'claude_account_import_current') return null as unknown as T
@@ -425,6 +426,7 @@ async function run() {
     await mod.host.claude.sendMessage('s-1', 'with images', ['/img.png'], 4000)
     assert.deepEqual(await mod.host.claude.stopSession('s-1'), { ok: true, existed: true })
     await mod.host.claude.abortSession('s-1')
+    assert.equal(await mod.host.claude.stopTask('s-1', 'task-1'), true)
     // Event listener registration returns a synchronous unsubscriber.
     const unsubMsg = mod.host.claude.onMessage(() => {})
     assert.equal(typeof unsubMsg, 'function')
@@ -620,6 +622,7 @@ async function run() {
       { cmd: 'claude_send_message', args: { sessionId: 's-1', prompt: 'with images', images: ['/img.png'], autoCompactWindow: 4000 } },
       { cmd: 'claude_stop_session', args: { sessionId: 's-1' } },
       { cmd: 'claude_abort_session', args: { sessionId: 's-1' } },
+      { cmd: 'claude_stop_task', args: { sessionId: 's-1', taskId: 'task-1' } },
       { cmd: 'claude_auth_login', args: undefined },
       { cmd: 'claude_auth_logout', args: undefined },
       { cmd: 'claude_account_import_current', args: undefined },
