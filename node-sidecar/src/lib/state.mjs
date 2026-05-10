@@ -28,6 +28,11 @@ export function ensureSession(sessionId) {
       // Guard against concurrent sendMessage calls — same contract as the
       // Electron isStreaming flag.
       streaming: false,
+      // FIFO promise chain for claude.sendMessage. Electron accepts a
+      // prompt while a turn is still finishing; the sidecar must not drop
+      // that prompt just because the previous result frame has not fully
+      // unwound yet.
+      sendQueue: null,
       // Cached usage stats updated from stream_event message_start /
       // message_delta + the final SDKResultSuccess.usage. Surfaced to
       // the renderer via claude.getContextUsage between turns; null

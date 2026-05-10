@@ -38,7 +38,7 @@
 import { registerHandler, sendEvent } from '../lib/protocol.mjs'
 import { sessions, ensureSession, buildSessionMeta } from '../lib/state.mjs'
 import { loadAnthropicSdk } from '../lib/sdk-loader.mjs'
-import { warn as logWarn } from '../lib/logger.mjs'
+import { info as logInfo, warn as logWarn } from '../lib/logger.mjs'
 import { sdkModelForClaudeSelection } from '../lib/models.mjs'
 import { loadInstalledPlugins, dataUrlToContentBlock } from '../lib/plugins.mjs'
 import { resolveClaudeCliBinary } from './claude-auth.mjs'
@@ -285,16 +285,18 @@ export function closeLiveQuery(s) {
   s.currentQuery = null
 }
 
-registerHandler('claude.sendMessage', async (params) => {
+function shortSessionId(sessionId) {
+  return typeof sessionId === 'string' ? sessionId.slice(0, 8) : 'unknown'
+}
+
+async function performSendMessage(params) {
   const sessionId = params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('claude.sendMessage: missing sessionId')
   }
   const prompt = typeof params?.prompt === 'string' ? params.prompt : ''
   const s = ensureSession(sessionId)
-  if (s.streaming) {
-    return { ok: false, error: 'session already streaming' }
-  }
+  const sid = shortSessionId(sessionId)
   if (s.isResting) s.isResting = false
 
   const sdk = await loadAnthropicSdk()
@@ -311,22 +313,34 @@ registerHandler('claude.sendMessage', async (params) => {
     live = await ensureLiveQuery(s, sessionId, sdk, prompt)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
+    logWarn(`claude.sendMessage(${sid}): ensureLiveQuery failed: ${errMsg}`)
     sendEvent('claude:error', { sessionId, error: errMsg })
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'error' } })
     return { ok: false, error: errMsg }
   }
 
+  const startedAt = Date.now()
   s.streaming = true
+  logInfo(`claude.sendMessage(${sid}): start promptLen=${prompt.length} images=${Array.isArray(params?.images) ? params.images.length : 0} liveClosed=${live.isClosed}`)
   try {
     const result = await live.push(userMessage)
-    if (result?.subtype === 'success') return { ok: true }
-    return { ok: false, error: result?.message || 'query error' }
+    const elapsedMs = Date.now() - startedAt
+    if (result?.subtype === 'success') {
+      logInfo(`claude.sendMessage(${sid}): completed ok elapsedMs=${elapsedMs}`)
+      return { ok: true }
+    }
+    const errMsg = result?.message || 'query error'
+    logWarn(`claude.sendMessage(${sid}): completed error elapsedMs=${elapsedMs} error=${errMsg}`)
+    return { ok: false, error: errMsg }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     const aborted = s.abortController?.signal.aborted
       || /aborted/i.test(errMsg)
     if (!aborted) {
+      logWarn(`claude.sendMessage(${sid}): push failed: ${errMsg}`)
       sendEvent('claude:error', { sessionId, error: errMsg })
+    } else {
+      logInfo(`claude.sendMessage(${sid}): aborted`)
     }
     sendEvent('claude:turn-end', { sessionId, payload: { reason: aborted ? 'aborted' : 'error' } })
     // A stream-level failure closes the LiveQuery — drop our reference
@@ -341,6 +355,31 @@ registerHandler('claude.sendMessage', async (params) => {
   } finally {
     s.streaming = false
   }
+}
+
+registerHandler('claude.sendMessage', async (params) => {
+  const sessionId = params?.sessionId
+  if (typeof sessionId !== 'string' || !sessionId) {
+    throw new Error('claude.sendMessage: missing sessionId')
+  }
+  const s = ensureSession(sessionId)
+  const sid = shortSessionId(sessionId)
+  const wasQueued = Boolean(s.sendQueue)
+  if (wasQueued) {
+    logInfo(`claude.sendMessage(${sid}): queued behind active turn`)
+  }
+  const previous = s.sendQueue || Promise.resolve()
+  const run = previous.catch(() => {}).then(async () => {
+    if (sessions.get(sessionId) !== s) {
+      return { ok: false, error: 'session stopped' }
+    }
+    return performSendMessage(params)
+  })
+  const queued = run.finally(() => {
+    if (s.sendQueue === queued) s.sendQueue = null
+  })
+  s.sendQueue = queued
+  return queued
 })
 
 // claude.stopTask: cancel a running sub-agent / Agent tool by its

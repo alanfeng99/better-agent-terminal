@@ -1050,15 +1050,14 @@ async function inProcess() {
     assert.equal(queryArgsRound2.length, queryCallsBefore + 1)
     assert.equal(queryArgsRound2[queryArgsRound2.length - 1].payload.resume, 'sdk-sess-abc')
 
-    // Concurrent send must be rejected (the streaming flag clears in
-    // the finally block, so we trigger this by pre-flagging the session).
+    // A stale streaming flag must not reject a later prompt. The
+    // sidecar's per-session sendQueue serializes real overlapping sends.
     const s = mod.sessions.get('send-1')
     s.streaming = true
-    const conflict = await dispatch({ jsonrpc: '2.0', id: 223, method: 'claude.sendMessage',
+    const staleFlagSend = await dispatch({ jsonrpc: '2.0', id: 223, method: 'claude.sendMessage',
       params: { sessionId: 'send-1', prompt: 'parallel' } })
-    assert.equal(conflict.result.ok, false)
-    assert.match(conflict.result.error || '', /streaming/)
-    s.streaming = false
+    assert.equal(staleFlagSend.result.ok, true)
+    assert.equal(s.streaming, false)
   } finally {
     __setSdkOverrideForTests(undefined)
     restoreSendEvent()
@@ -1122,6 +1121,60 @@ async function inProcess() {
     restorePersistentSend()
     // Ensure no liveQuery leaks across tests.
     mod.sessions.get('stream-1')?.liveQuery?.close()
+  }
+
+  // Overlapping sends on the same session must serialize rather than
+  // returning `{ok:false, error:"session already streaming"}`. This
+  // mirrors Electron's "accept while busy" contract and protects the UI
+  // from showing a user bubble whose prompt was dropped by the sidecar.
+  const queuedCaptured = []
+  let releaseFirstResult
+  let firstTurnStartedResolve
+  const firstTurnStarted = new Promise(resolve => { firstTurnStartedResolve = resolve })
+  const fakeSdkQueued = {
+    queryCalls: 0,
+    query({ prompt }) {
+      this.queryCalls++
+      const userIter = prompt[Symbol.asyncIterator]()
+      return (async function*() {
+        let turn = 0
+        while (true) {
+          const next = await userIter.next()
+          if (next.done) return
+          turn++
+          queuedCaptured.push(next.value?.message?.content)
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-queued-1', cwd: '/q' }
+          yield { type: 'assistant', session_id: 'sdk-queued-1',
+            message: { role: 'assistant', content: [{ type: 'text', text: `queued-reply-${turn}` }] } }
+          if (turn === 1) {
+            firstTurnStartedResolve()
+            await new Promise(resolve => { releaseFirstResult = resolve })
+          }
+          yield { type: 'result', subtype: 'success', session_id: 'sdk-queued-1',
+            result: `queued-reply-${turn}`, stop_reason: 'end_turn',
+            total_cost_usd: 0.001, num_turns: turn }
+        }
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkQueued)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 227, method: 'claude.startSession',
+      params: { sessionId: 'queued-1', options: { cwd: '/q' } } })
+    const p1 = dispatch({ jsonrpc: '2.0', id: 228, method: 'claude.sendMessage',
+      params: { sessionId: 'queued-1', prompt: 'first' } })
+    await firstTurnStarted
+    const p2 = dispatch({ jsonrpc: '2.0', id: 229, method: 'claude.sendMessage',
+      params: { sessionId: 'queued-1', prompt: 'second' } })
+    releaseFirstResult()
+    const [q1, q2] = await Promise.all([p1, p2])
+    assert.equal(q1.result.ok, true)
+    assert.equal(q2.result.ok, true)
+    assert.equal(fakeSdkQueued.queryCalls, 1, 'queued sends should reuse the persistent query')
+    assert.deepEqual(queuedCaptured, ['first', 'second'])
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    mod.sessions.get('queued-1')?.liveQuery?.close()
   }
 
   // claude.stopTask: forwards task_id to the live query's stopTask
