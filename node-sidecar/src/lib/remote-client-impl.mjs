@@ -25,7 +25,7 @@ const DEFAULT_INVOKE_TIMEOUT_MS = 30_000
 // Default emitter forwards server-pushed event frames out to the Tauri
 // renderer through the sidecar's JSON-RPC notification stream.
 let _emitToRenderer = (channel, args) => {
-  sendEvent(channel, { args })
+  sendEvent(channel, normalizeRemoteEvent(channel, args))
 }
 
 // Test seam — swap the emitter to capture event frames in-process.
@@ -44,6 +44,44 @@ export function __setRemoteClientLoggerForTests(fn) {
   _logger = fn || prev
   return () => { _logger = prev }
 }
+
+const CLAUDE_EVENT_PAYLOAD_KEYS = {
+  'claude:message': 'message',
+  'claude:tool-use': 'toolCall',
+  'claude:tool-result': 'result',
+  'claude:stream': 'data',
+  'claude:result': 'result',
+  'claude:turn-end': 'payload',
+  'claude:error': 'error',
+  'claude:status': 'meta',
+  'claude:permission-request': 'data',
+  'claude:permission-resolved': 'toolUseId',
+  'claude:ask-user': 'data',
+  'claude:ask-user-resolved': 'toolUseId',
+  'claude:modeChange': 'mode',
+  'claude:history': 'items',
+  'claude:resume-loading': 'loading',
+  'claude:prompt-suggestion': 'suggestion',
+  'claude:worktree-info': 'payload',
+  'claude:rate-limit': 'info',
+}
+
+function normalizeRemoteEvent(channel, args) {
+  const values = Array.isArray(args) ? args : []
+  if (channel === 'pty:output') return { id: values[0], data: values[1] }
+  if (channel === 'pty:exit') return { id: values[0], exitCode: values[1] }
+  if (channel === 'claude:session-reset') return { sessionId: values[0] }
+  const payloadKey = CLAUDE_EVENT_PAYLOAD_KEYS[channel]
+  if (payloadKey) return { sessionId: values[0], [payloadKey]: values[1] }
+  if (channel === 'fs:changed') return values[0] ?? null
+  if (channel === 'workspace:detached' || channel === 'workspace:reattached' || channel === 'workspace:reload') {
+    return values[0] ?? null
+  }
+  if (channel === 'system:resume') return values[0] ?? null
+  return { args: values }
+}
+
+export const __normalizeRemoteEventForTests = normalizeRemoteEvent
 
 export class RemoteClient {
   constructor() {

@@ -3194,6 +3194,8 @@ async function inProcess() {
     const lp = await dispatch({ jsonrpc: '2.0', id: 9006, method: 'remote.listProfiles', params: { host: 'h', port: 1, token: 't' /* missing fingerprint */ } })
     assert.equal(typeof lp.result.error, 'string')
     assert.match(lp.result.error, /fingerprint/i)
+    const inv = await dispatch({ jsonrpc: '2.0', id: 9007, method: 'remote.invoke', params: { channel: 'claude:list-sessions', args: ['C:/repo'] } })
+    assert.match(inv.error.message, /not connected/i)
 
     // tunnel.getConnection — loopback `boundHost` short-circuits to a
     // single 127.0.0.1 entry. The handler still returns `{error, addresses}`
@@ -4990,7 +4992,7 @@ async function inProcess() {
   // / connectionInfo / disconnect cleanup.
   {
     const { RemoteServer } = await import('../src/lib/remote-server-impl.mjs')
-    const { RemoteClient, __setRemoteClientEmitForTests, __setRemoteClientLoggerForTests } =
+    const { RemoteClient, __normalizeRemoteEventForTests, __setRemoteClientEmitForTests, __setRemoteClientLoggerForTests } =
       await import('../src/lib/remote-client-impl.mjs')
     const { broadcastHub, __resetBroadcastHubForTests } = await import('../src/lib/remote-broadcast.mjs')
     const { mkdtempSync, rmSync } = await import('node:fs')
@@ -5136,6 +5138,14 @@ async function inProcess() {
       // on the server side reaches the client's emit hook. PROXIED_EVENTS
       // gates which channels survive — non-allowlisted channels never fire.
       {
+        assert.deepEqual(
+          __normalizeRemoteEventForTests('claude:history', ['s1', [{ role: 'user' }]]),
+          { sessionId: 's1', items: [{ role: 'user' }] },
+        )
+        assert.deepEqual(
+          __normalizeRemoteEventForTests('pty:output', ['pty1', 'hello']),
+          { id: 'pty1', data: 'hello' },
+        )
         const captured = []
         const restoreEmit = __setRemoteClientEmitForTests((channel, args) => {
           captured.push({ channel, args })

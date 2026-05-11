@@ -126,6 +126,21 @@ registerHandler('remote.clientStatus', async () => {
   return { connected, info: connected ? client.connectionInfo : null }
 })
 
+// remote.invoke — bridge a Tauri command back onto the Electron-compatible
+// remote IPC channel. Electron proxies these channels in main.ts based on the
+// sender window profile; Tauri resolves that in Rust and uses this generic
+// sidecar hop to keep the remote protocol unchanged.
+registerHandler('remote.invoke', async (params) => {
+  const opts = params && typeof params === 'object' ? params : {}
+  const channel = typeof opts.channel === 'string' ? opts.channel : ''
+  const args = Array.isArray(opts.args) ? opts.args : []
+  const timeoutMs = typeof opts.timeoutMs === 'number' ? opts.timeoutMs : undefined
+  if (!channel) throw new Error('remote.invoke: channel is required')
+  const client = getClient()
+  if (!client.isConnected) throw new Error('remote.invoke: not connected to remote server')
+  return client.invoke(channel, args, timeoutMs)
+})
+
 // remote.testConnection — spin up an ephemeral RemoteClient, connect,
 // disconnect, return {ok}. Used by SettingsPanel to validate user-pasted
 // host/port/token/fingerprint before persisting the profile.

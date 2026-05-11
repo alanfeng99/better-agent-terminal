@@ -19,8 +19,10 @@ use crate::account_store;
 use crate::app_data;
 use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::commands::notification as notification_cmd;
+use crate::commands::profile as profile_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
+use crate::window_registry;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -72,6 +74,59 @@ async fn call_blocking(
     params: Value,
 ) -> Result<Value, BridgeError> {
     call_with_timeout_blocking(app, state, method, params, DEFAULT_TIMEOUT).await
+}
+
+fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let Some(profile_id) = window_registry::profile_id_for_window(app, window.label()) else {
+        return false;
+    };
+    profile_cmd::profile_get(app.clone(), profile_id)
+        .map(|profile| profile.kind == "remote")
+        .unwrap_or(false)
+}
+
+async fn remote_invoke_for_window(
+    app: &AppHandle,
+    state: &SidecarState,
+    window: &WebviewWindow,
+    channel: &'static str,
+    args: Vec<Value>,
+    timeout: Duration,
+) -> Option<Result<Value, BridgeError>> {
+    if !is_remote_profile_window(app, window) {
+        return None;
+    }
+    let app = app.clone();
+    let state = state.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        call_with_timeout(
+            &app,
+            &state,
+            "remote.invoke",
+            json!({
+                "channel": channel,
+                "args": args,
+                "timeoutMs": timeout.as_millis() as u64,
+            }),
+            timeout + Duration::from_secs(5),
+        )
+    })
+    .await
+    .map_err(|err| BridgeError {
+        message: format!("remote.invoke {channel} worker failed: {err}"),
+    });
+    Some(match result {
+        Ok(value) => value,
+        Err(err) => Err(err),
+    })
+}
+
+fn option_field(options: &Option<Value>, key: &str) -> Value {
+    options
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, BridgeError> {
@@ -1411,6 +1466,21 @@ pub async fn claude_start_session(
         &session_id,
         options.as_ref(),
     );
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:start-session",
+        vec![
+            json!(session_id.clone()),
+            options.clone().unwrap_or(Value::Null),
+        ],
+        SESSION_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
     if should_handle_codex(&options) {
         rehydrate_codex_worktree_if_needed(&app, (*state).clone(), &session_id, &options).await;
         let codex = (*codex_state).clone();
@@ -1465,6 +1535,7 @@ pub async fn claude_start_session(
 #[tauri::command]
 pub async fn claude_send_message(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
@@ -1473,6 +1544,23 @@ pub async fn claude_send_message(
     auto_compact_window: Option<i64>,
 ) -> Result<Value, BridgeError> {
     notification_cmd::set_agent_session_resting(&app, &session_id, false);
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:send-message",
+        vec![
+            json!(session_id.clone()),
+            json!(prompt.clone()),
+            json!(images.clone()),
+            json!(auto_compact_window),
+        ],
+        SESSION_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
     if codex_state.is_owned(&session_id) {
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
@@ -1511,11 +1599,24 @@ pub async fn claude_send_message(
 #[tauri::command]
 pub async fn claude_stop_session(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
     notification_cmd::unregister_agent_session(&app, &session_id);
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:stop-session",
+        vec![json!(session_id.clone())],
+        DEFAULT_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
     if codex_state.is_owned(&session_id) {
         return Ok(codex_state.stop_session(session_id));
     }
@@ -1531,10 +1632,23 @@ pub async fn claude_stop_session(
 #[tauri::command]
 pub async fn claude_abort_session(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:abort-session",
+        vec![json!(session_id.clone())],
+        DEFAULT_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
     if codex_state.is_owned(&session_id) {
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
@@ -1741,11 +1855,24 @@ pub async fn claude_get_cli_path(
 
 #[tauri::command]
 pub async fn claude_list_sessions(
-    _app: AppHandle,
-    _state: State<'_, SidecarState>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SidecarState>,
     cwd: String,
     agent_kind: Option<String>,
 ) -> Result<Value, BridgeError> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:list-sessions",
+        vec![json!(cwd.clone()), json!(agent_kind.clone())],
+        DEFAULT_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
     Ok(
         serde_json::to_value(list_sessions_native(&cwd, agent_kind.as_deref()))
             .unwrap_or_else(|_| json!([])),
@@ -2423,6 +2550,32 @@ pub async fn claude_resume_session(
         &session_id,
         options.as_ref(),
     );
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:resume-session",
+        vec![
+            json!(session_id.clone()),
+            json!(sdk_session_id.clone()),
+            option_field(&options, "cwd"),
+            option_field(&options, "model"),
+            option_field(&options, "apiVersion"),
+            option_field(&options, "useWorktree"),
+            option_field(&options, "worktreePath"),
+            option_field(&options, "worktreeBranch"),
+            option_field(&options, "agentPreset"),
+            option_field(&options, "codexSandboxMode"),
+            option_field(&options, "codexApprovalPolicy"),
+            option_field(&options, "permissionMode"),
+            option_field(&options, "effort"),
+        ],
+        SESSION_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
     let should_use_codex = should_handle_codex(&options);
     if should_use_codex || codex_state.is_owned(&session_id) {
         rehydrate_codex_worktree_if_needed(&app, (*state).clone(), &session_id, &options).await;

@@ -190,6 +190,8 @@
 - 2026-05-11：修正 Tauri active profile restore 誤開 remote profile。`restoreActiveProfiles` 現在會跳過缺 host/token/fingerprint 的 remote profile，避免 Electron test profile 的 `activeProfileIds=["bat","hyper"]` 在 Tauri 下自動開 `hyper`，又因 token 缺失 fallback 成第一個 local profile，造成兩個 `bat` 視窗。
 - 2026-05-11：保護 Electron encrypted remote token store。Tauri profile index 寫入時若遇到無法解密的 Electron `remote-tokens.enc.json` (`enc:true`)，且本輪沒有新的 token 寫入，會保留原檔不覆蓋成空 `{tokens:{}}`；完整 Electron safeStorage → Rust/keyring migration 仍待補。
 - 2026-05-11：補 Windows Electron safeStorage remote token migration。Tauri/Rust 現在可讀 Electron `Local State` 的 DPAPI-protected `os_crypt.encrypted_key`，再解 `remote-tokens.enc.json` 的 `v10` AES-256-GCM payload，讓 Windows 上從 Electron userData 複製過來的 remote token 可被 profile list rehydrate；macOS/Linux safeStorage migration 仍待分平台補。
+- 2026-05-11：修正 Tauri `profile.listLocal` 語意。Electron 的 `profile:list-local` 是「本機 profile manager 清單」，仍包含 remote alias；Tauri 先前誤把 `type=remote` 過濾掉，導致 Profiles modal 只顯示 LOCAL。現在 Tauri `profile_list_local` 對齊 Electron，回本機 index 的全部 profile entries。
+- 2026-05-11：修正 Tauri remote Claude 對話 history 路徑。remote profile 視窗的 `claude.startSession/sendMessage/stopSession/abortSession/listSessions/resumeSession` 會透過 sidecar `remote.invoke` 打回 Electron-compatible remote IPC；remote client 收到 `claude:history/resume-loading/message/status/...` event 時也會轉成 Tauri renderer 既有 `{sessionId, items/loading/...}` shape，避免舊版 remote history 到了但 UI 吃不到。
 
 ## 目前判斷
 

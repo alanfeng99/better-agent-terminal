@@ -622,12 +622,7 @@ pub fn profile_list(app: AppHandle) -> ProfileListResponse {
 
 #[tauri::command]
 pub fn profile_list_local(app: AppHandle) -> ProfileListResponse {
-    let mut response = profile_list(app);
-    response.profiles.retain(|profile| profile.kind == "local");
-    if response.profiles.is_empty() {
-        response.profiles.push(default_entry());
-    }
-    response
+    profile_list(app)
 }
 
 #[tauri::command]
