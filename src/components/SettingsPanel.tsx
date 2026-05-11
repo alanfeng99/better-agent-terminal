@@ -102,6 +102,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [switchWarningShown, setSwitchWarningShown] = useState(false)
   const [accountsLoading, setAccountsLoading] = useState(false)
   const [accountLoginLoading, setAccountLoginLoading] = useState(false)
+  const [accountSwitchingId, setAccountSwitchingId] = useState<string | null>(null)
   const [accountStatusMsg, setAccountStatusMsg] = useState('')
 
   // Get current platform for filtering shell options
@@ -170,18 +171,16 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     if (settingsStore.getSettings().accountSwitching === false) return
     setAccountsLoading(true)
     try {
-      const result = await host.claude.accountList()
+      let result = await host.claude.accountList()
       setAccounts(result.accounts)
       setActiveAccountId(result.activeAccountId)
       setSwitchWarningShown(result.switchWarningShown)
-      if (result.accounts.length === 0) {
-        const imported = await host.claude.accountImportCurrent()
-        if (imported) {
-          const refreshed = await host.claude.accountList()
-          setAccounts(refreshed.accounts)
-          setActiveAccountId(refreshed.activeAccountId)
-          setSwitchWarningShown(refreshed.switchWarningShown)
-        }
+      const imported = await host.claude.accountImportCurrent()
+      if (imported) {
+        result = await host.claude.accountList()
+        setAccounts(result.accounts)
+        setActiveAccountId(result.activeAccountId)
+        setSwitchWarningShown(result.switchWarningShown)
       }
     } catch (e) {
       host.debug.log?.(`[SettingsPanel] Failed to load accounts: ${e}`)
@@ -195,16 +194,29 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const handleAccountSwitch = async (accountId: string) => {
     if (accountId === activeAccountId) return
+    setAccountStatusMsg('')
     if (!switchWarningShown) {
       const confirmed = confirm(t('settings.accountSwitchingWarning'))
       if (!confirmed) return
       await host.claude.accountMarkWarningShown()
       setSwitchWarningShown(true)
     }
-    const success = await host.claude.accountSwitch(accountId)
-    if (success) {
-      setActiveAccountId(accountId)
-      window.dispatchEvent(new CustomEvent('claude-account-switched'))
+    setAccountSwitchingId(accountId)
+    try {
+      const success = await host.claude.accountSwitch(accountId)
+      if (success) {
+        setActiveAccountId(accountId)
+        setAccountStatusMsg('Account switched.')
+        await loadAccounts()
+        window.dispatchEvent(new CustomEvent('claude-account-switched'))
+      } else {
+        setAccountStatusMsg('Switch failed: credential is missing. Re-add this account in Tauri.')
+      }
+    } catch (e) {
+      host.debug.log?.(`[SettingsPanel] Account switch failed: ${e}`)
+      setAccountStatusMsg(`Switch failed: ${e instanceof Error ? e.message : 'unknown error'}`)
+    } finally {
+      setAccountSwitchingId(null)
     }
   }
 
@@ -1243,7 +1255,14 @@ Reference: https://github.com/ind-igo/cx`
                               <span style={{ fontSize: '11px', color: '#3fb950', fontWeight: 500 }}>{t('settings.accountSwitchingActive')}</span>
                             ) : (
                               <>
-                                <button className="statusline-template-btn" style={{ fontSize: '11px' }} onClick={() => handleAccountSwitch(account.id)}>{t('settings.accountSwitchingSwitch')}</button>
+                                <button
+                                  className="statusline-template-btn"
+                                  style={{ fontSize: '11px' }}
+                                  onClick={() => handleAccountSwitch(account.id)}
+                                  disabled={accountSwitchingId !== null}
+                                >
+                                  {accountSwitchingId === account.id ? 'Switching...' : t('settings.accountSwitchingSwitch')}
+                                </button>
                                 {!account.isDefault && (
                                   <button className="statusline-template-btn" style={{ fontSize: '11px', color: '#f85149' }} onClick={() => handleAccountRemove(account.id)}>{t('settings.accountSwitchingRemove')}</button>
                                 )}
@@ -1257,7 +1276,7 @@ Reference: https://github.com/ind-igo/cx`
                       {accountLoginLoading ? 'Opening login...' : t('settings.accountSwitchingAddAccount')}
                     </button>
                     {accountStatusMsg && (
-                      <p style={{ fontSize: '11px', color: accountStatusMsg.startsWith('Error') || accountStatusMsg.startsWith('Login failed') ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
+                      <p style={{ fontSize: '11px', color: accountStatusMsg.startsWith('Error') || accountStatusMsg.startsWith('Login failed') || accountStatusMsg.startsWith('Switch failed') ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
                         {accountStatusMsg}
                       </p>
                     )}

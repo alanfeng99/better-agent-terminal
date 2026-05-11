@@ -341,10 +341,12 @@ pub fn switch_account(app_data_dir: &Path, account_id: &str) -> Result<bool, Acc
     }
     if let Some(active_id) = index.active_account_id.clone() {
         if let Some(current_cred) = read_cli_credentials() {
-            save_account_credential(&active_id, &current_cred)?;
+            let _ = save_account_credential(&active_id, &current_cred);
         }
     }
-    let credential = load_account_credential(account_id)?;
+    let Ok(credential) = load_account_credential(account_id) else {
+        return Ok(false);
+    };
     if !write_cli_credentials(&credential) {
         return Ok(false);
     }

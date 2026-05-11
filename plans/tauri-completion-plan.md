@@ -196,6 +196,7 @@
 - 2026-05-11：修正 Tauri local profile 被誤標 remote。Tauri sidecar remote client 目前是 process singleton，若另一個 remote profile 視窗已連線，單看 `remote.clientStatus.connected` 會讓 local `bat` 視窗也顯示 remote 圖示並套用 remote 限制；App 現在把 UI 用的 remote 狀態拆成「目前視窗 profile 是 remote」與「remote client connected」，local profile 不再被 singleton client 狀態污染。
 - 2026-05-11：修正 agent 對話區右鍵選單。Claude/Codex 對話區右鍵不再顯示 `Close Window`，改為既有的「捲動至底部」動作；關閉 session/window 仍由 session thumbnail/外層控制負責，避免在閱讀歷史時誤關視窗。
 - 2026-05-11：修正視窗 title 的 profile/auth 狀態同步。title 仍顯示 `profile:index | (account / plan) | Better Agent Terminal`，但 authStatus 無有效 email 或查詢失敗時會清掉舊帳號資料；`(Remote)` 標記改看目前 profile 類型而不是 remote client 是否 connected，避免 title 跟 profile name/remote 狀態不同步。
+- 2026-05-11：修正 Tauri Settings account switching 失敗無回饋。Settings 載入帳號時會嘗試匯入/修補目前 Claude CLI 帳號到 Rust keyring；Rust `switch_account` 找不到 credential 時改回 `false` 而非 command error，UI 會顯示缺 credential、需要在 Tauri 重新加入帳號。此差異主要來自 Electron safeStorage 舊 credential 不能直接被 Rust keyring 讀取。
 
 ## 目前判斷
 
