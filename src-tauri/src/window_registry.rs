@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -71,6 +72,18 @@ fn workspace_value_from_snapshot(snapshot: &WindowSnapshot) -> Value {
     })
 }
 
+fn value_array(value: &Value) -> Vec<Value> {
+    value.as_array().cloned().unwrap_or_default()
+}
+
+fn value_id(value: &Value) -> Option<&str> {
+    value.get("id").and_then(Value::as_str)
+}
+
+fn value_workspace_id(value: &Value) -> Option<&str> {
+    value.get("workspaceId").and_then(Value::as_str)
+}
+
 fn snapshot_from_workspace_value(value: Value) -> WindowSnapshot {
     WindowSnapshot {
         workspaces: value
@@ -92,6 +105,89 @@ fn snapshot_from_workspace_value(value: Value) -> WindowSnapshot {
             .map(str::to_string),
         bounds: None,
     }
+}
+
+fn move_workspace_between_entries(
+    source: &mut WindowEntry,
+    target: &mut WindowEntry,
+    workspace_id: &str,
+    insert_index: usize,
+) -> bool {
+    let mut source_workspaces = value_array(&source.snapshot.workspaces);
+    let Some(workspace_index) = source_workspaces
+        .iter()
+        .position(|workspace| value_id(workspace) == Some(workspace_id))
+    else {
+        return false;
+    };
+    let workspace = source_workspaces.remove(workspace_index);
+
+    let mut moved_terminals = Vec::new();
+    let mut remaining_terminals = Vec::new();
+    for terminal in value_array(&source.snapshot.terminals) {
+        if value_workspace_id(&terminal) == Some(workspace_id) {
+            moved_terminals.push(terminal);
+        } else {
+            remaining_terminals.push(terminal);
+        }
+    }
+
+    let moved_terminal_ids = moved_terminals
+        .iter()
+        .filter_map(value_id)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+
+    let mut target_workspaces = value_array(&target.snapshot.workspaces);
+    let clamped_index = insert_index.min(target_workspaces.len());
+    target_workspaces.insert(clamped_index, workspace.clone());
+
+    let mut target_terminals = value_array(&target.snapshot.terminals);
+    target_terminals.extend(moved_terminals.iter().cloned());
+
+    if source.snapshot.active_workspace_id.as_deref() == Some(workspace_id) {
+        source.snapshot.active_workspace_id = source_workspaces
+            .first()
+            .and_then(value_id)
+            .map(str::to_string);
+    }
+    target.snapshot.active_workspace_id = Some(workspace_id.to_string());
+
+    if source
+        .snapshot
+        .active_terminal_id
+        .as_ref()
+        .is_some_and(|terminal_id| moved_terminal_ids.contains(terminal_id))
+    {
+        source.snapshot.active_terminal_id = source
+            .snapshot
+            .active_workspace_id
+            .as_deref()
+            .and_then(|active_workspace_id| {
+                remaining_terminals
+                    .iter()
+                    .find(|terminal| value_workspace_id(terminal) == Some(active_workspace_id))
+                    .and_then(value_id)
+                    .map(str::to_string)
+            });
+    }
+    target.snapshot.active_terminal_id = workspace
+        .get("focusedTerminalId")
+        .and_then(Value::as_str)
+        .filter(|terminal_id| moved_terminal_ids.contains(*terminal_id))
+        .map(str::to_string)
+        .or_else(|| {
+            moved_terminals
+                .first()
+                .and_then(value_id)
+                .map(str::to_string)
+        });
+
+    source.snapshot.workspaces = json!(source_workspaces);
+    source.snapshot.terminals = json!(remaining_terminals);
+    target.snapshot.workspaces = json!(target_workspaces);
+    target.snapshot.terminals = json!(target_terminals);
+    true
 }
 
 fn app_data_dir(app: &AppHandle) -> Option<PathBuf> {
@@ -316,6 +412,62 @@ pub fn save_workspace_json(app: &AppHandle, window_id: &str, data: &str) -> bool
     true
 }
 
+pub fn move_workspace(
+    app: &AppHandle,
+    source_window_id: &str,
+    target_window_id: &str,
+    workspace_id: &str,
+    insert_index: usize,
+) -> Option<(String, String)> {
+    if source_window_id == target_window_id {
+        return None;
+    }
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+
+    let source_index = entries
+        .iter()
+        .position(|entry| entry.id == source_window_id)?;
+    let target_index = entries
+        .iter()
+        .position(|entry| entry.id == target_window_id)?;
+    let mut source = entries[source_index].clone();
+    let mut target = entries[target_index].clone();
+
+    if source.profile_id != target.profile_id {
+        return None;
+    }
+    if !move_workspace_between_entries(&mut source, &mut target, workspace_id, insert_index) {
+        return None;
+    }
+
+    source.last_active_at = now_millis();
+    target.last_active_at = now_millis();
+    entries[source_index] = source.clone();
+    entries[target_index] = target.clone();
+
+    persist_entries(app, &entries);
+    if source_window_id == "main" {
+        write_global_workspace(app, &source.snapshot);
+    }
+    if target_window_id == "main" {
+        write_global_workspace(app, &target.snapshot);
+    }
+    let windows = profile_windows(&entries, &source.profile_id);
+    write_profile_snapshot(app, &source.profile_id, &windows);
+
+    let source_json =
+        serde_json::to_string_pretty(&workspace_value_from_snapshot(&source.snapshot))
+            .unwrap_or_else(|_| "{}".into());
+    let target_json =
+        serde_json::to_string_pretty(&workspace_value_from_snapshot(&target.snapshot))
+            .unwrap_or_else(|_| "{}".into());
+    Some((source_json, target_json))
+}
+
 pub fn entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
@@ -399,5 +551,55 @@ mod tests {
         let id = make_window_id("my profile", 1);
         assert!(id.starts_with("profile-my-profile-"));
         assert!(id.ends_with("-1"));
+    }
+
+    #[test]
+    fn move_workspace_between_entries_moves_workspace_and_terminals() {
+        let mut source = WindowEntry {
+            id: "source".into(),
+            profile_id: "default".into(),
+            snapshot: snapshot_from_workspace_value(json!({
+                "workspaces": [
+                    {"id": "w1", "focusedTerminalId": "t1"},
+                    {"id": "w2", "focusedTerminalId": "t3"}
+                ],
+                "activeWorkspaceId": "w1",
+                "terminals": [
+                    {"id": "t1", "workspaceId": "w1"},
+                    {"id": "t2", "workspaceId": "w1"},
+                    {"id": "t3", "workspaceId": "w2"}
+                ],
+                "activeTerminalId": "t1"
+            })),
+            last_active_at: 0,
+        };
+        let mut target = WindowEntry {
+            id: "target".into(),
+            profile_id: "default".into(),
+            snapshot: snapshot_from_workspace_value(json!({
+                "workspaces": [{"id": "w3"}],
+                "activeWorkspaceId": "w3",
+                "terminals": [{"id": "t4", "workspaceId": "w3"}],
+                "activeTerminalId": "t4"
+            })),
+            last_active_at: 0,
+        };
+
+        assert!(move_workspace_between_entries(
+            &mut source,
+            &mut target,
+            "w1",
+            0
+        ));
+
+        assert_eq!(source.snapshot.workspaces[0]["id"], "w2");
+        assert_eq!(source.snapshot.active_workspace_id.as_deref(), Some("w2"));
+        assert_eq!(source.snapshot.active_terminal_id.as_deref(), Some("t3"));
+        assert_eq!(source.snapshot.terminals.as_array().unwrap().len(), 1);
+        assert_eq!(target.snapshot.workspaces[0]["id"], "w1");
+        assert_eq!(target.snapshot.workspaces[1]["id"], "w3");
+        assert_eq!(target.snapshot.active_workspace_id.as_deref(), Some("w1"));
+        assert_eq!(target.snapshot.active_terminal_id.as_deref(), Some("t1"));
+        assert_eq!(target.snapshot.terminals.as_array().unwrap().len(), 3);
     }
 }

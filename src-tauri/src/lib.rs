@@ -71,6 +71,7 @@ pub fn run() {
             pty_cmd::pty_get_cwd,
             workspace_cmd::workspace_load,
             workspace_cmd::workspace_save,
+            workspace_cmd::workspace_move_to_window,
             update_cmd::update_get_version,
             update_cmd::update_check,
             debug_cmd::debug_log,

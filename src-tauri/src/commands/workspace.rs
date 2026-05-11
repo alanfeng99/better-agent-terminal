@@ -1,25 +1,24 @@
-// workspace:save / workspace:load — single-window MVP for the Tauri shell.
+// workspace:save / workspace:load / workspace:move-to-window for the Tauri shell.
 //
 // Electron's workspace store is keyed by windowId because that runtime
-// supports multi-window workspaces with detach/reattach. The Tauri build
-// is single-window for the foreseeable future, so we collapse to a single
-// JSON file in the per-user app data dir. The renderer treats the payload
-// as opaque text — same shape as settings.{load,save} — which lets the
-// host-api adapter route either runtime without changing types.
+// supports multi-window workspaces with detach/reattach. The Tauri build now
+// keeps a small Rust window registry and snapshots per window/profile. The
+// renderer treats payloads as opaque text — same shape as settings.{load,save}
+// — which lets the host-api adapter route either runtime without changing
+// types.
 //
 // File location: <app-data>/workspaces.json. We keep the filename stable
 // so an Electron→Tauri migration can copy the file from the old userData
-// directory without translation. Multi-window detach/reattach (and
-// move-to-window) intentionally remain unported; renderer keeps those
-// calls flowing through window.batAppAPI under Electron and they throw
-// `not implemented` under Tauri until we have multi-window support.
+// directory without translation. Workspace detach/reattach remain unported;
+// cross-window move is handled here and emits the existing workspace:reload
+// event so renderer stores can reuse the Electron reload path.
 
 use crate::window_registry;
 use serde::Serialize;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use tauri::{Manager, WebviewWindow};
+use tauri::{Emitter, Manager, WebviewWindow};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -107,6 +106,39 @@ pub async fn workspace_save(
         .map_err(|err| CommandError {
             message: format!("workspace.save worker failed: {err}"),
         })?
+}
+
+#[tauri::command]
+pub async fn workspace_move_to_window(
+    app: tauri::AppHandle,
+    source_window_id: String,
+    target_window_id: String,
+    workspace_id: String,
+    insert_index: usize,
+) -> Result<bool, CommandError> {
+    let worker_app = app.clone();
+    let emit_source_window_id = source_window_id.clone();
+    let emit_target_window_id = target_window_id.clone();
+    let moved = tauri::async_runtime::spawn_blocking(move || {
+        window_registry::move_workspace(
+            &worker_app,
+            &source_window_id,
+            &target_window_id,
+            &workspace_id,
+            insert_index,
+        )
+    })
+    .await
+    .map_err(|err| CommandError {
+        message: format!("workspace.moveToWindow worker failed: {err}"),
+    })?;
+
+    let Some((source_json, target_json)) = moved else {
+        return Ok(false);
+    };
+    let _ = app.emit_to(&emit_source_window_id, "workspace:reload", source_json);
+    let _ = app.emit_to(&emit_target_window_id, "workspace:reload", target_json);
+    Ok(true)
 }
 
 #[cfg(test)]

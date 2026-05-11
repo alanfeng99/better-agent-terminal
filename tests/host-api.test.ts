@@ -98,6 +98,7 @@ async function run() {
       if (cmd === 'pty_get_cwd') return '/x' as unknown as T
       if (cmd === 'workspace_load') return null as unknown as T
       if (cmd === 'workspace_save') return true as unknown as T
+      if (cmd === 'workspace_move_to_window') return true as unknown as T
       if (cmd === 'update_get_version') return '0.1.0' as unknown as T
       if (cmd === 'update_check') {
         return { hasUpdate: false, currentVersion: '0.1.0', latestRelease: null } as unknown as T
@@ -330,6 +331,10 @@ async function run() {
     assert.equal(wsLoaded, null)
     const wsSaved = await mod.host.workspace.save('{"workspaces":[]}')
     assert.equal(wsSaved, true)
+    assert.equal(await mod.host.workspace.moveToWindow('main', 'win-2', 'workspace-1', 0), true)
+    const unsubWorkspaceReload = mod.host.workspace.onReload(() => {})
+    assert.equal(typeof unsubWorkspaceReload, 'function')
+    unsubWorkspaceReload()
     // workspace.getDetachedId is synchronous and always null under Tauri.
     assert.equal(mod.host.workspace.getDetachedId(), null)
 
@@ -651,6 +656,15 @@ async function run() {
       { cmd: 'pty_get_cwd', args: { id: 'term-1' } },
       { cmd: 'workspace_load', args: undefined },
       { cmd: 'workspace_save', args: { data: '{"workspaces":[]}' } },
+      {
+        cmd: 'workspace_move_to_window',
+        args: {
+          sourceWindowId: 'main',
+          targetWindowId: 'win-2',
+          workspaceId: 'workspace-1',
+          insertIndex: 0,
+        },
+      },
       { cmd: 'update_get_version', args: undefined },
       { cmd: 'update_check', args: undefined },
       { cmd: 'debug_log', args: { args: ['boot', { phase: 1 }, 42] } },

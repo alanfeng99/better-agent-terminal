@@ -376,22 +376,27 @@ function createTauriHost(): BatAppAPI {
     workspace: {
       load: () => getInvoke()<string | null>('workspace_load'),
       save: (data: string) => getInvoke()<boolean>('workspace_save', { data }),
-      // Multi-window features are intentionally unported — the Tauri MVP
-      // is single-window. They throw "not implemented" under Tauri.
+      // Detach/reattach still need dedicated Tauri window lifecycle work.
       detach: () => notImplemented('workspace.detach'),
       reattach: () => notImplemented('workspace.reattach'),
-      moveToWindow: () => notImplemented('workspace.moveToWindow'),
+      moveToWindow: (
+        sourceWindowId: string,
+        targetWindowId: string,
+        workspaceId: string,
+        insertIndex: number,
+      ) => getInvoke()<boolean>('workspace_move_to_window', {
+        sourceWindowId,
+        targetWindowId,
+        workspaceId,
+        insertIndex,
+      }),
       // Synchronous query the renderer reads during initial render — the
       // Tauri build never opens a detached child window, so always null.
       getDetachedId: () => null,
       onDetached: () => () => {},
       onReattached: () => () => {},
-      // workspace:reload comes from another Electron window or remote
-      // broadcast hub re-pushing serialized state. The Tauri MVP is
-      // single-window without remote sync, so the callback never fires —
-      // returning a no-op unsubscriber keeps workspace-store.ts happy
-      // (it calls this unconditionally during init).
-      onReload: () => () => {},
+      onReload: (callback: (data?: string) => void) =>
+        listenAdapter<string | undefined>('workspace:reload', callback),
     },
     profile: {
       // Tauri persists profile metadata and local profile snapshots using the
