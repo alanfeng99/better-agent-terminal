@@ -234,6 +234,25 @@ fn fetch_auth_status_native(app: &AppHandle) -> Value {
         .unwrap_or(Value::Null)
 }
 
+fn account_info_from_auth_status(value: &Value) -> Value {
+    let email = value.get("email").and_then(Value::as_str);
+    let subscription_type = value.get("subscriptionType").and_then(Value::as_str);
+    if email.is_none() && subscription_type.is_none() {
+        return Value::Null;
+    }
+    let mut info = serde_json::Map::new();
+    if let Some(email) = email {
+        info.insert("email".to_string(), Value::String(email.to_string()));
+    }
+    if let Some(subscription_type) = subscription_type {
+        info.insert(
+            "subscriptionType".to_string(),
+            Value::String(subscription_type.to_string()),
+        );
+    }
+    Value::Object(info)
+}
+
 fn auth_login_native(app: &AppHandle) -> Value {
     match run_claude_cli_native(app, &["auth", "login"], AUTH_LOGIN_TIMEOUT) {
         Ok(_) => json!({ "success": true }),
@@ -1422,20 +1441,20 @@ pub async fn claude_get_supported_agents(
 #[tauri::command]
 pub async fn claude_get_account_info(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
     if codex_state.is_owned(&session_id) {
         return Ok(Value::Null);
     }
-    call_blocking(
-        app,
-        state,
-        "claude.getAccountInfo",
-        json!({ "sessionId": session_id }),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        account_info_from_auth_status(&fetch_auth_status_native(&app))
+    })
     .await
+    .map_err(|err| BridgeError {
+        message: format!("claude.getAccountInfo worker failed: {err}"),
+    })
 }
 
 #[tauri::command]
@@ -2172,6 +2191,24 @@ mod tests {
         assert_eq!(parsed["email"], "u@example.com");
 
         assert_eq!(parse_auth_status_stdout("not json"), Value::Null);
+    }
+
+    #[test]
+    fn account_info_from_auth_status_keeps_public_metadata() {
+        let info = account_info_from_auth_status(&json!({
+            "loggedIn": true,
+            "email": "u@example.com",
+            "subscriptionType": "pro",
+            "token": "secret"
+        }));
+        assert_eq!(info["email"], "u@example.com");
+        assert_eq!(info["subscriptionType"], "pro");
+        assert!(info.get("token").is_none());
+
+        assert_eq!(
+            account_info_from_auth_status(&json!({ "loggedIn": false })),
+            Value::Null
+        );
     }
 
     #[test]
