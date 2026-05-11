@@ -255,6 +255,7 @@ impl SidecarState {
             .record_failure(Instant::now());
     }
 
+    #[cfg(test)]
     pub fn call(
         &self,
         cfg: &SpawnConfig,
