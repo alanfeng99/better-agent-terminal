@@ -291,6 +291,97 @@ fn scan_skills_native(cwd: &Path) -> Vec<SkillScanEntry> {
     results
 }
 
+fn read_json_safe(path: &Path) -> Option<Value> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn read_mcp_server_names(cwd: &Path) -> Option<Vec<String>> {
+    let parsed = read_json_safe(&cwd.join(".mcp.json"))?;
+    let servers = parsed.get("mcpServers")?.as_object()?;
+    if servers.is_empty() {
+        return None;
+    }
+    Some(servers.keys().cloned().collect())
+}
+
+fn mcp_settings_approves(settings: Option<&Value>, server_names: &[String]) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    if settings
+        .get("enableAllProjectMcpServers")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
+    let Some(list) = settings
+        .get("enabledMcpjsonServers")
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    server_names.iter().all(|name| {
+        list.iter()
+            .any(|value| value.as_str().is_some_and(|enabled| enabled == name))
+    })
+}
+
+fn check_mcp_json_status_native(cwd: &Path) -> Value {
+    if cwd.as_os_str().is_empty() {
+        return json!({ "exists": false, "approved": false, "servers": [] });
+    }
+    let Some(servers) = read_mcp_server_names(cwd) else {
+        return json!({ "exists": false, "approved": false, "servers": [] });
+    };
+    let mut sources = vec![
+        cwd.join(".claude").join("settings.json"),
+        cwd.join(".claude").join("settings.local.json"),
+    ];
+    if let Some(home) = home_dir() {
+        sources.insert(0, home.join(".claude").join("settings.json"));
+    }
+    let approved = sources
+        .iter()
+        .any(|path| mcp_settings_approves(read_json_safe(path).as_ref(), &servers));
+    json!({ "exists": true, "approved": approved, "servers": servers })
+}
+
+fn enable_all_project_mcp_native(cwd: &Path) -> Result<Value, BridgeError> {
+    if cwd.as_os_str().is_empty() {
+        return Err(BridgeError {
+            message: "claude.enableAllProjectMcp: missing cwd".into(),
+        });
+    }
+    let dir = cwd.join(".claude");
+    let path = dir.join("settings.json");
+    fs::create_dir_all(&dir).map_err(|err| BridgeError {
+        message: format!("could not create {}: {err}", dir.display()),
+    })?;
+    let mut settings = read_json_safe(&path).unwrap_or_else(|| json!({}));
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    if settings
+        .get("enableAllProjectMcpServers")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Ok(json!({ "ok": true, "changed": false, "path": path.to_string_lossy() }));
+    }
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("enableAllProjectMcpServers".into(), Value::Bool(true));
+    }
+    let text = serde_json::to_string_pretty(&settings).map_err(|err| BridgeError {
+        message: err.to_string(),
+    })? + "\n";
+    fs::write(&path, text).map_err(|err| BridgeError {
+        message: format!("could not write {}: {err}", path.display()),
+    })?;
+    Ok(json!({ "ok": true, "changed": true, "path": path.to_string_lossy() }))
+}
+
 fn archive_empty_page() -> Value {
     json!({ "messages": [], "total": 0, "hasMore": false })
 }
@@ -1591,32 +1682,20 @@ pub async fn claude_resolve_ask_user(
 
 #[tauri::command]
 pub async fn claude_check_mcp_json_status(
-    app: AppHandle,
-    state: State<'_, SidecarState>,
+    _app: AppHandle,
+    _state: State<'_, SidecarState>,
     cwd: String,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.checkMcpJsonStatus",
-        json!({ "cwd": cwd }),
-    )
-    .await
+    Ok(check_mcp_json_status_native(Path::new(&cwd)))
 }
 
 #[tauri::command]
 pub async fn claude_enable_all_project_mcp(
-    app: AppHandle,
-    state: State<'_, SidecarState>,
+    _app: AppHandle,
+    _state: State<'_, SidecarState>,
     cwd: String,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.enableAllProjectMcp",
-        json!({ "cwd": cwd }),
-    )
-    .await
+    enable_all_project_mcp_native(Path::new(&cwd))
 }
 
 #[cfg(test)]
@@ -1728,6 +1807,52 @@ mod tests {
             .expect("deploy entry");
         assert_eq!(deploy.description, "Command deploy");
         assert_eq!(deploy.scope, "project");
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn mcp_status_detects_project_approval_sources() {
+        let base = temp_data_dir("mcp-status");
+        fs::create_dir_all(base.join(".claude")).unwrap();
+        fs::write(
+            base.join(".mcp.json"),
+            r#"{"mcpServers":{"foo":{"command":"x"},"bar":{"command":"y"}}}"#,
+        )
+        .unwrap();
+
+        let status = check_mcp_json_status_native(&base);
+        assert_eq!(status["exists"], true);
+        assert_eq!(status["approved"], false);
+        assert_eq!(status["servers"].as_array().unwrap().len(), 2);
+
+        fs::write(
+            base.join(".claude").join("settings.local.json"),
+            r#"{"enabledMcpjsonServers":["foo","bar"]}"#,
+        )
+        .unwrap();
+        let approved = check_mcp_json_status_native(&base);
+        assert_eq!(approved["approved"], true);
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn enable_all_project_mcp_preserves_existing_settings() {
+        let base = temp_data_dir("mcp-enable");
+        let settings_dir = base.join(".claude");
+        fs::create_dir_all(&settings_dir).unwrap();
+        fs::write(settings_dir.join("settings.json"), r#"{"otherKey":"keep"}"#).unwrap();
+
+        let first = enable_all_project_mcp_native(&base).expect("enable mcp");
+        assert_eq!(first["ok"], true);
+        assert_eq!(first["changed"], true);
+        let written = read_json_safe(&settings_dir.join("settings.json")).unwrap();
+        assert_eq!(written["otherKey"], "keep");
+        assert_eq!(written["enableAllProjectMcpServers"], true);
+
+        let second = enable_all_project_mcp_native(&base).expect("enable mcp again");
+        assert_eq!(second["changed"], false);
 
         fs::remove_dir_all(base).ok();
     }
