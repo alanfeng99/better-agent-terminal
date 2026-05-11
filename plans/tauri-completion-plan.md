@@ -205,6 +205,7 @@
 - 2026-05-11：新增 Tauri pre-CI 入口。`verify:tauri-pre-ci` 會用 frozen lockfile 準備 sidecar/runtime 並跑 Tauri preview 的 type/build/Rust/sidecar/host/Codex/resources/readiness gates；`.github/workflows/tauri-pre-ci.yml` 在 PR/push/手動觸發時跑三平台 preflight，手動可加跑 debug bundle 與 smoke test。
 - 2026-05-11：補 Tauri preview installer artifact path。手動觸發 Tauri pre-CI 時可開 `package_preview=true`，會用 frozen bundle inputs 跑 `tauri build`，上傳 Windows installer (`.exe`/`.msi`) 與 macOS `.dmg` artifacts；debug build 也改用 CI frozen prepare script。
 - 2026-05-11：把正式 release flow 切到 Tauri。既有 tag `v*` workflow 不再跑 Electron Builder，改為三平台 `tauri build`、上傳 Tauri installer artifacts 並建立 GitHub Release；Chocolatey 會使用實際 Tauri `.exe` 檔名與 checksum 產生套件。
+- 2026-05-11：接上 Tauri macOS 簽章/公證 secrets。Release workflow 會把既有 Electron `APPLE_CERTIFICATE_P12` / `APPLE_APP_SPECIFIC_PASSWORD` secrets 映射到 Tauri CLI 需要的 `APPLE_CERTIFICATE` / `APPLE_PASSWORD`，並在 macOS build 前檢查 certificate/password/team/notarization credentials。
 
 ## 目前判斷
 

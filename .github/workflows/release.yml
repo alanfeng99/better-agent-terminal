@@ -88,7 +88,40 @@ jobs:
       - name: Run Tauri preflight gates
         run: pnpm run verify:tauri-pre-ci
 
+      - name: Verify macOS signing secrets
+        if: matrix.platform == 'mac'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_CERTIFICATE" || (echo "Missing APPLE_CERTIFICATE or APPLE_CERTIFICATE_P12 secret" && exit 1)
+          test -n "$APPLE_CERTIFICATE_PASSWORD" || (echo "Missing APPLE_CERTIFICATE_PASSWORD secret" && exit 1)
+          test -n "$APPLE_ID" || (echo "Missing APPLE_ID secret" && exit 1)
+          test -n "$APPLE_PASSWORD" || (echo "Missing APPLE_PASSWORD or APPLE_APP_SPECIFIC_PASSWORD secret" && exit 1)
+          test -n "$APPLE_TEAM_ID" || (echo "Missing APPLE_TEAM_ID secret" && exit 1)
+
+      - name: Verify Apple notarization credentials
+        if: matrix.platform == 'mac'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "Testing notarytool credentials..."
+          xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" 2>&1 || true
+
       - name: Build Tauri release bundle
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
         run: pnpm run tauri:build:ci
 
       - name: Smoke test Windows release binary
