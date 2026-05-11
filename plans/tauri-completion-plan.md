@@ -120,6 +120,7 @@
 - 2026-05-11：補 Tauri remote profile token safe storage。profile `remoteToken` 新寫入會優先存 OS keyring，舊 `remote-tokens.enc.json` `{enc:false}` 只保留為 migration/fallback；`index.json` 仍不寫入 token。
 - 2026-05-11：修正 Tauri 動態視窗白窗風險。Ctrl+N/profile window 與 workspace detach 不再在 dev 模式手動用 `External(http://127.0.0.1:5173)` 開 webview，改回 `WebviewUrl::App(...)` 交給 Tauri resolver 處理 devUrl/bundled asset 與 IPC 注入，避免新視窗缺少 Tauri bridge 後 renderer 白屏。
 - 2026-05-11：補 Tauri 動態視窗 diagnostics。Rust 端會把 Ctrl+N/profile window 與 detach window 的 create/navigation/page-load/build-failed/destroyed 寫入 `logs/debug.log`；renderer 啟動時也會記錄 `location.href` 與 `windowId`，方便判斷白窗卡在 webview 載入、JS 啟動或 React render。
+- 2026-05-11：修正 Tauri 動態視窗 build 卡住。實機 log 顯示 Ctrl+N 只有 `create`、沒有 `created/page-load`，代表 `WebviewWindowBuilder::build()` 在 command handler 內卡住並留下白色 webview shell；profile window 與 detached workspace window 現改由 `app.run_on_main_thread(...)` 排程建立，command 立即返回。
 - 2026-05-11：收斂 Tauri remote profile token deletion。刪除 remote profile 時會同步清 OS keyring token；legacy fallback token store 也有 regression test 覆蓋 profile 移除後不殘留。
 - 2026-05-11：收斂 Tauri profile window restore registry。`app.openNewInstance(profileId)` 依 profile snapshot 建立視窗前會清掉同 profile 的 stale non-detached registry entries，避免 profile 視窗關閉後再次開啟累積重複 window entry；detached entry 與其他 profile entry 會保留。
 - 2026-05-11：補 Tauri `profile.load` 與 window registry 同步。profile load/fallback 不再只寫舊 `workspaces.json`，也會把 snapshot 第一個 window 載入目前 Tauri window entry，避免 workspace.load 從 registry 讀到切 profile 前的 stale workspace。

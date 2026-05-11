@@ -90,6 +90,29 @@ fn build_window(app: &AppHandle, window_id: &str) -> Result<(), String> {
         let _ = win.set_focus();
         return Ok(());
     }
+    let build_app = app.clone();
+    let build_window_id = window_id.to_string();
+    log_tauri(
+        app,
+        &format!("[window] queue-build label={build_window_id}"),
+    );
+    app.run_on_main_thread(move || {
+        if let Err(error) = build_window_now(&build_app, &build_window_id) {
+            log_tauri(
+                &build_app,
+                &format!("[window] queued-build-failed label={build_window_id} error={error}"),
+            );
+        }
+    })
+    .map_err(|err| err.to_string())
+}
+
+fn build_window_now(app: &AppHandle, window_id: &str) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(window_id) {
+        window_registry::mark_window_active(app, window_id);
+        let _ = win.set_focus();
+        return Ok(());
+    }
     let url = renderer_url("index.html");
     log_tauri(
         app,

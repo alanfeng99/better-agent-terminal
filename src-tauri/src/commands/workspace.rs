@@ -189,64 +189,81 @@ pub fn workspace_detach(
         "index.html?detached={}",
         encode_query_component(&workspace_id)
     );
+    let entry_id = entry.id.clone();
     log_tauri(
         &app,
-        &format!("[window] detach-create label={} url=app:{url}", entry.id),
+        &format!("[window] detach-queue-build label={entry_id} url=app:{url}"),
     );
-    let nav_app = app.clone();
-    let nav_label = entry.id.clone();
-    let load_label = entry.id.clone();
-    let detached_window = match WebviewWindowBuilder::new(&app, &entry.id, renderer_url(&url))
-        .title("Better Agent Terminal")
-        .inner_size(900.0, 700.0)
-        .min_inner_size(600.0, 400.0)
-        .on_navigation(move |url| {
-            log_tauri(
-                &nav_app,
-                &format!("[window] navigation label={nav_label} url={url}"),
-            );
-            true
-        })
-        .on_page_load(move |window, payload| {
-            log_tauri(
-                window.app_handle(),
-                &format!(
-                    "[window] page-load label={load_label} event={:?} url={}",
-                    payload.event(),
-                    payload.url()
-                ),
-            );
-        })
-        .build()
-    {
-        Ok(win) => win,
-        Err(err) => {
-            let _ = window_registry::remove_detached_entry(&app, &workspace_id);
-            log_tauri(
-                &app,
-                &format!(
-                    "[window] detach-build-failed label={} error={err}",
-                    entry.id
-                ),
-            );
-            return Err(CommandError {
-                message: format!("workspace.detach failed: {err}"),
-            });
-        }
-    };
+    let build_app = app.clone();
+    let build_parent_window_id = parent_window_id.clone();
+    let build_workspace_id = workspace_id.clone();
+    app.run_on_main_thread(move || {
+        log_tauri(
+            &build_app,
+            &format!("[window] detach-create label={entry_id} url=app:{url}"),
+        );
+        let nav_app = build_app.clone();
+        let nav_label = entry_id.clone();
+        let load_label = entry_id.clone();
+        let detached_window =
+            match WebviewWindowBuilder::new(&build_app, &entry_id, renderer_url(&url))
+                .title("Better Agent Terminal")
+                .inner_size(900.0, 700.0)
+                .min_inner_size(600.0, 400.0)
+                .on_navigation(move |url| {
+                    log_tauri(
+                        &nav_app,
+                        &format!("[window] navigation label={nav_label} url={url}"),
+                    );
+                    true
+                })
+                .on_page_load(move |window, payload| {
+                    log_tauri(
+                        window.app_handle(),
+                        &format!(
+                            "[window] page-load label={load_label} event={:?} url={}",
+                            payload.event(),
+                            payload.url()
+                        ),
+                    );
+                })
+                .build()
+            {
+                Ok(win) => win,
+                Err(err) => {
+                    let _ = window_registry::remove_detached_entry(&build_app, &build_workspace_id);
+                    log_tauri(
+                        &build_app,
+                        &format!("[window] detach-build-failed label={entry_id} error={err}"),
+                    );
+                    return;
+                }
+            };
 
-    let close_app = app.clone();
-    let close_workspace_id = workspace_id.clone();
-    detached_window.on_window_event(move |event| {
-        if matches!(
-            event,
-            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-        ) {
-            emit_detached_closed(&close_app, &close_workspace_id);
-        }
-    });
+        let close_app = build_app.clone();
+        let close_workspace_id = build_workspace_id.clone();
+        detached_window.on_window_event(move |event| {
+            if matches!(
+                event,
+                WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+            ) {
+                emit_detached_closed(&close_app, &close_workspace_id);
+            }
+        });
 
-    let _ = app.emit_to(&parent_window_id, "workspace:detached", workspace_id);
+        log_tauri(
+            &build_app,
+            &format!("[window] detach-created label={entry_id}"),
+        );
+        let _ = build_app.emit_to(
+            &build_parent_window_id,
+            "workspace:detached",
+            build_workspace_id,
+        );
+    })
+    .map_err(|err| CommandError {
+        message: format!("workspace.detach failed to queue window build: {err}"),
+    })?;
     Ok(true)
 }
 
