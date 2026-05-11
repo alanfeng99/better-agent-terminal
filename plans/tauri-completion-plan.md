@@ -169,6 +169,7 @@
 - 2026-05-11：補 Tauri Claude session state/resting 的 Rust registry read path。已登記 session 的 `getSessionState` / `isResting` 可直接回 Rust 快取，`sendMessage` / `restSession` / `wakeSession` 會同步 resting flag；實際 rest/wake 仍保留 sidecar 控制 live query，避免中斷/關閉 SDK stream 行為退化。
 - 2026-05-11：補 Tauri Claude context usage 的 Rust registry read path。Rust event hub 已同步 `claude:status` meta，因此 `getContextUsage` 可直接用 cached token/contextWindow 算出 Electron-compatible popup shape；沒有 token 時才 fallback sidecar。
 - 2026-05-11：補 Tauri preview preflight script。新增 `pnpm run verify:tauri-preview`，聚合 typecheck、compile、Rust tests、host API guards、Codex/OpenAI cleanup regression、renderer logging guard、resources 檢查與 Tauri launch smoke，作為發 preview 前的固定入口。
+- 2026-05-11：補 Tauri resources regression gate。`verify:tauri-resources` 現在除了 strict missing，也會限制 resources 在 7000 files / 400 MB 內，避免 sidecar/runtime 打包體積在 preview 前無聲膨脹。
 
 ## 目前判斷
 

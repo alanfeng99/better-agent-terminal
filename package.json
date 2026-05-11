@@ -20,7 +20,7 @@
     "build:release": "node scripts/build-version.js",
     "verify:packaged-claude-binaries": "node scripts/verify-packaged-claude-binaries.js",
     "verify:release-asset-sizes": "node scripts/verify-release-asset-sizes.js",
-    "verify:tauri-resources": "node scripts/check-tauri-resources.mjs --strict-missing",
+    "verify:tauri-resources": "node scripts/check-tauri-resources.mjs --strict-missing --max-files=7000 --max-mb=400",
     "verify:tauri-preview": "pnpm exec tsc --noEmit --pretty false && pnpm run compile && pnpm run test:tauri-rust && pnpm run test:host-api && pnpm run test:host-direct-calls && pnpm run test:host-claude-coverage && pnpm run test:codex && pnpm run test:openai-cleanup && pnpm run test:renderer-logging && pnpm run test:tauri-resources && pnpm run verify:tauri-resources && pnpm run test:tauri-launch",
     "postinstall": "node -e \"if(process.platform==='darwin'){const p=require('path').join('node_modules/electron/dist/Electron.app/Contents/Info.plist');try{require('child_process').execSync('plutil -replace CFBundleName -string BetterAgentTerminal '+p+' && plutil -replace CFBundleDisplayName -string BetterAgentTerminal '+p)}catch(e){}}\" && echo 'postinstall done'",
     "test:console": "node tests/console-test.js",
