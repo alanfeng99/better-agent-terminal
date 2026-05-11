@@ -130,7 +130,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
-        run: pnpm run tauri:build:ci:prepared -- --bundles ${{ matrix.bundle }}
+        run: pnpm exec tauri build --bundles ${{ matrix.bundle }}
 
       - name: Smoke test Windows release binary
         if: matrix.platform == 'win'

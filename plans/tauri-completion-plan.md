@@ -210,6 +210,7 @@
 - 2026-05-12：加速 Tauri release build。Release workflow 改成只更新版本 metadata、不在 `build-version.js` 內 compile；新增 `verify:tauri-release-ci` 避免 release preflight 重跑 frontend compile；Tauri bundle step 改用已準備好的 sidecar/runtime，不再重複 `prepare:tauri-bundle:ci`。
 - 2026-05-12：修正 Windows prerelease bundle。Tauri/WiX MSI 不接受 `2.9.0-pre.N` 這類非純數字 prerelease identifier，release matrix 改為 Windows 只產 NSIS `.exe`、macOS 只產 `.dmg`、Linux 只產 `.AppImage`，同時減少不需要的 bundle 工作。
 - 2026-05-12：拆分 macOS release artifacts。Release matrix 明確產出 Intel/x64 (`macos-15-intel`) 與 Apple Silicon/arm64 (`macos-14`) 兩個 DMG，避免 `macos-latest` label 漂移，也確保 bundled Node runtime 跟目標架構一致。
+- 2026-05-12：修正 release bundle args 傳遞。`pnpm run <script> -- --bundles ...` 會把參數傳給 Tauri runner/cargo，導致 Linux `cargo build` 收到未知 `--bundles`；release workflow 改為直接 `pnpm exec tauri build --bundles <target>`。
 
 ## 目前判斷
 
