@@ -329,6 +329,16 @@ fn profile_windows(entries: &[WindowEntry], profile_id: &str) -> Vec<WindowSnaps
         .collect()
 }
 
+fn bounds_tuple(value: &Value) -> Option<(f64, f64, f64, f64)> {
+    Some((
+        value.get("x")?.as_f64()?,
+        value.get("y")?.as_f64()?,
+        value.get("width")?.as_f64()?,
+        value.get("height")?.as_f64()?,
+    ))
+    .filter(|(_, _, width, height)| *width >= 100.0 && *height >= 100.0)
+}
+
 fn remove_profile_window_entries(entries: &mut Vec<WindowEntry>, profile_id: &str) {
     entries.retain(|entry| entry.profile_id != profile_id || entry.detached_workspace_id.is_some());
 }
@@ -412,6 +422,51 @@ pub fn has_other_live_profile_windows(
             && entry.detached_workspace_id.is_none()
             && live_window_ids.contains(&entry.id)
     })
+}
+
+pub fn window_bounds(app: &AppHandle, window_id: &str) -> Option<(f64, f64, f64, f64)> {
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    entries
+        .iter()
+        .find(|entry| entry.id == window_id)
+        .and_then(|entry| entry.snapshot.bounds.as_ref())
+        .and_then(bounds_tuple)
+}
+
+pub fn update_window_bounds(
+    app: &AppHandle,
+    window_id: &str,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) {
+    if width < 100.0 || height < 100.0 {
+        return;
+    }
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    let Some(entry) = entries.iter_mut().find(|entry| entry.id == window_id) else {
+        return;
+    };
+    entry.snapshot.bounds = Some(json!({
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+    }));
+    entry.last_active_at = now_millis();
+    let profile_id = entry.profile_id.clone();
+    persist_entries(app, &entries);
+    let windows = profile_windows(&entries, &profile_id);
+    write_profile_snapshot(app, &profile_id, &windows);
 }
 
 pub fn mark_window_active(app: &AppHandle, window_id: &str) {
@@ -758,6 +813,19 @@ mod tests {
         let id = make_window_id("my profile", 1);
         assert!(id.starts_with("profile-my-profile-"));
         assert!(id.ends_with("-1"));
+    }
+
+    #[test]
+    fn bounds_tuple_rejects_missing_or_tiny_bounds() {
+        assert_eq!(
+            bounds_tuple(&json!({"x": 10, "y": 20, "width": 1200, "height": 800})),
+            Some((10.0, 20.0, 1200.0, 800.0))
+        );
+        assert_eq!(
+            bounds_tuple(&json!({"x": 10, "y": 20, "width": 80, "height": 800})),
+            None
+        );
+        assert_eq!(bounds_tuple(&json!({"x": 10, "width": 1200})), None);
     }
 
     #[test]

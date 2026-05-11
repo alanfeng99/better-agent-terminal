@@ -26,12 +26,16 @@ fn build_window(app: &AppHandle, window_id: &str) -> Result<(), String> {
         let _ = win.set_focus();
         return Ok(());
     }
-    let window = WebviewWindowBuilder::new(app, window_id, WebviewUrl::App("index.html".into()))
-        .title("Better Agent Terminal")
-        .inner_size(1280.0, 800.0)
-        .min_inner_size(800.0, 600.0)
-        .build()
-        .map_err(|err| err.to_string())?;
+    let mut builder =
+        WebviewWindowBuilder::new(app, window_id, WebviewUrl::App("index.html".into()))
+            .title("Better Agent Terminal")
+            .min_inner_size(800.0, 600.0);
+    if let Some((x, y, width, height)) = window_registry::window_bounds(app, window_id) {
+        builder = builder.inner_size(width, height).position(x, y);
+    } else {
+        builder = builder.inner_size(1280.0, 800.0);
+    }
+    let window = builder.build().map_err(|err| err.to_string())?;
     attach_window_lifecycle(&window);
     Ok(())
 }
@@ -42,6 +46,19 @@ pub fn attach_window_lifecycle(window: &WebviewWindow) {
     window.on_window_event(move |event| {
         if matches!(event, WindowEvent::Focused(true)) {
             window_registry::mark_window_active(&app, &window_id);
+        } else if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+            if let Some(window) = app.get_webview_window(&window_id) {
+                if let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) {
+                    window_registry::update_window_bounds(
+                        &app,
+                        &window_id,
+                        position.x as f64,
+                        position.y as f64,
+                        size.width as f64,
+                        size.height as f64,
+                    );
+                }
+            }
         } else if matches!(event, WindowEvent::Destroyed) {
             if let Some(profile_id) = window_registry::profile_id_for_window(&app, &window_id) {
                 if !window_registry::has_other_live_profile_windows(&app, &profile_id, &window_id) {

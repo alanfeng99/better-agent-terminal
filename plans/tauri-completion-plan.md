@@ -122,6 +122,7 @@
 - 2026-05-11：補 Tauri window focus lifecycle。main 與 Rust 建立的新 webview window 會在 focus 時更新 `WindowRegistryState.last_active_at`，讓 `app.openNewInstance(profileId)` focus 已開啟 profile 時能選最近使用視窗，而不是只靠 workspace save 時間。
 - 2026-05-11：修正 Tauri profile active semantics。`profile.activate` / `profile.load` / `app.openNewInstance` 現在會把 profile 加進 `activeProfileIds` 而不是替換整個 active list，對齊 Electron 多 profile restore 行為。
 - 2026-05-11：補 Tauri profile window close lifecycle。非 detached profile window destroyed 時會檢查同 profile 是否仍有其他 live window；若沒有，會把該 profile deactivate，避免已關閉 profile 下次仍被 active restore。
+- 2026-05-11：補 Tauri profile window bounds parity。Rust 建立 profile window 時會套用 snapshot bounds，window move/resize 會寫回 `WindowRegistryState` 與 profile snapshot，讓下次 restore 更接近 Electron。
 
 ## 目前判斷
 
