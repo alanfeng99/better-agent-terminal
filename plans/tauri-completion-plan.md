@@ -157,6 +157,7 @@
 - 2026-05-11：把 Tauri Claude `claude.getSupportedModels` 搬到 Rust native builtin list。Codex sessions 仍走 Rust Codex runtime model list；Claude panel 開 model picker 不再為固定 builtin models 啟動 sidecar 或載入 Claude SDK。
 - 2026-05-11：把 Tauri `claude.authLogin/authLogout` 搬到 Rust native CLI spawn。互動登入與登出仍沿用 Claude CLI 行為與 timeout，但不再經過 Node sidecar；`accountLoginNew` 也改用同一路徑，帳號管理流程進一步脫離 sidecar stub。
 - 2026-05-11：把 Tauri `claude.getAccountInfo` 搬到 Rust native auth metadata。非 Codex session 會用 `claude auth status` 的 email/subscriptionType 組成 Electron-compatible account info，避免 panel metadata refresh 為 account info 喚醒 sidecar；organization 缺值時維持 UI 既有不顯示行為。
+- 2026-05-11：補 Tauri `claude.getSupportedCommands/getSupportedAgents` 的 Rust native cwd-aware path。若 Rust 已在 start/resume 記錄 session cwd，commands 會直接掃 project/global `.claude/commands/*.md`，agents 會直接掃 project/global `.claude/agents/*.md` frontmatter；缺 cwd 的舊/邊界 session 才 fallback sidecar live-query。
 
 ## 目前判斷
 

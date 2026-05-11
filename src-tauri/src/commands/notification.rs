@@ -246,6 +246,15 @@ pub fn unregister_agent_session(app: &AppHandle, session_id: &str) {
     }
 }
 
+pub fn get_agent_session_cwd(app: &AppHandle, session_id: &str) -> Option<String> {
+    let state = app.try_state::<AgentNotificationState>()?;
+    let cwd = state
+        .lock()
+        .get(session_id)
+        .map(|session| session.cwd.clone());
+    cwd
+}
+
 pub fn add_agent_completion_from_event(app: &AppHandle, topic: &str, payload: &Value) {
     if topic != "claude:turn-end" {
         return;

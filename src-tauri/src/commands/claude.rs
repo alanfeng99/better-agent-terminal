@@ -285,6 +285,23 @@ struct SessionListEntry {
     message_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommandEntry {
+    name: String,
+    description: String,
+    argument_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AgentScanEntry {
+    name: String,
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -588,6 +605,76 @@ fn claude_builtin_models_native() -> Value {
             "source": "builtin"
         }
     ])
+}
+
+fn supported_commands_native(cwd: &Path) -> Vec<SlashCommandEntry> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_unique = |entry: SkillScanEntry| {
+        if seen.insert(entry.name.clone()) {
+            entries.push(SlashCommandEntry {
+                name: entry.name,
+                description: entry.description,
+                argument_hint: String::new(),
+            });
+        }
+    };
+    for entry in scan_commands_dir(&cwd.join(".claude").join("commands"), "project") {
+        push_unique(entry);
+    }
+    if let Some(home) = home_dir() {
+        for entry in scan_commands_dir(&home.join(".claude").join("commands"), "global") {
+            push_unique(entry);
+        }
+    }
+    entries
+}
+
+fn scan_agents_dir(dir: &Path) -> Vec<AgentScanEntry> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                return None;
+            }
+            let content = fs::read_to_string(&path).ok()?;
+            let fallback_name = path.file_stem()?.to_string_lossy().to_string();
+            let name =
+                parse_frontmatter_field(&content, "name").unwrap_or_else(|| fallback_name.clone());
+            let description = parse_frontmatter_field(&content, "description")
+                .unwrap_or_else(|| first_heading(&content));
+            let model =
+                parse_frontmatter_field(&content, "model").filter(|value| !value.is_empty());
+            Some(AgentScanEntry {
+                name,
+                description,
+                model,
+            })
+        })
+        .collect()
+}
+
+fn supported_agents_native(cwd: &Path) -> Vec<AgentScanEntry> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_unique = |entry: AgentScanEntry| {
+        if seen.insert(entry.name.clone()) {
+            entries.push(entry);
+        }
+    };
+    for entry in scan_agents_dir(&cwd.join(".claude").join("agents")) {
+        push_unique(entry);
+    }
+    if let Some(home) = home_dir() {
+        for entry in scan_agents_dir(&home.join(".claude").join("agents")) {
+            push_unique(entry);
+        }
+    }
+    entries
 }
 
 fn parse_frontmatter_field(content: &str, field: &str) -> Option<String> {
@@ -1410,6 +1497,12 @@ pub async fn claude_get_supported_commands(
     if codex_state.is_owned(&session_id) {
         return Ok(json!([]));
     }
+    if let Some(cwd) = notification_cmd::get_agent_session_cwd(&app, &session_id) {
+        return Ok(
+            serde_json::to_value(supported_commands_native(Path::new(&cwd)))
+                .unwrap_or_else(|_| json!([])),
+        );
+    }
     call_blocking(
         app,
         state,
@@ -1428,6 +1521,12 @@ pub async fn claude_get_supported_agents(
 ) -> Result<Value, BridgeError> {
     if codex_state.is_owned(&session_id) {
         return Ok(json!([]));
+    }
+    if let Some(cwd) = notification_cmd::get_agent_session_cwd(&app, &session_id) {
+        return Ok(
+            serde_json::to_value(supported_agents_native(Path::new(&cwd)))
+                .unwrap_or_else(|_| json!([])),
+        );
     }
     call_blocking(
         app,
@@ -2379,6 +2478,42 @@ mod tests {
             .unwrap()
             .iter()
             .all(|model| model["source"] == "builtin"));
+    }
+
+    #[test]
+    fn supported_commands_native_reads_project_commands() {
+        let base = temp_data_dir("supported-commands");
+        let command_dir = base.join(".claude").join("commands");
+        fs::create_dir_all(&command_dir).unwrap();
+        fs::write(command_dir.join("deploy.md"), "# Deploy\nRun deploy").unwrap();
+
+        let commands = supported_commands_native(&base);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, "deploy");
+        assert_eq!(commands[0].description, "Deploy");
+        assert_eq!(commands[0].argument_hint, "");
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn supported_agents_native_reads_frontmatter() {
+        let base = temp_data_dir("supported-agents");
+        let agent_dir = base.join(".claude").join("agents");
+        fs::create_dir_all(&agent_dir).unwrap();
+        fs::write(
+            agent_dir.join("reviewer.md"),
+            "---\nname: reviewer\ndescription: Review code\nmodel: claude-sonnet-4-6\n---\n# Ignored",
+        )
+        .unwrap();
+
+        let agents = supported_agents_native(&base);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "reviewer");
+        assert_eq!(agents[0].description, "Review code");
+        assert_eq!(agents[0].model.as_deref(), Some("claude-sonnet-4-6"));
+
+        fs::remove_dir_all(base).ok();
     }
 
     #[test]
