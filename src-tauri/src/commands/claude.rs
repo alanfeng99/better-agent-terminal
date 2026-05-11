@@ -20,7 +20,9 @@ use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::event_hub::publish_runtime_event;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
@@ -71,6 +73,86 @@ fn account_error(err: impl std::fmt::Display) -> BridgeError {
     BridgeError {
         message: err.to_string(),
     }
+}
+
+fn archive_empty_page() -> Value {
+    json!({ "messages": [], "total": 0, "hasMore": false })
+}
+
+fn archive_file_path(data_dir: &Path, session_id: &str) -> PathBuf {
+    let safe = session_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    data_dir
+        .join("message-archives")
+        .join(format!("{safe}.jsonl"))
+}
+
+fn archive_messages_in_dir(
+    data_dir: &Path,
+    session_id: &str,
+    messages: &Value,
+) -> std::io::Result<bool> {
+    if session_id.is_empty() {
+        return Ok(false);
+    }
+    let Some(items) = messages.as_array() else {
+        return Ok(false);
+    };
+    if items.is_empty() {
+        return Ok(true);
+    }
+    let archive_dir = data_dir.join("message-archives");
+    fs::create_dir_all(&archive_dir)?;
+    let path = archive_file_path(data_dir, session_id);
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    for item in items {
+        serde_json::to_writer(&mut file, item)?;
+        writeln!(file)?;
+    }
+    Ok(true)
+}
+
+fn load_archived_from_dir(data_dir: &Path, session_id: &str, offset: u32, limit: u32) -> Value {
+    if session_id.is_empty() {
+        return archive_empty_page();
+    }
+    let raw = match fs::read_to_string(archive_file_path(data_dir, session_id)) {
+        Ok(value) => value,
+        Err(_) => return archive_empty_page(),
+    };
+    let lines = raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let total = lines.len();
+    let offset = offset as usize;
+    let limit = limit as usize;
+    let end = total.saturating_sub(offset);
+    if end == 0 {
+        return json!({ "messages": [], "total": total, "hasMore": false });
+    }
+    let start = end.saturating_sub(limit);
+    let messages = lines[start..end]
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    json!({ "messages": messages, "total": total, "hasMore": start > 0 })
+}
+
+fn clear_archive_in_dir(data_dir: &Path, session_id: &str) -> bool {
+    if session_id.is_empty() {
+        return false;
+    }
+    let _ = fs::remove_file(archive_file_path(data_dir, session_id));
+    true
 }
 
 fn login_success(value: &Value) -> bool {
@@ -956,53 +1038,42 @@ pub async fn claude_fork_session(
 #[tauri::command]
 pub async fn claude_archive_messages(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
     session_id: String,
     messages: Value,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.archiveMessages",
-        json!({
-            "sessionId": session_id, "messages": messages,
-        }),
-    )
-    .await
+    let data_dir = app_data_dir(&app)?;
+    match archive_messages_in_dir(&data_dir, &session_id, &messages) {
+        Ok(value) => Ok(json!(value)),
+        Err(_) => Ok(json!(false)),
+    }
 }
 
 #[tauri::command]
 pub async fn claude_load_archived(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
     session_id: String,
     offset: u32,
     limit: u32,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.loadArchived",
-        json!({
-            "sessionId": session_id, "offset": offset, "limit": limit,
-        }),
-    )
-    .await
+    let data_dir = app_data_dir(&app)?;
+    Ok(load_archived_from_dir(
+        &data_dir,
+        &session_id,
+        offset,
+        limit,
+    ))
 }
 
 #[tauri::command]
 pub async fn claude_clear_archive(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.clearArchive",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    let data_dir = app_data_dir(&app)?;
+    Ok(json!(clear_archive_in_dir(&data_dir, &session_id)))
 }
 
 #[tauri::command]
@@ -1317,6 +1388,19 @@ pub async fn claude_enable_all_project_mcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_data_dir(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_millis();
+        env::temp_dir().join(format!(
+            "bat-claude-command-{name}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn codex_worktree_rehydrate_params_require_existing_worktree_path() {
@@ -1346,5 +1430,69 @@ mod tests {
         assert_eq!(params["cwd"], "/repo");
         assert_eq!(params["worktreePath"], "/repo/.bat-worktrees/s-1");
         assert_eq!(params["branchName"], "bat/worktree-s-1");
+    }
+
+    #[test]
+    fn archive_helpers_tail_page_and_clear_messages() {
+        let data_dir = temp_data_dir("archive");
+        let first_batch = json!([
+            { "id": "m1", "content": "one" },
+            { "id": "m2", "content": "two" },
+            { "id": "m3", "content": "three" }
+        ]);
+        let second_batch = json!([{ "id": "m4", "content": "four" }]);
+
+        assert_eq!(
+            load_archived_from_dir(&data_dir, "session/with:unsafe", 0, 2),
+            archive_empty_page()
+        );
+        assert_eq!(
+            archive_messages_in_dir(&data_dir, "session/with:unsafe", &first_batch)
+                .expect("archive first"),
+            true
+        );
+        assert_eq!(
+            archive_messages_in_dir(&data_dir, "session/with:unsafe", &second_batch)
+                .expect("archive second"),
+            true
+        );
+
+        let page = load_archived_from_dir(&data_dir, "session/with:unsafe", 0, 2);
+        assert_eq!(page["total"], 4);
+        assert_eq!(page["hasMore"], true);
+        assert_eq!(page["messages"][0]["id"], "m3");
+        assert_eq!(page["messages"][1]["id"], "m4");
+
+        let previous_page = load_archived_from_dir(&data_dir, "session/with:unsafe", 2, 2);
+        assert_eq!(previous_page["total"], 4);
+        assert_eq!(previous_page["hasMore"], false);
+        assert_eq!(previous_page["messages"][0]["id"], "m1");
+        assert_eq!(previous_page["messages"][1]["id"], "m2");
+
+        assert!(clear_archive_in_dir(&data_dir, "session/with:unsafe"));
+        assert_eq!(
+            load_archived_from_dir(&data_dir, "session/with:unsafe", 0, 2),
+            archive_empty_page()
+        );
+
+        fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn archive_helpers_reject_invalid_input_without_side_effects() {
+        let data_dir = temp_data_dir("archive-invalid");
+
+        assert_eq!(
+            archive_messages_in_dir(&data_dir, "", &json!([])).expect("empty session"),
+            false
+        );
+        assert_eq!(
+            archive_messages_in_dir(&data_dir, "s-1", &json!({ "not": "an array" }))
+                .expect("not array"),
+            false
+        );
+        assert_eq!(clear_archive_in_dir(&data_dir, ""), false);
+
+        fs::remove_dir_all(data_dir).ok();
     }
 }
