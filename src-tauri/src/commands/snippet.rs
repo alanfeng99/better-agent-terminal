@@ -23,6 +23,7 @@
 // threads see a consistent view; Tauri commands are dispatched on
 // the worker pool so concurrent reads need to share state.
 
+use crate::app_data;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
@@ -31,7 +32,6 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Snippet {
@@ -130,10 +130,7 @@ impl SnippetState {
 }
 
 fn snippet_path(app: &tauri::AppHandle) -> io::Result<PathBuf> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let dir = app_data::app_data_dir(app).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     Ok(dir.join("snippets.json"))
 }
 

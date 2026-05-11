@@ -6,6 +6,7 @@
 // sidecar.
 
 use super::profile as profile_cmd;
+use crate::app_data;
 use crate::log_file::append_line;
 use crate::window_registry;
 use serde::Serialize;
@@ -54,11 +55,7 @@ pub(crate) fn renderer_url(path: &str) -> WebviewUrl {
 
 pub(crate) fn log_tauri(app: &AppHandle, message: &str) {
     eprintln!("[tauri] {message}");
-    let Some(path) = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("logs").join("debug.log"))
+    let Some(path) = app_data::app_data_dir_opt(app).map(|dir| dir.join("logs").join("debug.log"))
     else {
         return;
     };

@@ -9,23 +9,19 @@
 // command — the adapter reads BAT_DEBUG out of process.env at startup.
 // This file only handles the runtime log call.
 
+use crate::app_data;
 use crate::log_file::append_line;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub async fn debug_log(app: tauri::AppHandle, args: Vec<Value>) {
     let message = format_args(args);
     eprintln!("[renderer] {message}");
-    let path = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("logs").join("debug.log"));
+    let path = app_data::app_data_dir_opt(&app).map(|dir| dir.join("logs").join("debug.log"));
     if let Some(path) = path {
         let line = debug_log_line(&message);
         let _ = tauri::async_runtime::spawn_blocking(move || append_line(&path, &line)).await;
@@ -34,11 +30,7 @@ pub async fn debug_log(app: tauri::AppHandle, args: Vec<Value>) {
 
 #[tauri::command]
 pub async fn debug_open_logs_folder(app: tauri::AppHandle) -> Result<bool, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map(|dir| logs_dir(&dir))
-        .map_err(|err| err.to_string())?;
+    let dir = app_data::app_data_dir(&app).map(|dir| logs_dir(&dir))?;
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     app.opener()
         .open_path(dir.to_string_lossy().to_string(), None::<&str>)

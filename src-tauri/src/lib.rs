@@ -6,6 +6,7 @@
 // host-api adapter (src/host-api.ts). See plans/tauri-migration-plan.md.
 
 mod account_store;
+mod app_data;
 mod codex_app_server;
 mod commands;
 mod event_hub;

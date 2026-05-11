@@ -11,9 +11,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
-use crate::sidecar::BridgeError;
+use crate::{app_data, sidecar::BridgeError};
 
 const OPENAI_KEY_FILE: &str = "openai-api-key.bin";
 const KEYRING_SERVICE: &str = "better-agent-terminal:openai-api-key";
@@ -87,7 +87,7 @@ pub fn configured_openai_key_for_runtime(app: &AppHandle) -> Option<String> {
     if let Some(key) = load_keyring_key() {
         return Some(key);
     }
-    if let Ok(data_dir) = app.path().app_data_dir() {
+    if let Some(data_dir) = app_data::app_data_dir_opt(app) {
         if let Some(key) = load_legacy_file_key(&data_dir) {
             return Some(key);
         }
@@ -143,7 +143,7 @@ fn has_openai_key_in(
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, BridgeError> {
-    app.path().app_data_dir().map_err(|err| BridgeError {
+    app_data::app_data_dir(app).map_err(|err| BridgeError {
         message: format!("could not resolve app data dir: {err}"),
     })
 }

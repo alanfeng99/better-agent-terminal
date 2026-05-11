@@ -6,7 +6,7 @@
 // a migration/fallback path. Keeping tokens out of index.json preserves the
 // renderer-facing profile shape without exposing secrets in profile metadata.
 
-use crate::window_registry;
+use crate::{app_data, window_registry};
 #[cfg(not(test))]
 use keyring::use_native_store;
 use keyring_core::Entry as KeyringEntry;
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, WebviewWindow};
 
 const DEFAULT_PROFILE_ID: &str = "default";
 const DEFAULT_PROFILE_NAME: &str = "Default";
@@ -123,14 +123,11 @@ fn default_index() -> ProfileIndex {
 }
 
 fn profiles_dir(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("profiles"))
+    app_data::app_data_dir_opt(app).map(|dir| dir.join("profiles"))
 }
 
 fn app_data_dir(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok()
+    app_data::app_data_dir_opt(app)
 }
 
 fn workspace_path(app: &AppHandle) -> Option<PathBuf> {

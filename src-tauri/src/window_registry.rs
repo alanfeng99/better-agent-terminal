@@ -1,3 +1,4 @@
+use crate::app_data;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -195,7 +196,7 @@ fn move_workspace_between_entries(
 }
 
 fn app_data_dir(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok()
+    app_data::app_data_dir_opt(app)
 }
 
 fn windows_path(app: &AppHandle) -> Option<PathBuf> {

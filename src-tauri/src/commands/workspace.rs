@@ -15,6 +15,7 @@
 // the existing workspace:detached/workspace:reattached events.
 
 use super::app::{log_tauri, renderer_url};
+use crate::app_data;
 use crate::window_registry;
 use serde::Serialize;
 use std::fs;
@@ -45,10 +46,7 @@ impl From<WorkspaceError> for CommandError {
 }
 
 fn workspace_path(app: &tauri::AppHandle) -> Result<PathBuf, WorkspaceError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| WorkspaceError::AppDataDir(e.to_string()))?;
+    let dir = app_data::app_data_dir(app).map_err(WorkspaceError::AppDataDir)?;
     Ok(dir.join("workspaces.json"))
 }
 

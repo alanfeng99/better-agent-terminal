@@ -12,12 +12,12 @@
 // "settings.json" so a future Electron→Tauri migration only has to copy
 // the file across the data directory.
 
+use crate::app_data;
 use serde::Serialize;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::Manager;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -44,10 +44,7 @@ impl From<SettingsError> for CommandError {
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, SettingsError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| SettingsError::AppDataDir(e.to_string()))?;
+    let dir = app_data::app_data_dir(app).map_err(SettingsError::AppDataDir)?;
     Ok(dir.join("settings.json"))
 }
 
@@ -107,10 +104,7 @@ fn clear_terminal_history_dir(history_dir: &Path) -> bool {
 }
 
 fn settings_clear_terminal_history_impl(app: tauri::AppHandle) -> Result<bool, CommandError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| SettingsError::AppDataDir(e.to_string()))?;
+    let dir = app_data::app_data_dir(&app).map_err(SettingsError::AppDataDir)?;
     Ok(clear_terminal_history_dir(&dir.join("terminal-history")))
 }
 
@@ -328,10 +322,7 @@ fn cx_run_version(binary: &str) -> Result<String, String> {
 
 fn settings_detect_cx_impl(app: tauri::AppHandle) -> Result<CxDetectionResult, CommandError> {
     let settings = read_cx_settings(&app);
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| SettingsError::AppDataDir(e.to_string()))?;
+    let dir = app_data::app_data_dir(&app).map_err(SettingsError::AppDataDir)?;
     let cache_dir = dir.join("cx-cache").to_string_lossy().to_string();
     let enabled = settings.enabled;
 

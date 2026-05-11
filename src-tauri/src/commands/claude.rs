@@ -16,6 +16,7 @@
 // up as { message } strings to the renderer.
 
 use crate::account_store;
+use crate::app_data;
 use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::commands::notification as notification_cmd;
 use crate::event_hub::publish_runtime_event;
@@ -74,7 +75,7 @@ async fn call_blocking(
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, BridgeError> {
-    app.path().app_data_dir().map_err(|err| BridgeError {
+    app_data::app_data_dir(app).map_err(|err| BridgeError {
         message: format!("could not resolve app data dir: {err}"),
     })
 }

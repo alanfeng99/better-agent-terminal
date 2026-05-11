@@ -15,6 +15,7 @@
 // shared map behind Arc<Mutex<…>>, and use background threads to pump
 // bytes into Tauri events and to wait on the child exit.
 
+use crate::app_data;
 use crate::commands::settings::resolve_shell_path;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -346,7 +347,7 @@ fn start_pty_session(
         .map_err(|e| CommandError {
             message: e.to_string(),
         })?;
-    let app_data_dir = app.path().app_data_dir().ok();
+    let app_data_dir = app_data::app_data_dir_opt(&app);
     let cmd = build_command(&options, app_data_dir.as_deref());
     let child = pair.slave.spawn_command(cmd).map_err(|e| CommandError {
         message: e.to_string(),

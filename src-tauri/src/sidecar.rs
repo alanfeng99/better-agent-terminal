@@ -585,7 +585,7 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     // Tauri app data dir, if available. We pass it to the sidecar via env
     // so file-backed handlers land in the same directory the Rust side
     // uses (e.g. claude-accounts.json written by the Electron build).
-    let data_dir = app.path().app_data_dir().ok();
+    let data_dir = crate::app_data::app_data_dir_opt(app);
 
     if let Ok(env_script) = std::env::var("BAT_SIDECAR_SCRIPT") {
         let p = PathBuf::from(env_script);
