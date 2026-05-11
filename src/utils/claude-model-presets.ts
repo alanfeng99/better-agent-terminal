@@ -1,4 +1,5 @@
 export const CLAUDE_OPUS_47_MODEL = 'claude-opus-4-7'
+export const CLAUDE_OPUS_47_1M_SDK_MODEL = 'claude-opus-4-7[1m]'
 export const CLAUDE_OPUS_47_200K_PRESET = 'claude-opus-4-7:auto-compact-200k'
 export const CLAUDE_OPUS_47_300K_PRESET = 'claude-opus-4-7:auto-compact-300k'
 export const CLAUDE_OPUS_47_400K_PRESET = 'claude-opus-4-7:auto-compact-400k'
@@ -42,7 +43,9 @@ export function isClaudeModelPreset(model?: string): boolean {
 }
 
 export function normalizeClaudeModelSelection(model?: string): string | undefined {
-  return model === CLAUDE_OPUS_47_MODEL ? CLAUDE_OPUS_47_1M_PRESET : model
+  return model === CLAUDE_OPUS_47_MODEL || model === CLAUDE_OPUS_47_1M_SDK_MODEL
+    ? CLAUDE_OPUS_47_1M_PRESET
+    : model
 }
 
 export function sdkModelForClaudeSelection(model?: string): string | undefined {
@@ -77,6 +80,9 @@ export function displayNameForClaudeSelection(model?: string): string {
   if (model === CLAUDE_OPUS_47_200K_PRESET) return 'Opus 4.7 · 200K Auto-Compact'
   if (model === CLAUDE_OPUS_47_300K_PRESET) return 'Opus 4.7 · 300K Auto-Compact'
   if (model === CLAUDE_OPUS_47_400K_PRESET) return 'Opus 4.7 · 400K Auto-Compact'
-  if (model === CLAUDE_OPUS_47_1M_PRESET) return 'Opus 4.7 · 1M'
+  if (model === CLAUDE_OPUS_47_MODEL || model === CLAUDE_OPUS_47_1M_SDK_MODEL || model === CLAUDE_OPUS_47_1M_PRESET) return 'Opus 4.7 · 1M'
+  if (model === 'claude-opus-4-6' || model === 'claude-opus-4-6[1m]') return 'Opus 4.6 (1M)'
+  if (model === 'claude-sonnet-4-6' || model === 'claude-sonnet-4-6[1m]') return 'Sonnet 4.6 (1M)'
+  if (model === 'claude-haiku-4-5-20251001') return 'Haiku 4.5'
   return model || ''
 }

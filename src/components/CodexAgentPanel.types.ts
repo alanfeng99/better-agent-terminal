@@ -18,6 +18,9 @@ export interface SessionMeta {
   callCacheWrite?: number
   lastQueryCalls?: number
   permissionMode?: string
+  effort?: string
+  codexSandboxMode?: string
+  codexApprovalPolicy?: string
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }>
   cacheWrite5mTokens?: number
   cacheWrite1hTokens?: number

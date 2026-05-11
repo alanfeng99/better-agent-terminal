@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -304,7 +305,7 @@ export function ThumbnailBar({
                       </div>
                       <div
                         className="thumbnail-add-menu-hint"
-                        onClick={() => window.electronAPI.shell.openExternal('https://github.com/DarthSim/overmind')}
+                        onClick={() => host.shell.openExternal('https://github.com/DarthSim/overmind')}
                       >
                         What is a Procfile?
                       </div>

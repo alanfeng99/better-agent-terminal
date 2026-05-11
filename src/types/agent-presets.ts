@@ -15,7 +15,7 @@ export interface AgentPreset {
   needsGitRepo?: boolean; // 需要 git repo（worktree 類）
 }
 
-export type AgentPresetId = 'claude-code' | 'claude-code-v2' | 'claude-code-worktree' | 'claude-cli' | 'claude-cli-worktree' | 'codex-agent' | 'codex-agent-worktree' | 'codex-cli' | 'openai-agent' | 'none';
+export type AgentPresetId = 'claude-code' | 'claude-code-v2' | 'claude-code-worktree' | 'claude-cli' | 'claude-cli-worktree' | 'codex-agent' | 'codex-agent-worktree' | 'codex-cli' | 'none';
 
 export const AGENT_PRESETS: AgentPreset[] = [
   {
@@ -74,14 +74,6 @@ export const AGENT_PRESETS: AgentPreset[] = [
     needsGitRepo: true,
   },
   {
-    id: 'openai-agent',
-    name: 'OpenAI (Direct)',
-    icon: '◯',
-    color: '#0ea5e9',
-    backend: 'sdk',
-    debug: true,
-  },
-  {
     id: 'codex-cli',
     name: 'Codex CLI',
     icon: '▶',
@@ -105,7 +97,10 @@ export function getDefaultAgentPreset(): AgentPreset {
 }
 
 /** Get presets visible in UI, filtering debug-only presets unless BAT_DEBUG is set */
-export function getVisiblePresets(): AgentPreset[] {
-  const isDebug = typeof window !== 'undefined' && (window as unknown as { electronAPI?: { debug?: { isDebugMode?: boolean } } }).electronAPI?.debug?.isDebugMode
+export function getVisiblePresets(isDebugOverride?: boolean): AgentPreset[] {
+  const isDebug = typeof isDebugOverride === 'boolean'
+    ? isDebugOverride
+    : typeof window !== 'undefined'
+      && (window as unknown as { batAppAPI?: { debug?: { isDebugMode?: boolean } } }).batAppAPI?.debug?.isDebugMode === true
   return AGENT_PRESETS.filter(p => !p.debug || isDebug)
 }

@@ -1,3 +1,4 @@
+import { host, isTauri } from './host-api'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
@@ -34,6 +35,22 @@ const MAX_SIDEBAR_WIDTH = 400
 const DEFAULT_SNIPPET_WIDTH = 280
 const MIN_SNIPPET_WIDTH = 180
 const MAX_SNIPPET_WIDTH = 500
+
+type WindowAuthInfo = { email: string; subscriptionType?: string }
+
+function normalizeWindowAuthInfo(info: unknown): WindowAuthInfo | null {
+  if (!info || typeof info !== 'object') return null
+  const record = info as Record<string, unknown>
+  const email = typeof record.email === 'string' ? record.email.trim() : ''
+  if (!email) return null
+  const subscriptionType = typeof record.subscriptionType === 'string'
+    ? record.subscriptionType.trim()
+    : ''
+  return {
+    email,
+    ...(subscriptionType ? { subscriptionType } : {}),
+  }
+}
 
 // Compute parent of a path, supporting both POSIX and Windows separators.
 // Returns the input unchanged if at filesystem root.
@@ -77,6 +94,34 @@ function savePanelSettings(settings: PanelSettings): void {
   }
 }
 
+function afterFirstPaint(callback: () => void, delayMs = 0): () => void {
+  let cancelled = false
+  let firstFrame = 0
+  let secondFrame = 0
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  firstFrame = requestAnimationFrame(() => {
+    secondFrame = requestAnimationFrame(() => {
+      timeout = setTimeout(() => {
+        if (!cancelled) callback()
+      }, delayMs)
+    })
+  })
+  return () => {
+    cancelled = true
+    cancelAnimationFrame(firstFrame)
+    cancelAnimationFrame(secondFrame)
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+function scheduleTauriStartupBackgroundWork(callback: () => void): () => void {
+  if (!isTauri()) {
+    callback()
+    return () => {}
+  }
+  return afterFirstPaint(callback, 1000)
+}
+
 export default function App() {
   const { t } = useTranslation()
   const [state, setState] = useState<AppState>(workspaceStore.getState())
@@ -85,7 +130,9 @@ export default function App() {
   const [folderPickerInitialPath, setFolderPickerInitialPath] = useState<string | undefined>(undefined)
   const [folderPickerOpen, setFolderPickerOpen] = useState(false)
   const [activeProfileName, setActiveProfileName] = useState<string>('Default')
-  const [isRemoteConnected, setIsRemoteConnected] = useState(false)
+  const [activeProfileIsRemote, setActiveProfileIsRemote] = useState(false)
+  const [remoteClientConnected, setRemoteClientConnected] = useState(false)
+  const isRemoteConnected = activeProfileIsRemote && remoteClientConnected
   const [appNotification, setAppNotification] = useState<string | null>(null)
   const [envDialogWorkspaceId, setEnvDialogWorkspaceId] = useState<string | null>(null)
   // Right sidebar tabs
@@ -100,39 +147,46 @@ export default function App() {
   // Panel settings for resizable panels
   const [panelSettings, setPanelSettings] = useState<PanelSettings>(loadPanelSettings)
   // Detached workspace support
-  const [detachedWorkspaceId] = useState(() => window.electronAPI.workspace.getDetachedId())
+  const [detachedWorkspaceId] = useState(() => host.workspace.getDetachedId())
   const [detachedIds, setDetachedIds] = useState<Set<string>>(new Set())
   // Track workspaces that have been visited (for lazy mounting)
   const [mountedWorkspaces, setMountedWorkspaces] = useState<Set<string>>(new Set())
 
   // Sync window title with active profile, window index, and account info
   const [windowIndex, setWindowIndex] = useState<number>(1)
-  const [authInfo, setAuthInfo] = useState<{ email?: string; subscriptionType?: string } | null>(null)
+  const [authInfo, setAuthInfo] = useState<WindowAuthInfo | null>(null)
   useEffect(() => {
-    window.electronAPI.app.getWindowIndex().then(setWindowIndex)
+    host.app.getWindowIndex().then(setWindowIndex)
   }, [])
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null
     const fetchAuth = () => {
-      window.electronAPI.claude.authStatus().then(info => {
-        if (info) setAuthInfo({ email: info.email, subscriptionType: info.subscriptionType })
-      }).catch(() => {})
+      host.claude.authStatus().then(info => {
+        setAuthInfo(normalizeWindowAuthInfo(info))
+      }).catch(() => setAuthInfo(null))
     }
-    fetchAuth()
-    const interval = setInterval(fetchAuth, 120_000)
     const onAccountSwitch = () => fetchAuth()
-    window.addEventListener('claude-account-switched', onAccountSwitch)
-    return () => { clearInterval(interval); window.removeEventListener('claude-account-switched', onAccountSwitch) }
+    const cancelStart = scheduleTauriStartupBackgroundWork(() => {
+      fetchAuth()
+      interval = setInterval(fetchAuth, 120_000)
+      window.addEventListener('claude-account-switched', onAccountSwitch)
+    })
+    return () => {
+      cancelStart()
+      if (interval) clearInterval(interval)
+      window.removeEventListener('claude-account-switched', onAccountSwitch)
+    }
   }, [])
   useEffect(() => {
     const profileTitle = /:\d+$/.test(activeProfileName)
       ? activeProfileName
       : `${activeProfileName}:${windowIndex}`
-    const profilePart = `${profileTitle}${isRemoteConnected ? ' (Remote)' : ''}`
+    const profilePart = `${profileTitle}${activeProfileIsRemote ? ' (Remote)' : ''}`
     const titleParts = [profilePart]
     if (authInfo?.email) titleParts.push(`(${authInfo.email} / ${authInfo.subscriptionType || 'unknown'})`)
     titleParts.push('Better Agent Terminal')
     document.title = titleParts.join(' | ')
-  }, [activeProfileName, windowIndex, isRemoteConnected, authInfo])
+  }, [activeProfileName, windowIndex, activeProfileIsRemote, authInfo])
 
   // Lazy mount: only render a workspace's terminals once it has been activated
   useEffect(() => {
@@ -229,7 +283,7 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'n' && !e.shiftKey && !e.altKey) {
         e.preventDefault()
-        window.electronAPI.app.newWindow()
+        host.app.newWindow()
       }
     }
     window.addEventListener('keydown', handler)
@@ -248,16 +302,16 @@ export default function App() {
       const isBackquote = e.key === '`' || e.code === 'Backquote'
 
       // Windows: Ctrl+` cycles between BAT app windows.
-      if (window.electronAPI.platform === 'win32' && e.ctrlKey && !e.metaKey && isBackquote && !e.shiftKey) {
+      if (host.platform === 'win32' && e.ctrlKey && !e.metaKey && isBackquote && !e.shiftKey) {
         e.preventDefault()
-        window.electronAPI.app.focusNextWindow()
+        host.app.focusNextWindow()
         return
       }
 
       // Ctrl+Tab (Win + Mac): jump to window with most recent unread notification.
       if (e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'Tab' || e.code === 'Tab')) {
         e.preventDefault()
-        window.electronAPI.notification.focusLatestUnread()
+        host.notification.focusLatestUnread()
         return
       }
 
@@ -350,30 +404,30 @@ export default function App() {
 
     // Global listener for all terminal output - updates activity for ALL terminals
     // This is needed because WorkspaceView only renders terminals for the active workspace
-    const unsubscribeOutput = window.electronAPI.pty.onOutput((id) => {
+    const unsubscribeOutput = host.pty.onOutput((id) => {
       workspaceStore.updateTerminalActivity(id)
     })
 
     // Load saved workspaces and settings on startup
     // If launched with --profile, use that profile instead of the stored active one
-    const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+    const dlog = (...args: unknown[]) => host.debug.log(...args)
     const htmlT0 = (window as unknown as { __t0?: number }).__t0 || Date.now()
     dlog(`[startup] App useEffect fired: +${Date.now() - htmlT0}ms from HTML`)
     const initProfile = async () => {
       const t0 = performance.now()
       try {
-        const launchProfileId = await window.electronAPI.app.getLaunchProfile()
+        const launchProfileId = await host.app.getLaunchProfile()
         dlog(`[init] getLaunchProfile: ${(performance.now() - t0).toFixed(0)}ms`)
 
         const t1 = performance.now()
-        const result = await window.electronAPI.profile.list()
+        const result = await host.profile.list()
         dlog(`[init] profile.list: ${(performance.now() - t1).toFixed(0)}ms`)
 
         // Determine which profile this window should use:
         // 1. Launch profile (--profile= argument) takes priority
         // 2. Window registry's profileId (per-window binding)
         // 3. First active profile as fallback
-        const windowProfileId = await window.electronAPI.app.getWindowProfile()
+        const windowProfileId = await host.app.getWindowProfile()
         const profileId = launchProfileId || windowProfileId || result.activeProfileIds[0]
         let active = result.profiles.find(p => p.id === profileId)
 
@@ -384,7 +438,7 @@ export default function App() {
         // connection (e.g. launched with --profile=<local-remote-alias>).
         if (!active && profileId) {
           try {
-            const localResult = await window.electronAPI.profile.listLocal()
+            const localResult = await host.profile.listLocal()
             active = localResult.profiles.find(p => p.id === profileId)
           } catch {
             // listLocal may not exist on older builds — fall through
@@ -394,7 +448,7 @@ export default function App() {
         if (active?.type === 'remote' && active.remoteHost && active.remoteToken && active.remoteFingerprint) {
           // Try connecting to remote
           const tRemote = performance.now()
-          const connectResult = await window.electronAPI.remote.connect(
+          const connectResult = await host.remote.connect(
             active.remoteHost,
             active.remotePort || 9876,
             active.remoteToken,
@@ -411,14 +465,16 @@ export default function App() {
             // Main window: fall back to first local profile
             const localProfile = result.profiles.find(p => p.type !== 'remote')
             if (localProfile) {
-              await window.electronAPI.profile.load(localProfile.id)
-              const winIdx = await window.electronAPI.app.getWindowIndex()
+              await host.profile.load(localProfile.id)
+              const winIdx = await host.app.getWindowIndex()
               setActiveProfileName(`${localProfile.name}:${winIdx}`)
+              setActiveProfileIsRemote(false)
             }
           } else {
-            const winIdx = await window.electronAPI.app.getWindowIndex()
+            const winIdx = await host.app.getWindowIndex()
             setActiveProfileName(`${active.name}:${winIdx}`)
-            setIsRemoteConnected(true)
+            setActiveProfileIsRemote(true)
+            setRemoteClientConnected(true)
           }
         } else if (active?.type === 'remote') {
           // Remote profile missing connection info — fall back
@@ -429,28 +485,40 @@ export default function App() {
           }
           const localProfile = result.profiles.find(p => p.type !== 'remote')
           if (localProfile) {
-            await window.electronAPI.profile.load(localProfile.id)
-            const winIdx = await window.electronAPI.app.getWindowIndex()
+            await host.profile.load(localProfile.id)
+            const winIdx = await host.app.getWindowIndex()
             setActiveProfileName(`${localProfile.name}:${winIdx}`)
+            setActiveProfileIsRemote(false)
           }
         } else if (active) {
           // For local profiles opened in a new window, load the profile snapshot
           // so workspaces.json reflects this profile's data (not the previous profile's)
           if (launchProfileId) {
-            await window.electronAPI.profile.load(active.id)
+            await host.profile.load(active.id)
           }
-          const winIdx = await window.electronAPI.app.getWindowIndex()
+          const winIdx = await host.app.getWindowIndex()
           setActiveProfileName(`${active.name}:${winIdx}`)
+          setActiveProfileIsRemote(false)
         } else if (result.profiles.length > 0) {
           // Fallback: activeProfileId didn't match any profile — use first local profile
           const fallback = result.profiles.find(p => p.type !== 'remote') || result.profiles[0]
-          const winIdx = await window.electronAPI.app.getWindowIndex()
+          const winIdx = await host.app.getWindowIndex()
           setActiveProfileName(`${fallback.name}:${winIdx}`)
+          setActiveProfileIsRemote(fallback.type === 'remote')
         }
 
         // Store windowId for cross-window workspace drag
-        const winId = await window.electronAPI.app.getWindowId()
+        const winId = await host.app.getWindowId()
         if (winId) workspaceStore.setWindowId(winId)
+
+        if (isTauri() && !launchProfileId) {
+          const currentProfileId = (await host.app.getWindowProfile()) || active?.id || profileId || null
+          const tRestore = performance.now()
+          const restored = await host.app.restoreActiveProfiles(currentProfileId)
+          if (restored.length > 0) {
+            dlog(`[init] app.restoreActiveProfiles: ${(performance.now() - tRestore).toFixed(0)}ms (${restored.length} windows)`)
+          }
+        }
 
         const tLoad = performance.now()
         // Load settings first (lightweight, no re-render), then workspaces (triggers heavy re-render)
@@ -478,18 +546,18 @@ export default function App() {
     initProfile()
 
     // Listen for system resume from sleep/hibernate — refresh remote connection status
-    const unsubSystemResume = window.electronAPI.system.onResume(() => {
-      window.electronAPI.remote.clientStatus().then(s => setIsRemoteConnected(s.connected))
+    const unsubSystemResume = host.system.onResume(() => {
+      host.remote.clientStatus().then(s => setRemoteClientConnected(s.connected))
     })
 
     // Listen for cross-window workspace reload
     const unsubReload = workspaceStore.listenForReload()
 
     // Listen for workspace detach/reattach events (main window only)
-    const unsubDetach = window.electronAPI.workspace.onDetached((wsId) => {
+    const unsubDetach = host.workspace.onDetached((wsId) => {
       setDetachedIds(prev => new Set(prev).add(wsId))
     })
-    const unsubReattach = window.electronAPI.workspace.onReattached((wsId) => {
+    const unsubReattach = host.workspace.onReattached((wsId) => {
       setDetachedIds(prev => {
         const next = new Set(prev)
         next.delete(wsId)
@@ -509,12 +577,18 @@ export default function App() {
 
   // Poll remote client connection status
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null
     const check = () => {
-      window.electronAPI.remote.clientStatus().then(s => setIsRemoteConnected(s.connected))
+      host.remote.clientStatus().then(s => setRemoteClientConnected(s.connected))
     }
-    check()
-    const interval = setInterval(check, 3000)
-    return () => clearInterval(interval)
+    const cancelStart = scheduleTauriStartupBackgroundWork(() => {
+      check()
+      interval = setInterval(check, 3000)
+    })
+    return () => {
+      cancelStart()
+      if (interval) clearInterval(interval)
+    }
   }, [])
 
   const handleAddWorkspace = useCallback(() => {
@@ -535,7 +609,7 @@ export default function App() {
 
 
   const handleDetachWorkspace = useCallback(async (workspaceId: string) => {
-    await window.electronAPI.workspace.detach(workspaceId)
+    await host.workspace.detach(workspaceId)
   }, [])
 
   // Paste content to focused PTY terminal
@@ -551,7 +625,7 @@ export default function App() {
     }
 
     if (terminalId) {
-      window.electronAPI.pty.write(terminalId, content)
+      host.pty.write(terminalId, content)
     } else {
       console.warn('No terminal available to paste to')
     }
@@ -580,7 +654,7 @@ export default function App() {
     }
 
     if (terminalId) {
-      window.electronAPI.claude.sendMessage(terminalId, content)
+      host.claude.sendMessage(terminalId, content)
     } else {
       console.warn('No Claude agent session available')
     }
@@ -588,7 +662,7 @@ export default function App() {
 
   // Open profile in a new app instance (or focus if already open)
   const handleProfileNewWindow = useCallback(async (profileId: string) => {
-    const result = await window.electronAPI.app.openNewInstance(profileId)
+    const result = await host.app.openNewInstance(profileId)
     if (result?.alreadyOpen) {
       setAppNotification(t('profiles.alreadyOpen'))
     }
@@ -816,9 +890,9 @@ export default function App() {
           onClose={() => setShowProfiles(false)}
           onSwitchNewWindow={handleProfileNewWindow}
           onProfileRenamed={async (profileId, newName) => {
-            const wpId = await window.electronAPI.app.getWindowProfile()
+            const wpId = await host.app.getWindowProfile()
             if (wpId === profileId) {
-              const winIdx = await window.electronAPI.app.getWindowIndex()
+              const winIdx = await host.app.getWindowIndex()
               setActiveProfileName(`${newName}:${winIdx}`)
             }
           }}

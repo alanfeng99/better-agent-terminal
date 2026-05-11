@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useEffect, useMemo, useState } from 'react'
 import {
   cleanPathLinkCandidate,
@@ -109,7 +110,7 @@ export function ChatMarkdown({ text, cwd, className = 'claude-markdown' }: ChatM
       return
     }
 
-    window.electronAPI.fs.resolvePathLinks(cwd, missing).then(results => {
+    host.fs.resolvePathLinks(cwd, missing).then(results => {
       if (cancelled) return
       const next = new Map(cached)
       const found = new Set<string>()

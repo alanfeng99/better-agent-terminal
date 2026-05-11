@@ -57,7 +57,6 @@ if (process.platform === 'darwin') {
 import { PtyManager } from './pty-manager'
 import { ClaudeAgentManager } from './claude-agent-manager'
 import { CodexAgentManager } from './codex-agent-manager'
-import { OpenAIAgentManager } from './openai-agent-manager'
 import { checkForUpdates, UpdateCheckResult } from './update-checker'
 import { snippetDb } from './snippet-db'
 import { ProfileManager, type ProfileSnapshot } from './profile-manager'
@@ -167,8 +166,7 @@ const windowMap = new Map<string, BrowserWindow>() // windowId → BrowserWindow
 let ptyManager: PtyManager | null = null
 let claudeManager: ClaudeAgentManager | null = null
 let codexManager: CodexAgentManager | null = null
-let openaiManager: OpenAIAgentManager | null = null
-const sessionManagerMap = new Map<string, 'claude' | 'codex' | 'openai'>()
+const sessionManagerMap = new Map<string, 'claude' | 'codex'>()
 let updateCheckResult: UpdateCheckResult | null = null
 const profileManager = new ProfileManager()
 const remoteServer = new RemoteServer()
@@ -418,6 +416,22 @@ function setupCopyShortcutForwarding(win: BrowserWindow) {
   })
 }
 
+function attachWindowLoadDiagnostics(win: BrowserWindow, label: string) {
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    logger.error(`[window:${label}] did-fail-load main=${isMainFrame} code=${errorCode} desc=${errorDescription} url=${validatedURL}`)
+  })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    logger.error(`[window:${label}] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+  win.on('unresponsive', () => {
+    logger.warn(`[window:${label}] unresponsive`)
+  })
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level < 2) return
+    logger.log(`[window:${label}] console level=${level} ${sourceId}:${line} ${message}`)
+  })
+}
+
 function createWindow(windowId: string, bounds?: { x: number; y: number; width: number; height: number }) {
   const win = new BrowserWindow({
     width: bounds?.width || 1400,
@@ -440,6 +454,7 @@ function createWindow(windowId: string, bounds?: { x: number; y: number; width: 
   })
 
   setupCopyShortcutForwarding(win)
+  attachWindowLoadDiagnostics(win, windowId)
   windowMap.set(windowId, win)
 
   if (process.platform === 'darwin') {
@@ -451,7 +466,6 @@ function createWindow(windowId: string, bounds?: { x: number; y: number; width: 
   if (!ptyManager) ptyManager = new PtyManager(getAllWindows)
   if (!claudeManager) claudeManager = new ClaudeAgentManager(getAllWindows, getWindowsForProfile)
   if (!codexManager) codexManager = new CodexAgentManager(getAllWindows, undefined, getWindowsForProfile)
-  if (!openaiManager) openaiManager = new OpenAIAgentManager(getAllWindows, getWindowsForProfile)
 
   const urlParam = `?windowId=${encodeURIComponent(windowId)}`
   if (VITE_DEV_SERVER_URL) {
@@ -599,13 +613,10 @@ function cleanupAllProcesses() {
   try { claudeManager?.dispose() } catch { /* ignore */ }
   try { codexManager?.killAll() } catch { /* ignore */ }
   try { codexManager?.dispose() } catch { /* ignore */ }
-  try { openaiManager?.killAll() } catch { /* ignore */ }
-  try { openaiManager?.dispose() } catch { /* ignore */ }
   try { ptyManager?.dispose() } catch { /* ignore */ }
   try { snippetDb.close() } catch { /* ignore */ }
   claudeManager = null
   codexManager = null
-  openaiManager = null
   sessionManagerMap.clear()
   ptyManager = null
 }
@@ -1029,6 +1040,10 @@ function bindProxiedHandlersToIpc() {
 // ── Renderer debug log (fire-and-forget, no blocking) ──
 ipcMain.on('debug:log', (_event, ...args: unknown[]) => {
   logger.log('[renderer]', ...args)
+})
+ipcMain.handle('debug:open-logs-folder', async () => {
+  await shell.openPath(app.getPath('userData'))
+  return true
 })
 
 // ── Local-only IPC handlers (not proxied) ──
@@ -1524,6 +1539,7 @@ function registerLocalHandlers() {
       frame: true, titleBarStyle: 'default', icon: nativeImage.createFromPath(path.join(__dirname, process.platform === 'win32' ? '../assets/icon.ico' : '../assets/icon.png'))
     })
     setupCopyShortcutForwarding(detachedWin)
+    attachWindowLoadDiagnostics(detachedWin, `detached-${workspaceId}`)
     setupResizeThrottle(detachedWin, 'detached')
     detachedWindows.set(workspaceId, detachedWin)
     const urlParam = `?detached=${encodeURIComponent(workspaceId)}`
@@ -1583,7 +1599,6 @@ registerProxiedHandlers({
   getPtyManager: () => ptyManager,
   getClaudeManager: () => claudeManager,
   getCodexManager: () => codexManager,
-  getOpenAIManager: () => openaiManager,
   sessionManagerMap,
   windowRegistry,
   profileManager,

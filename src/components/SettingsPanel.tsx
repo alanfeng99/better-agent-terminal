@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
@@ -66,13 +67,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [serverStatus, setServerStatus] = useState<RemoteServerStatus>({ running: false, port: null, fingerprint: null, bindInterface: null, boundHost: null, clients: [] })
   const [serverPort, setServerPort] = useState(String(settings.remoteServerPort || 9876))
   const [serverToken, setServerToken] = useState<string | null>(null)
+  const [serverTokenFingerprint, setServerTokenFingerprint] = useState<string | null>(null)
   const [bindInterface, setBindInterface] = useState<BindInterface>(settings.remoteServerBindInterface || 'localhost')
   const [clientStatus, setClientStatus] = useState<RemoteClientStatus>({ connected: false, info: null })
 
-  // OpenAI API key state
-  const [openaiKeyStatus, setOpenaiKeyStatus] = useState<{ hasKey: boolean }>({ hasKey: false })
-  const [openaiKeyInput, setOpenaiKeyInput] = useState('')
-  const [openaiKeySaving, setOpenaiKeySaving] = useState(false)
   const [cxStatus, setCxStatus] = useState<CxDetectionStatus | null>(null)
   const [cxDetecting, setCxDetecting] = useState(false)
 
@@ -105,16 +103,26 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [switchWarningShown, setSwitchWarningShown] = useState(false)
   const [accountsLoading, setAccountsLoading] = useState(false)
   const [accountLoginLoading, setAccountLoginLoading] = useState(false)
+  const [accountSwitchingId, setAccountSwitchingId] = useState<string | null>(null)
   const [accountStatusMsg, setAccountStatusMsg] = useState('')
+  const [accountStatusIsError, setAccountStatusIsError] = useState(false)
 
   // Get current platform for filtering shell options
-  const platform = window.electronAPI?.platform || 'darwin'
+  const platform = host.platform || 'darwin'
   const platformShellOptions = SHELL_OPTIONS.filter(opt => opt.platforms.includes(platform))
-  const isDebugMode = window.electronAPI?.debug?.isDebugMode === true
-  const visibleAgentPresets = getVisiblePresets().filter(p => p.id !== 'none')
+  const isDebugMode = host.debug.isDebugMode === true
+  const visibleAgentPresets = getVisiblePresets(isDebugMode).filter(p => p.id !== 'none')
   const defaultAgentValue = visibleAgentPresets.some(p => p.id === settings.defaultAgent)
     ? settings.defaultAgent
     : 'claude-code'
+  const openExternal = useCallback((url: string) => {
+    Promise.resolve(host.shell.openExternal(url)).catch(() => window.open(url))
+  }, [])
+  const handleOpenLogsFolder = useCallback(() => {
+    Promise.resolve(host.debug.openLogsFolder()).catch(error => {
+      host.debug.log?.('[SettingsPanel] Failed to open logs folder:', String(error))
+    })
+  }, [])
 
   useEffect(() => {
     return settingsStore.subscribe(() => {
@@ -128,15 +136,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     setBindInterface(settings.remoteServerBindInterface || 'localhost')
   }, [settings.remoteServerPort, settings.remoteServerBindInterface, serverStatus.running])
 
-  useEffect(() => {
-    if (!isDebugMode) return
-    window.electronAPI.openai?.getApiKeyStatus().then(setOpenaiKeyStatus).catch(() => { /* ignore */ })
-  }, [isDebugMode])
-
   const refreshCxStatus = useCallback(async () => {
     setCxDetecting(true)
     try {
-      const status = await window.electronAPI.settings.detectCx()
+      const status = await host.settings.detectCx()
       setCxStatus(status)
     } finally {
       setCxDetecting(false)
@@ -170,41 +173,62 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     if (settingsStore.getSettings().accountSwitching === false) return
     setAccountsLoading(true)
     try {
-      const result = await window.electronAPI.claude.accountList()
+      let result = await host.claude.accountList()
       setAccounts(result.accounts)
       setActiveAccountId(result.activeAccountId)
       setSwitchWarningShown(result.switchWarningShown)
-      if (result.accounts.length === 0) {
-        const imported = await window.electronAPI.claude.accountImportCurrent()
-        if (imported) {
-          const refreshed = await window.electronAPI.claude.accountList()
-          setAccounts(refreshed.accounts)
-          setActiveAccountId(refreshed.activeAccountId)
-          setSwitchWarningShown(refreshed.switchWarningShown)
-        }
+      const imported = await host.claude.accountImportCurrent()
+      if (imported) {
+        result = await host.claude.accountList()
+        setAccounts(result.accounts)
+        setActiveAccountId(result.activeAccountId)
+        setSwitchWarningShown(result.switchWarningShown)
       }
     } catch (e) {
-      window.electronAPI?.debug?.log?.(`[SettingsPanel] Failed to load accounts: ${e}`)
+      host.debug.log?.(`[SettingsPanel] Failed to load accounts: ${e}`)
     }
     setAccountsLoading(false)
   }, [])
 
   useEffect(() => {
-    loadAccounts()
-  }, [loadAccounts])
+    if (settings.accountSwitching !== false) {
+      loadAccounts()
+    } else {
+      setAccountStatusMsg('')
+      setAccountStatusIsError(false)
+      setAccountsLoading(false)
+    }
+  }, [loadAccounts, settings.accountSwitching])
 
   const handleAccountSwitch = async (accountId: string) => {
     if (accountId === activeAccountId) return
+    setAccountStatusMsg('')
+    setAccountStatusIsError(false)
     if (!switchWarningShown) {
       const confirmed = confirm(t('settings.accountSwitchingWarning'))
       if (!confirmed) return
-      await window.electronAPI.claude.accountMarkWarningShown()
+      await host.claude.accountMarkWarningShown()
       setSwitchWarningShown(true)
     }
-    const success = await window.electronAPI.claude.accountSwitch(accountId)
-    if (success) {
-      setActiveAccountId(accountId)
-      window.dispatchEvent(new CustomEvent('claude-account-switched'))
+    setAccountSwitchingId(accountId)
+    try {
+      const success = await host.claude.accountSwitch(accountId)
+      if (success) {
+        setActiveAccountId(accountId)
+        setAccountStatusMsg(t('settings.accountSwitchingSwitched'))
+        setAccountStatusIsError(false)
+        await loadAccounts()
+        window.dispatchEvent(new CustomEvent('claude-account-switched'))
+      } else {
+        setAccountStatusMsg(t('settings.accountSwitchingMissingCredential'))
+        setAccountStatusIsError(true)
+      }
+    } catch (e) {
+      host.debug.log?.(`[SettingsPanel] Account switch failed: ${e}`)
+      setAccountStatusMsg(t('settings.accountSwitchingSwitchFailed', { error: e instanceof Error ? e.message : t('common.unknownError', 'unknown error') }))
+      setAccountStatusIsError(true)
+    } finally {
+      setAccountSwitchingId(null)
     }
   }
 
@@ -213,7 +237,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     if (!account) return
     const confirmed = confirm(t('settings.accountSwitchingRemoveConfirm', { email: account.email }))
     if (!confirmed) return
-    const success = await window.electronAPI.claude.accountRemove(accountId)
+    const success = await host.claude.accountRemove(accountId)
     if (success) {
       await loadAccounts()
     }
@@ -221,18 +245,22 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const handleAccountLoginNew = async () => {
     setAccountLoginLoading(true)
-    setAccountStatusMsg('Opening login in browser...')
+    setAccountStatusMsg(t('settings.accountSwitchingOpeningLogin'))
+    setAccountStatusIsError(false)
     try {
-      const result = await window.electronAPI.claude.accountLoginNew()
+      const result = await host.claude.accountLoginNew()
       if (result.success) {
         await loadAccounts()
-        setAccountStatusMsg(result.account ? `Added ${result.account.email}` : 'Account added.')
+        setAccountStatusMsg(result.account ? t('settings.accountSwitchingAddedAccount', { email: result.account.email }) : t('settings.accountSwitchingAccountAdded'))
+        setAccountStatusIsError(false)
       } else {
-        setAccountStatusMsg(`Login failed: ${result.error || 'unknown error'}`)
+        setAccountStatusMsg(t('settings.accountSwitchingLoginFailed', { error: result.error || t('common.unknownError', 'unknown error') }))
+        setAccountStatusIsError(true)
       }
     } catch (e) {
-      window.electronAPI?.debug?.log?.(`[SettingsPanel] Account login failed: ${e}`)
-      setAccountStatusMsg(`Error: ${e instanceof Error ? e.message : 'unknown error'}`)
+      host.debug.log?.(`[SettingsPanel] Account login failed: ${e}`)
+      setAccountStatusMsg(t('settings.accountSwitchingError', { error: e instanceof Error ? e.message : t('common.unknownError', 'unknown error') }))
+      setAccountStatusIsError(true)
     }
     setAccountLoginLoading(false)
   }
@@ -276,9 +304,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   // Load remote status on mount and poll
   useEffect(() => {
     const refresh = async () => {
-      const ss = await window.electronAPI.remote.serverStatus()
+      const ss = await host.remote.serverStatus()
       setServerStatus(ss)
-      const cs = await window.electronAPI.remote.clientStatus()
+      const cs = await host.remote.clientStatus()
       setClientStatus(cs)
     }
     refresh()
@@ -286,30 +314,40 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     return () => clearInterval(interval)
   }, [])
 
-  // Resolve a usable host for the connection URL. boundHost is the literal
-  // listen address — for `bind=all` that's `0.0.0.0`, which clients can't
-  // connect to, so fall back to enumerating real interfaces.
+  // Resolve a usable host and token for the connection URL. boundHost is the
+  // literal listen address — for `bind=all` that's `0.0.0.0`, which clients
+  // can't connect to, so fall back to enumerating real interfaces. If the
+  // server was auto-started or started by another window, serverStatus does
+  // not include the persisted token, so tunnel.getConnection fills it in.
   useEffect(() => {
     if (!serverStatus.running || !serverStatus.boundHost) {
       setConnectionUrlHost(null)
+      setServerToken(null)
+      setServerTokenFingerprint(null)
       return
     }
     const bh = serverStatus.boundHost
-    if (bh !== '0.0.0.0' && bh !== '::') {
+    const needsResolvedHost = bh === '0.0.0.0' || bh === '::'
+    const tokenMatchesServer = !!serverToken && serverTokenFingerprint === serverStatus.fingerprint
+    if (!needsResolvedHost && tokenMatchesServer) {
       setConnectionUrlHost(bh)
       return
     }
     let cancelled = false
-    window.electronAPI.tunnel.getConnection().then(result => {
+    host.tunnel.getConnection().then(result => {
       if (cancelled) return
       if ('error' in result || !result.addresses?.length) {
         setConnectionUrlHost(bh)
         return
       }
+      if (result.token) {
+        setServerToken(result.token)
+        setServerTokenFingerprint(result.fingerprint || serverStatus.fingerprint || null)
+      }
       setConnectionUrlHost(result.addresses[0].ip)
     }).catch(() => { if (!cancelled) setConnectionUrlHost(bh) })
     return () => { cancelled = true }
-  }, [serverStatus.running, serverStatus.boundHost, serverStatus.port])
+  }, [serverStatus.running, serverStatus.boundHost, serverStatus.port, serverStatus.fingerprint, serverToken, serverTokenFingerprint])
 
   const connectionUrl = (() => {
     if (!serverStatus.running || !serverStatus.port || !serverStatus.fingerprint || !serverToken) return null
@@ -322,7 +360,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     const port = parseInt(serverPort) || 9876
     settingsStore.setRemoteServerPort(port)
     settingsStore.setRemoteServerBindInterface(bindInterface)
-    const result = await window.electronAPI.remote.startServer({
+    const result = await host.remote.startServer({
       port,
       bindInterface,
     })
@@ -330,16 +368,18 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       alert(t('settings.failedToStartServer', { error: result.error }))
     } else {
       setServerToken(result.token)
+      setServerTokenFingerprint(result.fingerprint)
       setServerPort(String(result.port))
     }
-    const ss = await window.electronAPI.remote.serverStatus()
+    const ss = await host.remote.serverStatus()
     setServerStatus(ss)
   }
 
   const handleStopServer = async () => {
-    await window.electronAPI.remote.stopServer()
+    await host.remote.stopServer()
     setServerToken(null)
-    const ss = await window.electronAPI.remote.serverStatus()
+    setServerTokenFingerprint(null)
+    const ss = await host.remote.serverStatus()
     setServerStatus(ss)
   }
 
@@ -355,7 +395,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     setQrLoading(true)
     setQrError(null)
     try {
-      const result = await window.electronAPI.tunnel.getConnection()
+      const result = await host.tunnel.getConnection()
       if ('error' in result) {
         setQrError(result.error)
         return
@@ -368,9 +408,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       setQrPort(port)
       await generateQrForIp(result.addresses[0].ip, result.addresses[0].mode, result.token, result.fingerprint, port, result.context)
       // Refresh server status since we may have started it
-      const ss = await window.electronAPI.remote.serverStatus()
+      const ss = await host.remote.serverStatus()
       setServerStatus(ss)
-      if (result.token) setServerToken(result.token)
+      if (result.token) {
+        setServerToken(result.token)
+        setServerTokenFingerprint(result.fingerprint || ss.fingerprint || null)
+      }
     } catch (err) {
       setQrError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -633,55 +676,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 )}
               </div>
 
-              {isDebugMode && (
-                <div className="settings-section">
-                  <h3>OpenAI (Direct) API Key</h3>
-                  <p className="settings-hint">Stored locally, encrypted with OS keychain via Electron safeStorage. Used by the "OpenAI (Direct)" agent preset.</p>
-                  <div className="settings-group">
-                    <label>Status: {openaiKeyStatus.hasKey ? '✅ key configured' : '❌ no key'}</label>
-                    <input
-                      type="password"
-                      value={openaiKeyInput}
-                      onChange={e => setOpenaiKeyInput(e.target.value)}
-                      placeholder="sk-..."
-                      autoComplete="off"
-                    />
-                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                      <button
-                        className="settings-btn"
-                        disabled={!openaiKeyInput.trim() || openaiKeySaving}
-                        onClick={async () => {
-                          setOpenaiKeySaving(true)
-                          try {
-                            await window.electronAPI.openai.setApiKey(openaiKeyInput.trim())
-                            setOpenaiKeyInput('')
-                            const s = await window.electronAPI.openai.getApiKeyStatus()
-                            setOpenaiKeyStatus(s)
-                          } finally {
-                            setOpenaiKeySaving(false)
-                          }
-                        }}
-                      >
-                        {openaiKeySaving ? 'Saving…' : 'Save Key'}
-                      </button>
-                      {openaiKeyStatus.hasKey && (
-                        <button
-                          className="settings-btn settings-btn-danger"
-                          onClick={async () => {
-                            if (!confirm('Clear saved OpenAI API key?')) return
-                            await window.electronAPI.openai.clearApiKey()
-                            const s = await window.electronAPI.openai.getApiKeyStatus()
-                            setOpenaiKeyStatus(s)
-                          }}
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
               <div className="settings-section">
                 <h3>{t('settings.modelAndEffort')}</h3>
                 <div className="settings-group">
@@ -859,7 +853,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     style={{ marginTop: 6 }}
                     onClick={async () => {
                       if (confirm(t('settings.clearTerminalHistoryConfirm'))) {
-                        await window.electronAPI.settings.clearTerminalHistory()
+                        await host.settings.clearTerminalHistory()
                         alert(t('settings.clearTerminalHistoryDone'))
                       }
                     }}
@@ -927,7 +921,7 @@ Reference: https://github.com/ind-igo/cx`
                         <p className="settings-hint" style={{ marginTop: 0, marginBottom: 8 }}>
                           {t('settings.cxInstallAgentHint')}{' '}
                           <a href="https://github.com/ind-igo/cx" style={{ color: '#58a6ff' }}
-                            onClick={e => { e.preventDefault(); window.electronAPI?.openExternal?.('https://github.com/ind-igo/cx') }}>
+                            onClick={e => { e.preventDefault(); openExternal('https://github.com/ind-igo/cx') }}>
                             github.com/ind-igo/cx
                           </a>
                         </p>
@@ -955,7 +949,7 @@ Reference: https://github.com/ind-igo/cx`
                 {t('settings.remoteAccessHint')}{' '}
                 <a href="https://github.com/tony1223/better-agent-terminal#remote-access--mobile-connect"
                   style={{ color: '#58a6ff' }}
-                  onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>
+                  onClick={e => { e.preventDefault(); openExternal(e.currentTarget.href) }}>
                   {t('settings.remoteAccessReadme')}
                 </a>。
               </p>
@@ -1073,9 +1067,9 @@ Reference: https://github.com/ind-igo/cx`
                 <label>{t('settings.mobileConnect')} <span style={{ fontSize: 10, color: '#d29922', fontWeight: 'normal' }}>{t('settings.mobileConnectExperimental')}</span></label>
                 <p style={{ fontSize: 11, color: '#8b949e', marginTop: 2, marginBottom: 6, lineHeight: 1.4 }}>
                   {t('settings.mobileConnectHint')}{' '}
-                  <a href="https://tailscale.com/" style={{ color: '#58a6ff' }} onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>Tailscale</a>{' '}
+                  <a href="https://tailscale.com/" style={{ color: '#58a6ff' }} onClick={e => { e.preventDefault(); openExternal(e.currentTarget.href) }}>Tailscale</a>{' '}
                   {t('settings.mobileConnectSeeReadme')}{' '}
-                  <a href="https://github.com/tony1223/better-agent-terminal#remote-access--mobile-connect" style={{ color: '#58a6ff' }} onClick={e => { e.preventDefault(); window.electronAPI?.shell?.openExternal?.(e.currentTarget.href) || window.open(e.currentTarget.href) }}>{t('settings.remoteAccessReadme')}</a>。
+                  <a href="https://github.com/tony1223/better-agent-terminal#remote-access--mobile-connect" style={{ color: '#58a6ff' }} onClick={e => { e.preventDefault(); openExternal(e.currentTarget.href) }}>{t('settings.remoteAccessReadme')}</a>。
                 </p>
                 {!qrDataUrl ? (
                   <>
@@ -1253,6 +1247,13 @@ Reference: https://github.com/ind-igo/cx`
               </div>
 
               <div className="settings-section">
+                <h3>{t('settings.diagnostics')}</h3>
+                <button className="statusline-template-btn" style={{ fontSize: '12px' }} onClick={handleOpenLogsFolder}>
+                  {t('settings.openLogsFolder')}
+                </button>
+              </div>
+
+              <div className="settings-section">
                 <h3>{t('settings.accountSwitching')}</h3>
                 <p className="settings-hint" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
                   {t('settings.accountSwitchingHint')}
@@ -1285,7 +1286,14 @@ Reference: https://github.com/ind-igo/cx`
                               <span style={{ fontSize: '11px', color: '#3fb950', fontWeight: 500 }}>{t('settings.accountSwitchingActive')}</span>
                             ) : (
                               <>
-                                <button className="statusline-template-btn" style={{ fontSize: '11px' }} onClick={() => handleAccountSwitch(account.id)}>{t('settings.accountSwitchingSwitch')}</button>
+                                <button
+                                  className="statusline-template-btn"
+                                  style={{ fontSize: '11px' }}
+                                  onClick={() => handleAccountSwitch(account.id)}
+                                  disabled={accountSwitchingId !== null}
+                                >
+                                  {accountSwitchingId === account.id ? t('settings.accountSwitchingSwitching') : t('settings.accountSwitchingSwitch')}
+                                </button>
                                 {!account.isDefault && (
                                   <button className="statusline-template-btn" style={{ fontSize: '11px', color: '#f85149' }} onClick={() => handleAccountRemove(account.id)}>{t('settings.accountSwitchingRemove')}</button>
                                 )}
@@ -1296,10 +1304,10 @@ Reference: https://github.com/ind-igo/cx`
                       </div>
                     )}
                     <button className="statusline-template-btn" style={{ marginTop: '10px', fontSize: '12px' }} onClick={handleAccountLoginNew} disabled={accountLoginLoading}>
-                      {accountLoginLoading ? 'Opening login...' : t('settings.accountSwitchingAddAccount')}
+                      {accountLoginLoading ? t('settings.accountSwitchingOpeningLoginShort') : t('settings.accountSwitchingAddAccount')}
                     </button>
                     {accountStatusMsg && (
-                      <p style={{ fontSize: '11px', color: accountStatusMsg.startsWith('Error') || accountStatusMsg.startsWith('Login failed') ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
+                      <p style={{ fontSize: '11px', color: accountStatusIsError ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
                         {accountStatusMsg}
                       </p>
                     )}

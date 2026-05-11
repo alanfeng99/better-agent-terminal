@@ -1,13 +1,13 @@
+import { host, isTauri } from '../host-api'
 import { useEffect, useRef, useState, memo, useCallback } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { settingsStore } from '../stores/settings-store'
-import { parseProcfile } from '../utils/procfile-parser'
 import '@xterm/xterm/css/xterm.css'
 
-const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+const dlog = (...args: unknown[]) => host.debug.log(...args)
 
 const WORKER_COLORS = [
   '#61afef', '#98c379', '#e5c07b', '#c678dd',
@@ -24,6 +24,29 @@ interface WorkerProcess {
   status: ProcessStatus
   exitCode?: number
   autoStart: boolean
+}
+
+interface WorkerLogEntry {
+  name: string
+  color: string
+  data: string
+}
+
+function parseWorkerBuffer(raw: string): WorkerLogEntry[] {
+  if (!raw.trim()) return []
+  const entries: WorkerLogEntry[] = []
+  for (const line of raw.trim().split('\n')) {
+    if (!line) continue
+    try {
+      const parsed = JSON.parse(line) as Partial<WorkerLogEntry>
+      if (typeof parsed.name === 'string' && typeof parsed.color === 'string' && typeof parsed.data === 'string') {
+        entries.push({ name: parsed.name, color: parsed.color, data: parsed.data })
+      }
+    } catch {
+      // Ignore malformed persisted lines; new output will continue appending.
+    }
+  }
+  return entries
 }
 
 // Persist auto-start preferences per Procfile
@@ -44,7 +67,7 @@ async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
   } catch {
-    try { await window.electronAPI.clipboard.writeText(text) } catch { /* ignore */ }
+    try { await host.clipboard.writeText(text) } catch { /* ignore */ }
   }
 }
 
@@ -95,21 +118,6 @@ function prefixWorkerChunk(data: string, prefix: string, wasMidLine: boolean): {
   return { output, midLine: !atLineStart }
 }
 
-// Build the line written to the PTY to launch a Procfile command so that the
-// PTY exits with the command's status. The wrapper differs per shell because
-// `exec` is a POSIX shell builtin and PowerShell has no direct equivalent.
-function buildLaunchCommand(shell: string | undefined, command: string): string {
-  const isPowerShell = !!shell && /pwsh|powershell/i.test(shell)
-  if (isPowerShell) {
-    // PowerShell: run inline, then exit with the child's status code so the
-    // pty onExit handler reports the real result.
-    return `${command}; exit $LASTEXITCODE\r`
-  }
-  // POSIX shells: exec replaces the parent shell with the command.
-  const escaped = command.replace(/'/g, "'\\''")
-  return `exec bash -c '${escaped}'\r`
-}
-
 function getProcfileWorkingDirectory(procfilePath: string, fallbackCwd: string): string {
   const normalized = procfilePath.replace(/\\/g, '/')
   const lastSlash = normalized.lastIndexOf('/')
@@ -157,7 +165,8 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   const shellRef = useRef<string | undefined>()
   const ptyIdsRef = useRef<Set<string>>(new Set())
   const logVisibleRef = useRef<Map<string, boolean>>(new Map())
-  const pendingBatchRef = useRef<Array<{ name: string; color: string; data: string }>>([])
+  const entriesRef = useRef<WorkerLogEntry[]>([])
+  const pendingBatchRef = useRef<WorkerLogEntry[]>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const spotlightRef = useRef<string | null>(null)
 
@@ -180,7 +189,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (batch.length === 0) return
     pendingBatchRef.current = []
     const lines = batch.map(e => JSON.stringify(e)).join('\n') + '\n'
-    await window.electronAPI.workerBuffer.append(terminalId, lines)
+    await host.workerBuffer.append(terminalId, lines)
   }, [terminalId])
 
   // Schedule a flush (debounced 500ms)
@@ -193,7 +202,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   }, [flushToDisk])
 
   // Re-render terminal from entries with only visible processes
-  const reRenderTerminal = useCallback((entries: Array<{ name: string; color: string; data: string }>, visibleMap: Map<string, boolean>) => {
+  const reRenderTerminal = useCallback((entries: WorkerLogEntry[], visibleMap: Map<string, boolean>) => {
     const terminal = terminalRef.current
     if (!terminal) return
 
@@ -211,8 +220,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       if (visibleMap.get(entry.name) === false) continue
 
       const maxLen = Math.max(...processesRef.current.map(p => p.name.length))
+      const color = entry.color || processesRef.current.find(p => p.name === entry.name)?.color || '#ffffff'
       const paddedName = entry.name.padEnd(maxLen)
-      const prefix = ansiColor(entry.color, paddedName) + '\x1b[90m | \x1b[0m'
+      const prefix = ansiColor(color, paddedName) + '\x1b[90m | \x1b[0m'
       const formatted = prefixWorkerChunk(entry.data, prefix, !!midLineRef.current.get(entry.name))
       midLineRef.current.set(entry.name, formatted.midLine)
 
@@ -228,20 +238,15 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     logVisibleRef.current = map
     setLogVisible(next)
 
-    // Flush pending batch, then read full buffer from disk
+    // Flush pending batch before re-rendering from the in-memory log.
     if (flushTimerRef.current) {
       clearTimeout(flushTimerRef.current)
       flushTimerRef.current = null
     }
     await flushToDisk()
 
-    const raw = await window.electronAPI.workerBuffer.readAll(terminalId)
-    const entries: Array<{ name: string; color: string; data: string }> = raw
-      ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
-      : []
-
-    reRenderTerminal(entries, map)
-  }, [flushToDisk, terminalId, reRenderTerminal])
+    reRenderTerminal(entriesRef.current, map)
+  }, [flushToDisk, reRenderTerminal])
 
   const toggleSpotlight = useCallback(async (name: string) => {
     const next = spotlightRef.current === name ? null : name
@@ -254,18 +259,13 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     }
     await flushToDisk()
 
-    const raw = await window.electronAPI.workerBuffer.readAll(terminalId)
-    const entries: Array<{ name: string; color: string; data: string }> = raw
-      ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
-      : []
-
     // Build visibility map: spotlight overrides individual toggles
     const map = new Map<string, boolean>(logVisibleRef.current)
     if (next !== null) {
       for (const proc of processesRef.current) map.set(proc.name, proc.name === next)
     }
-    reRenderTerminal(entries, map)
-  }, [flushToDisk, terminalId, reRenderTerminal])
+    reRenderTerminal(entriesRef.current, map)
+  }, [flushToDisk, reRenderTerminal])
 
   const clearLog = useCallback(async () => {
     if (flushTimerRef.current) {
@@ -273,7 +273,8 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       flushTimerRef.current = null
     }
     pendingBatchRef.current = []
-    await window.electronAPI.workerBuffer.clear(terminalId)
+    await host.workerBuffer.clear(terminalId)
+    entriesRef.current = []
 
     midLineRef.current = new Map()
     const headerText = buildWorkerHeader(procfilePath, processesRef.current.length)
@@ -284,7 +285,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       terminal.write(headerText)
     }
 
-    pendingBatchRef.current.push({ name: '__header__', color: '', data: headerText })
+    const headerEntry = { name: '__header__', color: '', data: headerText }
+    entriesRef.current.push(headerEntry)
+    pendingBatchRef.current.push(headerEntry)
     scheduleFlush()
   }, [procfilePath, scheduleFlush, terminalId])
 
@@ -302,13 +305,18 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   }, [procfilePath])
 
   // Write prefixed output to combined terminal
-  const writeOutput = useCallback((name: string, color: string, data: string) => {
+  const writeOutput = useCallback((name: string, color: string, data: string, persist = true) => {
     const terminal = terminalRef.current
     if (!terminal) return
 
+    const entry = { name, color, data }
+    entriesRef.current.push(entry)
+
     // Queue for disk flush
-    pendingBatchRef.current.push({ name, color, data })
-    scheduleFlush()
+    if (persist) {
+      pendingBatchRef.current.push(entry)
+      scheduleFlush()
+    }
 
     // __header__ entries are pre-formatted, write directly
     if (name === '__header__') {
@@ -338,30 +346,28 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       p.ptyId === proc.ptyId ? { ...p, status: 'starting' as const, exitCode: undefined } : p
     ))
 
-    ptyIdsRef.current.add(proc.ptyId)
-    await window.electronAPI.pty.create({
-      id: proc.ptyId,
+    const ptyId = await host.workerBuffer.startProcess({
+      panelId: terminalId,
+      name: proc.name,
+      command: proc.command,
       cwd: processCwd,
-      type: 'terminal',
       shell: shellRef.current,
       customEnv: getWorktreeProcessEnv(processCwd),
     })
-
-    // Use exec to replace the shell — pty exits when command exits
-    const launch = buildLaunchCommand(shellRef.current, proc.command)
+    ptyIdsRef.current.add(ptyId)
     setTimeout(() => {
-      window.electronAPI.pty.write(proc.ptyId, launch)
       setProcesses(prev => prev.map(p =>
         p.ptyId === proc.ptyId && p.status === 'starting' ? { ...p, status: 'running' as const } : p
       ))
     }, 300)
-  }, [processCwd])
+  }, [processCwd, terminalId])
 
   // Re-read Procfile and sync process list (add new, remove deleted, update commands)
   const reloadProcfile = useCallback(async () => {
-    const result = await window.electronAPI.fs.readFile(procfilePath)
-    if (result.error || !result.content) return
-    const entries = parseProcfile(result.content)
+    const entries = await host.workerBuffer.loadProcfile(procfilePath).catch(error => {
+      dlog(`[worker] failed to load Procfile ${procfilePath}:`, String(error))
+      return []
+    })
     if (entries.length === 0) return
 
     const autoStartPrefs = loadAutoStartPrefs(procfilePath)
@@ -373,7 +379,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const proc of current) {
       if (!newNames.has(proc.name)) {
         if (proc.status === 'running' || proc.status === 'starting') {
-          window.electronAPI.pty.kill(proc.ptyId)
+          await host.workerBuffer.stopProcess(terminalId, proc.name)
           ptyIdsRef.current.delete(proc.ptyId)
         }
         writeOutput(proc.name, proc.color, `\n\x1b[90mRemoved from Procfile\x1b[0m\n`)
@@ -414,9 +420,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const fresh = processesRef.current.find(p => p.name === proc.name)
     if (!fresh) return
     dlog(`[worker] stopping process: ${fresh.name}`)
-    window.electronAPI.pty.kill(fresh.ptyId)
+    await host.workerBuffer.stopProcess(terminalId, fresh.name)
     ptyIdsRef.current.delete(fresh.ptyId)
-  }, [reloadProcfile])
+  }, [reloadProcfile, terminalId])
 
   // Restart a single process (reload Procfile first to pick up command changes)
   const restartProcess = useCallback(async (proc: WorkerProcess) => {
@@ -425,13 +431,13 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (!fresh) return // process was removed from Procfile
 
     dlog(`[worker] restarting process: ${fresh.name}`)
-    await window.electronAPI.pty.kill(fresh.ptyId)
+    await host.workerBuffer.stopProcess(terminalId, fresh.name)
     ptyIdsRef.current.delete(fresh.ptyId)
 
     midLineRef.current.set(fresh.name, false)
     writeOutput(fresh.name, fresh.color, `\n\x1b[33mRestarting...\x1b[0m\n`)
     await startProcess(fresh)
-  }, [startProcess, writeOutput, reloadProcfile])
+  }, [startProcess, writeOutput, reloadProcfile, terminalId])
 
   // Batch operations (reload Procfile once, then act on fresh list)
   const startAll = useCallback(async () => {
@@ -446,11 +452,11 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const p of processesRef.current) {
       if (p.status === 'running' || p.status === 'starting') {
         dlog(`[worker] stopping process: ${p.name}`)
-        window.electronAPI.pty.kill(p.ptyId)
+        await host.workerBuffer.stopProcess(terminalId, p.name)
         ptyIdsRef.current.delete(p.ptyId)
       }
     }
-  }, [reloadProcfile])
+  }, [reloadProcfile, terminalId])
 
   const restartAll = useCallback(async () => {
     const updated = await reloadProcfile()
@@ -458,14 +464,14 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const p of procs) {
       dlog(`[worker] restarting process: ${p.name}`)
       if (p.status === 'running' || p.status === 'starting') {
-        await window.electronAPI.pty.kill(p.ptyId)
+        await host.workerBuffer.stopProcess(terminalId, p.name)
         ptyIdsRef.current.delete(p.ptyId)
       }
       midLineRef.current.set(p.name, false)
       writeOutput(p.name, p.color, `\n\x1b[33mRestarting...\x1b[0m\n`)
       await startProcess(p)
     }
-  }, [reloadProcfile, startProcess, writeOutput])
+  }, [reloadProcfile, startProcess, writeOutput, terminalId])
 
   // Main init effect: create xterm, parse Procfile, start processes
   useEffect(() => {
@@ -501,7 +507,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const fitAddon = new FitAddon()
     const unicode11Addon = new Unicode11Addon()
     const webLinksAddon = new WebLinksAddon((_, uri) => {
-      window.electronAPI.shell.openExternal(uri)
+      host.shell.openExternal(uri)
     })
     terminal.loadAddon(fitAddon)
     terminal.loadAddon(webLinksAddon)
@@ -556,7 +562,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       if (sel) void copyText(sel)
     }
     document.addEventListener('keydown', onDocKeyDown, true)
-    const unsubscribeCopyShortcut = window.electronAPI.clipboard.onCopyShortcut(onCopyShortcut)
+    const unsubscribeCopyShortcut = host.clipboard.onCopyShortcut(onCopyShortcut)
 
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
@@ -570,7 +576,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
         lastCols = cols
         lastRows = rows
         for (const id of ptyIdsRef.current) {
-          window.electronAPI.pty.resize(id, cols, rows)
+          host.pty.resize(id, cols, rows)
         }
       }
     }
@@ -589,7 +595,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     setTimeout(() => doResize(), 100)
 
     // Event listeners
-    const unsubOutput = window.electronAPI.pty.onOutput((id, data) => {
+    const unsubOutput = host.pty.onOutput((id, data) => {
       const proc = processesRef.current.find(p => p.ptyId === id)
       if (proc) {
         if (proc.status !== 'running') {
@@ -597,11 +603,11 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
             p.ptyId === id && p.status !== 'running' ? { ...p, status: 'running' as const, exitCode: undefined } : p
           ))
         }
-        writeOutput(proc.name, proc.color, data)
+        writeOutput(proc.name, proc.color, data, !isTauri())
       }
     })
 
-    const unsubExit = window.electronAPI.pty.onExit((id, exitCode) => {
+    const unsubExit = host.pty.onExit((id, exitCode) => {
       const proc = processesRef.current.find(p => p.ptyId === id)
       if (!proc) return
       ptyIdsRef.current.delete(id)
@@ -631,10 +637,10 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
 
     // --- Async: read Procfile and start processes ---
     ;(async () => {
-      // Init worker buffer file on disk
-      await window.electronAPI.workerBuffer.init(terminalId)
+      // Init worker buffer without discarding existing scrollback for this panel.
+      await host.workerBuffer.init(terminalId)
 
-      const remoteStatus = await window.electronAPI.remote.clientStatus().catch(() => ({ connected: false }))
+      const remoteStatus = await host.remote.clientStatus().catch(() => ({ connected: false }))
       const isRemoteClient = remoteStatus.connected === true
       isRemoteClientRef.current = isRemoteClient
 
@@ -642,18 +648,15 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       if (settings.shell === 'custom' && settings.customShellPath) {
         shellRef.current = settings.customShellPath
       } else {
-        shellRef.current = await window.electronAPI.settings.getShellPath(settings.shell)
+        shellRef.current = await host.settings.getShellPath(settings.shell)
       }
 
       // Read Procfile
-      const result = await window.electronAPI.fs.readFile(procfilePath)
+      const entries = await host.workerBuffer.loadProcfile(procfilePath).catch(error => {
+        setError(error instanceof Error ? error.message : String(error))
+        return []
+      })
       if (disposed) return
-      if (result.error || !result.content) {
-        setError(result.error || 'Empty Procfile')
-        return
-      }
-
-      const entries = parseProcfile(result.content)
       if (entries.length === 0) {
         setError('No valid entries found in Procfile')
         return
@@ -671,7 +674,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       }))
 
       for (const proc of procs) {
-        const existingCwd = await window.electronAPI.pty.getCwd(proc.ptyId).catch(() => null)
+        const existingCwd = await host.pty.getCwd(proc.ptyId).catch(() => null)
         if (existingCwd) {
           proc.status = 'running'
           ptyIdsRef.current.add(proc.ptyId)
@@ -683,9 +686,16 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       processesRef.current = procs
       setProcesses(procs)
 
-      // Write header (use __header__ as a virtual name so it's always visible during re-render)
-      const headerText = buildWorkerHeader(procfilePath, procs.length)
-      writeOutput('__header__', '', headerText)
+      const rawBuffer = await host.workerBuffer.readAll(terminalId).catch(() => '')
+      const restoredEntries = parseWorkerBuffer(rawBuffer)
+      if (restoredEntries.length > 0) {
+        entriesRef.current = restoredEntries
+        reRenderTerminal(restoredEntries, logVisibleRef.current)
+      } else {
+        // Write header (use __header__ as a virtual name so it's always visible during re-render)
+        const headerText = buildWorkerHeader(procfilePath, procs.length)
+        writeOutput('__header__', '', headerText)
+      }
 
       // Start only processes with autoStart enabled
       for (const proc of procs) {
@@ -703,24 +713,23 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       unsubscribeCopyShortcut()
       document.removeEventListener('keydown', onDocKeyDown, true)
       if (resizeTimer) clearTimeout(resizeTimer)
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current)
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
+      void flushToDisk()
       resizeObserver.disconnect()
       doResizeRef.current = null
       terminal.dispose()
       terminalRef.current = null
       fitAddonRef.current = null
-      window.electronAPI.workerBuffer.clear(terminalId)
       if (isRemoteClientRef.current) return
-      const idsToKill = new Set([
-        ...ptyIdsRef.current,
-        ...processesRef.current.map(proc => proc.ptyId),
-      ])
       ptyIdsRef.current.clear()
-      for (const id of idsToKill) {
-        window.electronAPI.pty.kill(id)
+      for (const proc of processesRef.current) {
+        host.workerBuffer.stopProcess(terminalId, proc.name)
       }
     }
-  }, [terminalId, procfilePath, processCwd, writeOutput, startProcess])
+  }, [terminalId, procfilePath, processCwd, writeOutput, startProcess, reRenderTerminal, flushToDisk])
 
   // Handle resize/refresh when becoming active
   useEffect(() => {

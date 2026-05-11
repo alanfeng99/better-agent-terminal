@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useEffect, useRef } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -103,7 +104,7 @@ export function MarkdownPreview({ content }: { content: string }) {
         const link = target.closest('a[data-external-link]') as HTMLAnchorElement | null
         if (link) {
           e.preventDefault()
-          window.electronAPI.shell.openExternal(link.href)
+          host.shell.openExternal(link.href)
         }
       }}
     />

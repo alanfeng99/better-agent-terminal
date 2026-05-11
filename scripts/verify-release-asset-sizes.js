@@ -17,12 +17,17 @@ const platform = normalizePlatform(process.env.BAT_RELEASE_PLATFORM || process.p
 const limits = [
   { platform: 'mac', ext: '.dmg', env: 'BAT_MAX_DMG_MB', maxMb: 340 },
   { platform: 'win', ext: '.exe', env: 'BAT_MAX_EXE_MB', maxMb: 330 },
+  { platform: 'win', ext: '.msi', env: 'BAT_MAX_MSI_MB', maxMb: 330 },
   { platform: 'win', ext: '.zip', env: 'BAT_MAX_WIN_ZIP_MB', maxMb: 430 },
   { platform: 'linux', ext: '.AppImage', env: 'BAT_MAX_APPIMAGE_MB', maxMb: 340 },
 ].map(limit => ({
   ...limit,
   maxBytes: Number(process.env[limit.env] || limit.maxMb) * MB,
 }))
+const requestedExts = (process.env.BAT_RELEASE_EXTS || '')
+  .split(',')
+  .map(ext => ext.trim())
+  .filter(Boolean)
 
 function formatMb(bytes) {
   return `${(bytes / MB).toFixed(1)} MB`
@@ -53,7 +58,10 @@ function main() {
     throw new Error(`Release directory does not exist: ${releaseDir}`)
   }
 
-  const activeLimits = limits.filter(limit => limit.platform === platform)
+  const activeLimits = limits.filter(limit => (
+    limit.platform === platform &&
+    (requestedExts.length === 0 || requestedExts.includes(limit.ext))
+  ))
   if (activeLimits.length === 0) {
     throw new Error(`No release asset size limits configured for platform ${platform}`)
   }

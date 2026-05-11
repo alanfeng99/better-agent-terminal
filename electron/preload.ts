@@ -2,7 +2,18 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CreatePtyOptions } from '../src/types'
 import type { NotificationEntry } from './notification-center'
 
-const electronAPI = {
+function buildWorkerPtyId(panelId: string, name: string): string {
+  return `${panelId}__w__${name}`
+}
+
+function buildWorkerLaunchCommand(shell: string | undefined, command: string): string {
+  const isPowerShell = !!shell && /pwsh|powershell/i.test(shell)
+  if (isPowerShell) return `${command}; exit $LASTEXITCODE\r`
+  const escaped = command.replace(/'/g, "'\\''")
+  return `exec bash -c '${escaped}'\r`
+}
+
+const batAppAPI = {
   platform: process.platform as 'win32' | 'darwin' | 'linux',
   systemVersion: typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '',
   pty: {
@@ -86,6 +97,7 @@ const electronAPI = {
     getWindowIndex: () => ipcRenderer.invoke('app:get-window-index') as Promise<number>,
     newWindow: () => ipcRenderer.invoke('app:new-window') as Promise<string>,
     focusNextWindow: () => ipcRenderer.invoke('app:focus-next-window') as Promise<boolean>,
+    restoreActiveProfiles: (_currentProfileId?: string | null) => Promise.resolve([] as string[]),
     setDockBadge: (count: number) => ipcRenderer.invoke('app:set-dock-badge', count),
   },
   update: {
@@ -231,8 +243,8 @@ const electronAPI = {
       ipcRenderer.invoke('claude:resolve-permission', sessionId, toolUseId, result),
     resolveAskUser: (sessionId: string, toolUseId: string, answers: Record<string, string>) =>
       ipcRenderer.invoke('claude:resolve-ask-user', sessionId, toolUseId, answers),
-    listSessions: (cwd: string) =>
-      ipcRenderer.invoke('claude:list-sessions', cwd),
+    listSessions: (cwd: string, agentKind?: 'claude' | 'codex') =>
+      ipcRenderer.invoke('claude:list-sessions', cwd, agentKind),
     resumeSession: (sessionId: string, sdkSessionId: string, cwd: string, model?: string, apiVersion?: 'v1' | 'v2', useWorktree?: boolean, worktreePath?: string, worktreeBranch?: string, agentPreset?: string, codexSandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access', codexApprovalPolicy?: 'untrusted' | 'on-request' | 'never', permissionMode?: string, effort?: string) =>
       ipcRenderer.invoke('claude:resume-session', sessionId, sdkSessionId, cwd, model, apiVersion, useWorktree, worktreePath, worktreeBranch, agentPreset, codexSandboxMode, codexApprovalPolicy, permissionMode, effort),
     forkSession: (sessionId: string) =>
@@ -428,6 +440,7 @@ const electronAPI = {
   },
   debug: {
     log: (...args: unknown[]) => ipcRenderer.send('debug:log', ...args),
+    openLogsFolder: () => ipcRenderer.invoke('debug:open-logs-folder') as Promise<boolean>,
     isDebugMode: !!process.env.BAT_DEBUG,
   },
   snippet: {
@@ -463,15 +476,56 @@ const electronAPI = {
     append: (panelId: string, lines: string) => ipcRenderer.invoke('worker-buffer:append', panelId, lines),
     readAll: (panelId: string) => ipcRenderer.invoke('worker-buffer:readAll', panelId) as Promise<string>,
     clear: (panelId: string) => ipcRenderer.invoke('worker-buffer:clear', panelId),
+    loadProcfile: async (filePath: string) => {
+      const result = await ipcRenderer.invoke('fs:readFile', filePath) as { content?: string; error?: string }
+      const content = result.content || ''
+      const entries: { name: string; command: string }[] = []
+      for (const raw of content.split('\n')) {
+        const line = raw.trim()
+        if (!line || line.startsWith('#')) continue
+        const colonIdx = line.indexOf(':')
+        if (colonIdx <= 0) continue
+        const name = line.slice(0, colonIdx).trim()
+        const command = line.slice(colonIdx + 1).trim()
+        if (name && command) entries.push({ name, command })
+      }
+      return entries
+    },
+    startProcess: async (options: {
+      panelId: string
+      name: string
+      command: string
+      cwd: string
+      shell?: string
+      customEnv?: Record<string, string>
+    }) => {
+      const id = buildWorkerPtyId(options.panelId, options.name)
+      await ipcRenderer.invoke('pty:create', {
+        id,
+        cwd: options.cwd,
+        type: 'terminal',
+        shell: options.shell,
+        customEnv: options.customEnv,
+      } satisfies CreatePtyOptions)
+      const launch = buildWorkerLaunchCommand(options.shell, options.command)
+      setTimeout(() => {
+        void ipcRenderer.invoke('pty:write', id, launch)
+      }, 300)
+      return id
+    },
+    stopProcess: async (panelId: string, name: string) => {
+      await ipcRenderer.invoke('pty:kill', buildWorkerPtyId(panelId, name))
+      return true
+    },
   },
 }
 
-contextBridge.exposeInMainWorld('electronAPI', electronAPI)
+contextBridge.exposeInMainWorld('batAppAPI', batAppAPI)
 
-export type ElectronAPI = typeof electronAPI
+export type BatAppAPI = typeof batAppAPI
 
 declare global {
   interface Window {
-    electronAPI: ElectronAPI
+    batAppAPI: BatAppAPI
   }
 }

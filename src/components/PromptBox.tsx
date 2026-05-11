@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { settingsStore } from '../stores/settings-store'
@@ -43,20 +44,25 @@ export function PromptBox({ terminalId }: Readonly<PromptBoxProps>) {
     setHistoryIndex(-1)
     draftRef.current = ''
 
-    // Order: text first (no Enter) → attach image → Enter to submit
+    // Order: text first (no Enter) → attach image → Enter to submit.
+    // Sequential pty.write calls share one OS pipe so they're FIFO at
+    // the kernel — no inter-write delay needed for the text→Enter case.
+    // The clipboard-paste flow keeps two waits because they guard real
+    // races: 100 ms for OS clipboard to publish the image before the
+    // paste keystroke fires, and 800 ms for the terminal app to render
+    // the pasted image before Enter submits.
     if (content) {
-      await window.electronAPI.pty.write(terminalId, content)
-      await new Promise(resolve => setTimeout(resolve, 100))
+      await host.pty.write(terminalId, content)
     }
 
     if (imagePath) {
-      await window.electronAPI.clipboard.writeImage(imagePath)
+      await host.clipboard.writeImage(imagePath)
       await new Promise(resolve => setTimeout(resolve, 100))
-      await window.electronAPI.pty.write(terminalId, '\x1bv')
+      await host.pty.write(terminalId, '\x1bv')
       await new Promise(resolve => setTimeout(resolve, 800))
     }
 
-    await window.electronAPI.pty.write(terminalId, '\r')
+    await host.pty.write(terminalId, '\r')
 
     setText('')
     setImagePath(null)
@@ -130,7 +136,7 @@ export function PromptBox({ terminalId }: Readonly<PromptBoxProps>) {
     for (const item of items) {
       if (item.type.startsWith('image/')) {
         e.preventDefault()
-        const filePath = await window.electronAPI.clipboard.saveImage()
+        const filePath = await host.clipboard.saveImage()
         if (filePath) {
           setImagePath(filePath)
         }

@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useEffect, useCallback, useState, lazy, Suspense } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Workspace, TerminalInstance, EnvVariable } from '../types'
@@ -73,7 +74,7 @@ async function getShellFromSettings(): Promise<string | undefined> {
   if (settings.shell === 'custom' && settings.customShellPath) {
     return settings.customShellPath
   }
-  return window.electronAPI.settings.getShellPath(settings.shell)
+  return host.settings.getShellPath(settings.shell)
 }
 
 // Helper to merge environment variables
@@ -130,7 +131,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   // because workspaces re-mount when the active profile changes.
   useEffect(() => {
     let cancelled = false
-    window.electronAPI.agent.listPresets()
+    host.agent.listPresets()
       .then(ids => { if (!cancelled) setSupportedPresetIds(ids) })
       .catch(() => { if (!cancelled) setSupportedPresetIds(null) })
     return () => { cancelled = true }
@@ -138,14 +139,14 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
   // Detect git repo, GitHub remote, and Procfiles
   useEffect(() => {
-    window.electronAPI.git.getGithubUrl(workspace.folderPath).then(url => {
+    host.git.getGithubUrl(workspace.folderPath).then(url => {
       setHasGithubRemote(!!url)
     }).catch(() => setHasGithubRemote(false))
-    window.electronAPI.git.getRoot(workspace.folderPath).then(root => {
+    host.git.getRoot(workspace.folderPath).then(root => {
       setIsGitRepo(!!root)
     }).catch(() => setIsGitRepo(false))
     // Detect Procfiles in workspace folder
-    window.electronAPI.fs.readdir(workspace.folderPath).then(entries => {
+    host.fs.readdir(workspace.folderPath).then(entries => {
       const found = entries
         .filter(entry => !entry.isDirectory && isProcfileName(entry.name))
         .map(entry => entry.path)
@@ -244,7 +245,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     initializedWorkspaces.add(workspace.id)
 
     const initTerminals = async () => {
-      const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+      const dlog = (...args: unknown[]) => host.debug.log(...args)
       const htmlT0 = (window as unknown as { __t0?: number }).__t0 || Date.now()
       dlog(`[startup] initTerminals start: +${Date.now() - htmlT0}ms from HTML`)
       const t0 = performance.now()
@@ -265,7 +266,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             startClaudeCliPty(terminal.id, terminal.cwd || workspace.folderPath, terminal.agentPreset === 'claude-cli-worktree')
             continue
           }
-          window.electronAPI.pty.create({
+          host.pty.create({
             id: terminal.id,
             cwd: terminal.cwd || workspace.folderPath,
             type: 'terminal',
@@ -280,7 +281,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             const command = buildAgentAutoCommand(terminal.agentPreset, settings)
             if (command) {
               setTimeout(() => {
-                window.electronAPI.pty.write(terminal.id, command + '\r')
+                host.pty.write(terminal.id, command + '\r')
               }, 500)
             }
           }
@@ -296,7 +297,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
         if (createAgentTerminal) {
           const agentTerminal = workspaceStore.addTerminal(workspace.id, defaultAgent as AgentPresetId)
           if (defaultAgent === 'codex-agent-worktree') {
-            const wtResult = await window.electronAPI.worktree.create(agentTerminal.id, workspace.folderPath)
+            const wtResult = await host.worktree.create(agentTerminal.id, workspace.folderPath)
             if (wtResult.success && wtResult.worktreePath) {
               workspaceStore.updateTerminalCwd(agentTerminal.id, wtResult.worktreePath)
               workspaceStore.setTerminalWorktreeInfo(agentTerminal.id, wtResult.worktreePath, wtResult.branchName)
@@ -306,7 +307,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           if (defaultAgent === 'claude-cli' || defaultAgent === 'claude-cli-worktree') {
             startClaudeCliPty(agentTerminal.id, workspace.folderPath, defaultAgent === 'claude-cli-worktree')
           } else if (defaultAgent !== 'claude-code' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
-            window.electronAPI.pty.create({
+            host.pty.create({
               id: agentTerminal.id,
               cwd: workspace.folderPath,
               type: 'terminal',
@@ -320,7 +321,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
               const command = buildAgentAutoCommand(defaultAgent, settings)
               if (command) {
                 setTimeout(() => {
-                  window.electronAPI.pty.write(agentTerminal.id, command + '\r')
+                  host.pty.write(agentTerminal.id, command + '\r')
                 }, 500)
               }
             }
@@ -329,7 +330,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
         for (let i = 0; i < terminalCount; i++) {
           const terminal = workspaceStore.addTerminal(workspace.id)
-          window.electronAPI.pty.create({
+          host.pty.create({
             id: terminal.id,
             cwd: workspace.folderPath,
             type: 'terminal',
@@ -364,7 +365,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const shell = await getShellFromSettings()
     const settings = settingsStore.getSettings()
     const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-    window.electronAPI.pty.create({
+    host.pty.create({
       id: terminal.id,
       cwd: workspace.folderPath,
       type: 'terminal',
@@ -380,7 +381,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
   const handleAddWorktreeTerminal = useCallback(async () => {
     const terminal = workspaceStore.addTerminal(workspace.id)
-    const wtResult = await window.electronAPI.worktree.create(terminal.id, workspace.folderPath)
+    const wtResult = await host.worktree.create(terminal.id, workspace.folderPath)
 
     if (!wtResult.success || !wtResult.worktreePath) {
       workspaceStore.removeTerminal(terminal.id)
@@ -397,7 +398,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     workspaceStore.setTerminalWorktreeInfo(terminal.id, wtResult.worktreePath, wtResult.branchName)
     workspaceStore.setTerminalGeneratedTitle(terminal.id, 'Terminal (worktree)')
 
-    window.electronAPI.pty.create({
+    host.pty.create({
       id: terminal.id,
       cwd: wtResult.worktreePath,
       type: 'terminal',
@@ -416,12 +417,12 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const settings = settingsStore.getSettings()
     const shell = await getShellFromSettings()
     const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-    const cliPath = await window.electronAPI.claude.getCliPath()
+    const cliPath = await host.claude.getCliPath()
 
     // Set up worktree if needed
     let effectiveCwd = cwd
     if (isWorktree) {
-      const wtResult = await window.electronAPI.worktree.create(terminalId, cwd)
+      const wtResult = await host.worktree.create(terminalId, cwd)
       if (wtResult.success && wtResult.worktreePath) {
         effectiveCwd = wtResult.worktreePath
         workspaceStore.setTerminalWorktreeInfo(terminalId, wtResult.worktreePath, wtResult.branchName)
@@ -429,7 +430,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     }
 
     const termInst = workspaceStore.getState().terminals.find(t => t.id === terminalId)
-    window.electronAPI.pty.create({
+    host.pty.create({
       id: terminalId,
       cwd: effectiveCwd,
       type: 'terminal',
@@ -468,7 +469,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const cmd = cmdParts.join(' ')
 
     setTimeout(() => {
-      window.electronAPI.pty.write(terminalId, cmd + '\r')
+      host.pty.write(terminalId, cmd + '\r')
     }, 500)
   }, [workspace.folderPath, workspace.envVars])
 
@@ -479,7 +480,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     if (preset.backend === 'sdk') {
       const terminal = workspaceStore.addTerminal(workspace.id, presetId as AgentPresetId)
       if (presetId === 'codex-agent-worktree') {
-        const wtResult = await window.electronAPI.worktree.create(terminal.id, workspace.folderPath)
+        const wtResult = await host.worktree.create(terminal.id, workspace.folderPath)
         if (!wtResult.success || !wtResult.worktreePath) {
           workspaceStore.removeTerminal(terminal.id)
           workspaceStore.save()
@@ -504,7 +505,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       const shell = await getShellFromSettings()
       const settings = settingsStore.getSettings()
       const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-      window.electronAPI.pty.create({
+      host.pty.create({
         id: terminal.id,
         cwd: workspace.folderPath,
         type: 'terminal',
@@ -517,7 +518,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       const command = buildAgentAutoCommand(presetId, settings)
       if (command && settings.agentAutoCommand) {
         setTimeout(() => {
-          window.electronAPI.pty.write(terminal.id, command + '\r')
+          host.pty.write(terminal.id, command + '\r')
         }, 500)
       }
       workspaceStore.setFocusedTerminal(terminal.id)
@@ -559,7 +560,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     }
   }, [handleAddTerminal, handleAddWorktreeTerminal, handleAddAgent])
 
-  const isDebugMode = window.electronAPI?.debug?.isDebugMode
+  const isDebugMode = host.debug.isDebugMode
 
   const handleCloseTerminal = useCallback((id: string) => {
     const terminal = terminals.find(t => t.id === id)
@@ -574,7 +575,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       setShowCloseConfirm(id)
     } else {
       // Regular terminals always use PTY
-      window.electronAPI.pty.kill(id)
+      host.pty.kill(id)
       workspaceStore.removeTerminal(id)
       workspaceStore.save()
     }
@@ -602,17 +603,17 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     if (showCloseConfirm) {
       const terminal = terminals.find(t => t.id === showCloseConfirm)
       if (terminal?.agentPreset === 'claude-code' || terminal?.agentPreset === 'claude-code-v2' || terminal?.agentPreset === 'claude-code-worktree' || terminal?.agentPreset === 'codex-agent' || terminal?.agentPreset === 'codex-agent-worktree') {
-        window.electronAPI.claude.stopSession(showCloseConfirm)
+        host.claude.stopSession(showCloseConfirm)
         if (cleanWorktree && terminal?.agentPreset === 'claude-code-worktree') {
-          window.electronAPI.claude.cleanupWorktree(showCloseConfirm, true)
+          host.claude.cleanupWorktree(showCloseConfirm, true)
         } else if (cleanWorktree && terminal?.agentPreset === 'codex-agent-worktree') {
-          window.electronAPI.worktree.remove(showCloseConfirm, true)
+          host.worktree.remove(showCloseConfirm, true)
         }
       } else {
-        window.electronAPI.pty.kill(showCloseConfirm)
+        host.pty.kill(showCloseConfirm)
         // Clean up worktree for PTY-based worktree terminals
         if (cleanWorktree && terminal?.worktreePath) {
-          window.electronAPI.worktree.remove(showCloseConfirm, true)
+          host.worktree.remove(showCloseConfirm, true)
         }
       }
       workspaceStore.removeTerminal(showCloseConfirm)
@@ -626,20 +627,20 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     if (terminal) {
       if (terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree') {
         // Stop and restart Claude session
-        await window.electronAPI.claude.stopSession(id)
-        await window.electronAPI.claude.startSession(id, {
+        await host.claude.stopSession(id)
+        await host.claude.startSession(id, {
           cwd: terminal.cwd,
           agentPreset: terminal.agentPreset,
           ...(terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent-worktree' ? { useWorktree: true, worktreePath: terminal.worktreePath, worktreeBranch: terminal.worktreeBranch } : {}),
         })
       } else if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') {
         // Restart claude-cli PTY with bundled CLI
-        await window.electronAPI.pty.kill(id)
+        await host.pty.kill(id)
         await startClaudeCliPty(id, terminal.cwd || workspace.folderPath, terminal.agentPreset === 'claude-cli-worktree')
       } else {
-        const cwd = await window.electronAPI.pty.getCwd(id) || terminal.cwd
+        const cwd = await host.pty.getCwd(id) || terminal.cwd
         const shell = await getShellFromSettings()
-        await window.electronAPI.pty.restart(id, cwd, shell)
+        await host.pty.restart(id, cwd, shell)
         workspaceStore.updateTerminalCwd(id, cwd)
       }
     }
@@ -649,7 +650,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const terminal = terminals.find(t => t.id === id)
     if (!terminal || (terminal.agentPreset !== 'claude-code' && terminal.agentPreset !== 'claude-code-v2')) return
     // Stop current session
-    await window.electronAPI.claude.stopSession(id)
+    await host.claude.stopSession(id)
     // Switch agentPreset in store
     const newPreset = workspaceStore.switchTerminalApiVersion(id)
     if (!newPreset) return
@@ -657,9 +658,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     // Resume with the same sdkSessionId but new API version
     const sdkSessionId = terminal.sdkSessionId
     if (sdkSessionId) {
-      await window.electronAPI.claude.resumeSession(id, sdkSessionId, terminal.cwd, terminal.model, newApiVersion, undefined, undefined, undefined, newPreset)
+      await host.claude.resumeSession(id, sdkSessionId, terminal.cwd, terminal.model, newApiVersion, undefined, undefined, undefined, newPreset)
     } else {
-      await window.electronAPI.claude.startSession(id, { cwd: terminal.cwd, apiVersion: newApiVersion })
+      await host.claude.startSession(id, { cwd: terminal.cwd, apiVersion: newApiVersion })
     }
     workspaceStore.save()
   }, [terminals])
@@ -683,7 +684,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   // Send content to the active Claude agent session
   const handleSendToClaude = useCallback(async (content: string) => {
     if (!agentTerminal) return false
-    await window.electronAPI.claude.sendMessage(agentTerminal.id, content)
+    await host.claude.sendMessage(agentTerminal.id, content)
     handleTabChange('terminal')
     workspaceStore.setFocusedTerminal(agentTerminal.id)
     return true

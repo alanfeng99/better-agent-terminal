@@ -1,5 +1,7 @@
+import { host } from '../host-api'
 import type { AppSettings, ShellType, FontType, ColorPresetId, EnvVariable, AgentCommandType, StatuslineItemConfig, StatuslineItemId, LanguageCode, EffortLevel, CodexEffortLevel } from '../types'
 import type { AgentPresetId } from '../types/agent-presets'
+import { getAgentPreset } from '../types/agent-presets'
 import { CODEX_EFFORT_LEVELS, FONT_OPTIONS, COLOR_PRESETS, AGENT_COMMAND_OPTIONS, STATUSLINE_ITEMS } from '../types'
 import { CLAUDE_BUILTIN_MODELS, CLAUDE_OPUS_47_1M_PRESET, normalizeClaudeModelSelection } from '../utils/claude-model-presets'
 import { CODEX_MODELS } from '../utils/codex-models'
@@ -10,6 +12,10 @@ const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includ
 const LEGACY_DEFAULT_MODEL = 'claude-opus-4-6'
 const LEGACY_OPUS_47_MODEL = 'claude-opus-4-7'
 const CURRENT_DEFAULT_MODEL = CLAUDE_OPUS_47_1M_PRESET
+
+function setHostDockBadge(count: number): void {
+  void host.app.setDockBadge(count).catch(() => {})
+}
 
 function isModelInList(model: string | undefined, models: Array<{ value: string }>): boolean {
   return !!model && models.some(item => item.value === model)
@@ -41,6 +47,12 @@ const defaultSettings: AppSettings = {
   remoteServerAutoStart: false,
   remoteServerPort: 9876,
   remoteServerBindInterface: 'localhost',
+}
+
+function normalizeDefaultAgent(value: unknown): AgentPresetId {
+  if (value === 'openai-agent') return 'codex-agent'
+  if (typeof value === 'string' && getAgentPreset(value)) return value as AgentPresetId
+  return defaultSettings.defaultAgent ?? 'claude-code'
 }
 
 class SettingsStore {
@@ -305,7 +317,7 @@ class SettingsStore {
     this.settings = { ...this.settings, showDockBadge: show }
     this.notify()
     this.save()
-    if (!show) window.electronAPI?.app?.setDockBadge?.(0)
+    if (!show) setHostDockBadge(0)
   }
 
   setNotifyOnComplete(enabled: boolean): void {
@@ -391,7 +403,7 @@ class SettingsStore {
       return stripDynamicColors([...this.settings.statuslineItems, ...missing])
     }
     // Default template
-    return stripDynamicColors(parseStatuslineTemplate('gitBranch(#61afef),sessionId(#d19a66) > tokens,turns,duration > contextPct,cacheEff,cost > usage5h,usage5hReset > usage7d(#e5c07b),usage7dReset(#e5c07b) > prompts(#d19a66)'))
+    return stripDynamicColors(parseStatuslineTemplate('gitBranch(#61afef),sessionId(#d19a66),model,effort,sandbox,approval > tokens,turns,duration > contextPct,cacheEff,cost > usage5h,usage5hReset > usage7d(#e5c07b),usage7dReset(#e5c07b) > prompts(#d19a66)'))
   }
 
   setStatuslineItems(items: StatuslineItemConfig[]): void {
@@ -411,11 +423,11 @@ class SettingsStore {
 
   async save(): Promise<void> {
     const data = JSON.stringify(this.settings)
-    await window.electronAPI.settings.save(data)
+    await host.settings.save(data)
   }
 
   async load(): Promise<void> {
-    const data = await window.electronAPI.settings.load()
+    const data = await host.settings.load()
     if (data) {
       try {
         const parsed = JSON.parse(data)
@@ -432,6 +444,7 @@ class SettingsStore {
         if (!parsed.defaultCodexEffort && CODEX_EFFORT_LEVELS.includes(parsed.defaultEffort)) {
           parsed.defaultCodexEffort = parsed.defaultEffort
         }
+        parsed.defaultAgent = normalizeDefaultAgent(parsed.defaultAgent)
         this.settings = { ...defaultSettings, ...parsed }
         this.notify()
       } catch (e) {

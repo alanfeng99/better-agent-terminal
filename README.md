@@ -133,10 +133,6 @@ Optional alternate agent backend powered by [`@openai/codex-sdk`](https://www.np
 - **Session resume** — JSONL transcripts under `~/.codex/sessions/` are auto-indexed; resume hits a local cache so re-opening a thread is fast even with months of history
 - **Inline plan approval** — Codex `plan` items render as approvable blocks in the panel
 
-### OpenAI Direct (debug)
-
-Hidden behind `BAT_DEBUG=1`. Talks directly to the OpenAI Responses API via [`@ai-sdk/openai`](https://sdk.vercel.ai/), without the Codex CLI. Useful for testing tool flows against a raw model. Not recommended for daily use — Codex Agent is the supported path.
-
 ### Semantic Code Navigation (cx)
 
 Optional integration with [`cx`](https://github.com/ind-igo/cx) — a tree-sitter-based CLI that gives agents file overviews, symbol search, definitions, and references without spinning up a language server. Useful for cutting context tokens on large codebases: agents can run `cx overview` (~20 tokens) before deciding which files to actually read.
@@ -326,8 +322,7 @@ better-agent-terminal/
 │   ├── claude-agent-manager.ts        # Claude Agent SDK session management
 │   ├── codex-agent-manager.ts         # Codex CLI / Codex SDK session management
 │   ├── codex-agent/                   # Codex helpers (log path cache, etc.)
-│   ├── openai-agent-manager.ts        # OpenAI Direct (Responses API via @ai-sdk/openai)
-│   ├── openai-agent/                  # OpenAI helpers (skills scanner, models, persistence)
+│   ├── openai-agent/                  # OpenAI/Codex API key fallback helpers
 │   ├── worktree-manager.ts            # Git worktree lifecycle (create, remove, rehydrate)
 │   ├── account-manager.ts             # Multi-account switching infrastructure
 │   ├── window-registry.ts             # Multi-window management
@@ -350,7 +345,6 @@ better-agent-terminal/
 │   │   ├── WorkspaceView.tsx          # Per-workspace container
 │   │   ├── ClaudeAgentPanel.tsx       # Claude agent chat UI, streaming, cache tracking
 │   │   ├── CodexAgentPanel.tsx        # Codex agent chat UI, plan approval, sandbox/approval controls
-│   │   ├── OpenAIAgentPanel.tsx       # OpenAI Direct chat UI (debug-gated)
 │   │   ├── CollapsedBar.tsx           # Collapsed-thread / hidden-pane indicator bar
 │   │   ├── TerminalPanel.tsx          # xterm.js terminal wrapper
 │   │   ├── ThumbnailBar.tsx           # Scrollable terminal thumbnail strip
@@ -401,7 +395,7 @@ better-agent-terminal/
 - **Frontend:** React 18 + TypeScript + i18next (EN / zh-TW / zh-CN)
 - **Terminal:** xterm.js + node-pty
 - **Framework:** Electron 41
-- **AI:** `@anthropic-ai/claude-agent-sdk` + bundled `@anthropic-ai/claude-code` binary (Claude); `@openai/codex-sdk` (Codex Agent); `@ai-sdk/openai` (OpenAI Direct, debug)
+- **AI:** `@anthropic-ai/claude-agent-sdk` + bundled `@anthropic-ai/claude-code` binary (Claude); `@openai/codex-sdk` (Codex Agent)
 - **Build:** Vite + electron-builder
 - **Storage:** better-sqlite3 (snippets, session data)
 - **Remote:** ws (WebSocket) + qrcode

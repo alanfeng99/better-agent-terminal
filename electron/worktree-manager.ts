@@ -344,6 +344,65 @@ export class WorktreeManager {
     }
   }
 
+  private async ensureHostRepoClean(gitRoot: string): Promise<void> {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['status', '--porcelain'],
+      { cwd: gitRoot, maxBuffer: 1024 * 1024 }
+    )
+    if (stdout.trim()) {
+      throw new Error('Host repository has uncommitted changes; commit or stash before merging worktree')
+    }
+  }
+
+  async mergeWorktree(sessionId: string, strategy: 'merge' | 'cherry-pick' = 'merge'): Promise<{ success: boolean; error?: string; strategy?: string; branchName?: string; sourceBranch?: string }> {
+    const info = this.activeWorktrees.get(sessionId)
+    if (!info) return { success: false, error: 'worktree.merge: unknown session' }
+    if (strategy !== 'merge' && strategy !== 'cherry-pick') {
+      return { success: false, error: `worktree.merge: unsupported strategy ${strategy}` }
+    }
+
+    try {
+      const sourceBranch = info.sourceBranch || await this.resolveSourceBranch(sessionId)
+      if (!sourceBranch) return { success: false, error: 'worktree.merge: missing source branch' }
+
+      await this.ensureHostRepoClean(info.gitRoot)
+
+      const currentBranch = await this.getCurrentBranch(info.gitRoot)
+      if (currentBranch !== sourceBranch) {
+        await execFileAsync('git', ['checkout', sourceBranch], { cwd: info.gitRoot })
+      }
+
+      if (strategy === 'merge') {
+        await execFileAsync(
+          'git',
+          ['merge', '--no-ff', '--no-edit', info.branchName],
+          { cwd: info.gitRoot, maxBuffer: 10 * 1024 * 1024 }
+        )
+      } else {
+        const { stdout } = await execFileAsync(
+          'git',
+          ['rev-list', '--reverse', `${sourceBranch}..${info.branchName}`],
+          { cwd: info.gitRoot, maxBuffer: 10 * 1024 * 1024 }
+        )
+        const commits = stdout.trim().split('\n').filter(Boolean)
+        if (commits.length > 0) {
+          await execFileAsync(
+            'git',
+            ['cherry-pick', ...commits],
+            { cwd: info.gitRoot, maxBuffer: 10 * 1024 * 1024 }
+          )
+        }
+      }
+
+      logger.log(`[Worktree] ${strategy} ${info.branchName} into ${sourceBranch} for session ${sessionId.slice(0, 8)}`)
+      return { success: true, strategy, branchName: info.branchName, sourceBranch }
+    } catch (err) {
+      logger.warn(`[Worktree] Failed to ${strategy} worktree for session ${sessionId}: ${err}`)
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   /**
    * List orphaned worktrees (not tracked by this manager).
    * Does NOT delete them — caller must ask the user for confirmation first.

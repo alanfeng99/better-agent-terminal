@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import { host } from '../host-api'
 
 interface ReleaseInfo {
   version: string
@@ -25,7 +26,7 @@ export function UpdateNotification() {
   useEffect(() => {
     const checkUpdate = async () => {
       try {
-        const result = await window.electronAPI.update.check()
+        const result = await host.update.check()
         setUpdateInfo(result)
       } catch (error) {
         console.error('Failed to check for updates:', error)
@@ -46,7 +47,7 @@ export function UpdateNotification() {
   const { latestRelease, currentVersion } = updateInfo
 
   const handleViewRelease = () => {
-    window.electronAPI.shell.openExternal('https://github.com/tony1223/better-agent-terminal/releases')
+    host.shell.openExternal('https://github.com/tony1223/better-agent-terminal/releases')
   }
 
   // Parse changelog - extract first few lines

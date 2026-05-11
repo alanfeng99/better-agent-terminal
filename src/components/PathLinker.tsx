@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import hljs from 'highlight.js/lib/core'
 import 'highlight.js/styles/vs2015.css'
@@ -228,14 +229,14 @@ export function FilePreviewModal({ filePath: rawFilePath, onClose }: FilePreview
     setLoading(true)
     const ext = getExt(filePath)
     if (IMAGE_EXTS.has(ext)) {
-      window.electronAPI.image.readAsDataUrl(filePath).then(url => {
+      host.image.readAsDataUrl(filePath).then(url => {
         if (!cancelled) { setImageUrl(url); setLoading(false) }
       }).catch(() => {
         if (!cancelled) { setError('Failed to load image'); setLoading(false) }
       })
     } else {
       // Read as text — works for known and unknown text extensions
-      window.electronAPI.fs.readFile(filePath).then(result => {
+      host.fs.readFile(filePath).then(result => {
         if (cancelled) return
         if (result.error) {
           setError(result.error === 'File too large' ? `File too large (${Math.round((result.size || 0) / 1024)}KB)` : result.error)
@@ -357,7 +358,7 @@ export function FilePreviewModal({ filePath: rawFilePath, onClose }: FilePreview
           </button>
           <button
             className="path-preview-btn"
-            onClick={() => window.electronAPI.shell.openPath(filePath)}
+            onClick={() => host.shell.openPath(filePath)}
             title="Open with system default app"
           >
             &#8599;
@@ -425,7 +426,7 @@ export function LinkedText({ text }: LinkedTextProps) {
   const handleUrl = useCallback((url: string, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    window.electronAPI.shell.openExternal(url)
+    host.shell.openExternal(url)
   }, [])
 
   if (typeof text !== 'string') return <>{text}</>

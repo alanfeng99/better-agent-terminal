@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -137,5 +138,5 @@ export function openChatMarkdownLink(href: string): void {
       // fall through to openExternal
     }
   }
-  window.electronAPI.shell.openExternal(href)
+  host.shell.openExternal(href)
 }

@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { isProcfileName } from '../utils/procfile-parser'
@@ -41,16 +42,27 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
   const [quickLocations, setQuickLocations] = useState<QuickLocation[]>([])
   const [quickError, setQuickError] = useState<string | null>(null)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
+  const didMountShowHiddenRef = useRef(false)
   const selectedEntries = entries.filter(entry => selected.has(entry.path))
   const deletableEntries = selectedEntries.filter(entry => entry.isDirectory)
   const canDeleteSelected = !loading && !creating && deletableEntries.length > 0 && deletableEntries.length === selectedEntries.length
 
+  const logPerf = useCallback((label: string, startedAt: number, details: Record<string, unknown> = {}) => {
+    const elapsedMs = performance.now() - startedAt
+    if (elapsedMs >= 50) {
+      host.debug.log?.(`[FolderPicker] ${label}: ${elapsedMs.toFixed(0)}ms`, details)
+    }
+  }, [])
+
   const loadDir = useCallback(async (dirPath: string) => {
+    const startedAt = performance.now()
+    let entryCount = 0
+    let outcome = 'ok'
     setLoading(true)
     setError(null)
     try {
       if (mode === 'files') {
-        const entries = await window.electronAPI.fs.readdir(dirPath)
+        const entries = await host.fs.readdir(dirPath)
         const visible = entries
           .filter(e => showHidden || !e.name.startsWith('.'))
           .filter(e => e.isDirectory || isProcfileName(e.name))
@@ -59,6 +71,7 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
             return a.name.localeCompare(b.name)
           })
           .map(e => ({ name: e.name, path: e.path, isDirectory: e.isDirectory }))
+        entryCount = visible.length
         const normalized = dirPath.replace(/[/\\]+$/, '') || dirPath
         const parentMatch = normalized.match(/^(.*)[/\\][^/\\]+$/)
         setCurrentPath(dirPath)
@@ -68,43 +81,64 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
         setSelected(new Set())
         return
       }
-      const result = await window.electronAPI.fs.listDirs(dirPath, showHidden)
+      const result = await host.fs.listDirs(dirPath, showHidden)
       if ('error' in result) {
+        outcome = 'error'
         setError(result.error)
         return
       }
+      entryCount = result.entries.length
       setCurrentPath(result.current)
       setPathInput(result.current)
       setParent(result.parent)
       setEntries(result.entries.map(entry => ({ ...entry, isDirectory: true })))
       setSelected(new Set())
+    } catch (err) {
+      outcome = 'throw'
+      throw err
     } finally {
+      logPerf(mode === 'files' ? 'readdir' : 'listDirs', startedAt, {
+        mode,
+        path: dirPath,
+        includeHidden: showHidden,
+        entries: entryCount,
+        outcome,
+      })
       setLoading(false)
     }
-  }, [mode, showHidden])
+  }, [logPerf, mode, showHidden])
 
   // Resolve initial path: explicit prop, else home. Also load quick links.
   useEffect(() => {
     const init = async () => {
       let start = initialPath || ''
       if (!start) {
-        try { start = await window.electronAPI.fs.home() }
-        catch { start = '/' }
+        const homeStartedAt = performance.now()
+        try {
+          start = await host.fs.home()
+          logPerf('home', homeStartedAt)
+        } catch {
+          logPerf('home', homeStartedAt, { outcome: 'error' })
+          start = '/'
+        }
       }
+      void loadDir(start)
+      const quickStartedAt = performance.now()
       try {
-        const qls = await window.electronAPI.fs.quickLocations()
+        const qls = await host.fs.quickLocations()
+        logPerf('quickLocations', quickStartedAt, { entries: qls.length })
         setQuickLocations(qls)
         if (!qls || qls.length === 0) {
           setQuickError('quickLocations returned empty')
-          window.electronAPI?.debug?.log?.('[FolderPicker] quickLocations returned empty array')
+          host.debug.log?.('[FolderPicker] quickLocations returned empty array')
         }
       } catch (err) {
+        logPerf('quickLocations', quickStartedAt, { outcome: 'error' })
         const msg = err instanceof Error ? err.message : String(err)
-        window.electronAPI?.debug?.log?.('[FolderPicker] quickLocations failed:', msg)
+        host.debug.log?.('[FolderPicker] quickLocations failed:', msg)
         setQuickLocations([])
         setQuickError(msg)
       }
-      loadDir(start)
     }
     init()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,6 +146,10 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
 
   // Reload when toggling hidden
   useEffect(() => {
+    if (!didMountShowHiddenRef.current) {
+      didMountShowHiddenRef.current = true
+      return
+    }
     if (currentPath) loadDir(currentPath)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHidden])
@@ -125,7 +163,7 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
   const handleDeleteSelected = useCallback(async () => {
     if (!canDeleteSelected) return
 
-    const confirmed = await window.electronAPI.dialog.confirm(
+    const confirmed = await host.dialog.confirm(
       deletableEntries.length === 1
         ? t('folderPicker.deleteConfirmSingle', { name: deletableEntries[0].name })
         : t('folderPicker.deleteConfirmMulti', { count: deletableEntries.length }),
@@ -135,7 +173,7 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
 
     setError(null)
     for (const entry of deletableEntries) {
-      const result = await window.electronAPI.fs.deletePath(entry.path)
+      const result = await host.fs.deletePath(entry.path)
       if ('error' in result) {
         setError(result.error)
         return
@@ -207,7 +245,7 @@ export function FolderPicker({ initialPath, multiSelect = true, mode = 'folders'
     const name = newFolderName.trim()
     if (!name) return
     setCreateError(null)
-    const result = await window.electronAPI.fs.mkdir(currentPath, name)
+    const result = await host.fs.mkdir(currentPath, name)
     if ('error' in result) {
       setCreateError(result.error)
       return

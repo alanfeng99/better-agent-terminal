@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { host } from '../host-api'
 
 interface SkillItem {
   name: string
@@ -44,7 +45,7 @@ export function SkillsPanel({ isVisible, activeCwd, activeSessionId }: SkillsPan
     }
 
     const fetchCommands = () => {
-      window.electronAPI.claude.getSupportedCommands(activeSessionId).then(cmds => {
+      host.claude.getSupportedCommands(activeSessionId).then(cmds => {
         if (cmds?.length) {
           setSdkCommands(cmds.map(c => ({
             name: c.name,
@@ -87,7 +88,7 @@ export function SkillsPanel({ isVisible, activeCwd, activeSessionId }: SkillsPan
       setFsCommands([])
       return
     }
-    window.electronAPI.claude.scanSkills(activeCwd).then(results => {
+    host.claude.scanSkills(activeCwd).then(results => {
       setFsCommands(results)
     }).catch(() => setFsCommands([]))
   }, [activeCwd])

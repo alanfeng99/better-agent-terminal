@@ -1,3 +1,4 @@
+import { host, isTauri } from '../host-api'
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment, cloneElement, isValidElement } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +15,7 @@ import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
+import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
 import { autoCompactWindowForClaudeSelection, displayNameForClaudeSelection, normalizeClaudeModelSelection, sdkModelForClaudeSelection } from '../utils/claude-model-presets'
 import { firstMeaningfulLine, formatContentSize, truncateMiddle } from './CodexAgentPanel.helpers'
 import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
@@ -37,6 +39,7 @@ interface SessionMeta {
   callCacheWrite?: number
   lastQueryCalls?: number
   permissionMode?: string
+  effort?: string
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }>
   cacheWrite5mTokens?: number
   cacheWrite1hTokens?: number
@@ -121,6 +124,20 @@ type MessageItem = ClaudeMessage | ClaudeToolCall
 // Track sessions that have been started to prevent duplicate calls across StrictMode remounts
 const startedSessions = new Set<string>()
 
+function scheduleAgentMetadataRefresh(callback: () => void): () => void {
+  if (!isTauri()) {
+    callback()
+    return () => {}
+  }
+  const timer = window.setTimeout(callback, 1500)
+  return () => window.clearTimeout(timer)
+}
+
+function waitForTauriAgentListeners(): Promise<void> {
+  if (!isTauri()) return Promise.resolve()
+  return new Promise(resolve => window.setTimeout(resolve, 75))
+}
+
 export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose, showUserMsg = true, showAssistantMsg = true, showToolMsg = true, showThinkingMsg = true, isRemoteConnected = false, targetAgent }: Readonly<ClaudeAgentPanelProps>) {
   const { t } = useTranslation()
   // Determine backend/session flavor from agentPreset
@@ -199,6 +216,14 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     return availableModels.find(model => model.value === currentModel)?.displayName || displayNameForClaudeSelection(currentModel)
   }, [availableModels, currentModel])
   const currentSdkModel = useMemo(() => sdkModelForClaudeSelection(currentModel) || currentModel, [currentModel])
+  const currentModelContextSuffix = useMemo(() => {
+    const contextWindow = sessionMeta?.contextWindow
+    if (!contextWindow || contextWindow <= 0) return ''
+    const label = contextWindow >= 1000000
+      ? `${Math.round(contextWindow / 1000000)}M`
+      : `${Math.round(contextWindow / 1000)}k`
+    return currentModelLabel.toLowerCase().includes(label.toLowerCase()) ? '' : ` (${label})`
+  }, [currentModelLabel, sessionMeta?.contextWindow])
   // Subagent message storage (keyed by parent Task tool_use_id)
   const subagentMessagesRef = useRef<Map<string, MessageItem[]>>(new Map())
   const [subagentStreamingText, setSubagentStreamingText] = useState<Map<string, string>>(new Map())
@@ -231,7 +256,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [activePlanFile, planFileShownAt])
   useEffect(() => {
     if (!activePlanFile) { setPlanFileTitle(null); return }
-    window.electronAPI.fs.readFile(activePlanFile).then(r => {
+    host.fs.readFile(activePlanFile).then(r => {
       if (!r.content) return
       const firstLine = r.content.split('\n').find((l: string) => l.trim().length > 0)
       if (firstLine) setPlanFileTitle(firstLine.replace(/^#+\s*/, '').trim())
@@ -302,6 +327,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const streamingThinkingRef = useRef<HTMLPreElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const permissionCardRef = useRef<HTMLDivElement>(null)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
@@ -310,7 +336,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const lastScrollTopRef = useRef(0)
   const userScrollIntentUntilRef = useRef(0)
   const middleMessageScrollRef = useRef<{ startX: number; startY: number; startScrollTop: number; startScrollLeft: number } | null>(null)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; kind: 'messages' } | null>(null)
   const [aboveViewportUserMsgIds, setAboveViewportUserMsgIds] = useState<Set<string>>(new Set())
   const claudeFontSize = useSettings(s => s.fontSize)
   const userMsgRefsMap = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -491,7 +517,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const tasks = allMessages.filter(m => isToolCall(m) && (m.toolName === 'Task' || m.toolName === 'Agent') && m.status === 'running') as ClaudeToolCall[]
     const allTaskTools = allMessages.filter(m => isToolCall(m) && (m.toolName === 'Task' || m.toolName === 'Agent')) as ClaudeToolCall[]
     if (allTaskTools.length > 0) {
-      window.electronAPI.debug.log(`[renderer] activeTasks: ${tasks.length} running / ${allTaskTools.length} total Task/Agent tools (statuses: ${allTaskTools.map(t => `${t.id?.slice(0,8)}=${t.status}`).join(', ')})`)
+      host.debug.log(`[renderer] activeTasks: ${tasks.length} running / ${allTaskTools.length} total Task/Agent tools (statuses: ${allTaskTools.map(t => `${t.id?.slice(0,8)}=${t.status}`).join(', ')})`)
     }
     return tasks
   }, [allMessages])
@@ -576,9 +602,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     setMessages(prev => prev.slice(excess))
     archivedCountRef.current += excess
     setHasMoreArchived(true)
-    window.electronAPI.claude.archiveMessages(sessionId, toArchive)
+    host.claude.archiveMessages(sessionId, toArchive)
       .catch((err) => {
-        window.electronAPI?.debug?.log?.('[ClaudeAgentPanel] archiveMessages failed:', String(err))
+        host.debug.log?.('[ClaudeAgentPanel] archiveMessages failed:', String(err))
       })
       .finally(() => { archivingRef.current = false })
   }, [messages.length, sessionId])
@@ -590,7 +616,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const container = messagesContainerRef.current
     const prevScrollHeight = container?.scrollHeight ?? 0
     try {
-      const result = await window.electronAPI.claude.loadArchived(sessionId, loadedFromArchiveRef.current, LOAD_BATCH)
+      const result = await host.claude.loadArchived(sessionId, loadedFromArchiveRef.current, LOAD_BATCH)
       if (result.messages.length > 0) {
         loadedFromArchiveRef.current += result.messages.length
         setLoadedArchive(prev => [...(result.messages as MessageItem[]), ...prev])
@@ -629,23 +655,23 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   // Subscribe to IPC events
   useEffect(() => {
-    const api = window.electronAPI.claude
+    const api = host.claude
     const tag = `[Claude:${sessionId.slice(0, 8)}]`
-    window.electronAPI?.debug?.log(`${tag} subscribing to IPC events`)
+    host.debug.log(`${tag} subscribing to IPC events`)
 
     const unsubs = [
       api.onMessage((sid: string, msg: unknown) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        console.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
+        host.debug.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
         workspaceStore.updateTerminalActivity(sessionId)
         const message = msg as ClaudeMessage
         // On restart, sys-init message arrives again — reset messages
         // But skip reset if history will be loaded (resume flow)
         if (message.id === `sys-init-${sessionId}`) {
-          window.electronAPI?.debug?.log(`${tag} sys-init historyLoaded=${historyLoadedRef.current}`)
+          host.debug.log(`${tag} sys-init historyLoaded=${historyLoadedRef.current}`)
           if (!historyLoadedRef.current) {
             setMessages([message])
             // Clear archive on fresh session start
@@ -653,7 +679,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             archivedCountRef.current = 0
             loadedFromArchiveRef.current = 0
             setHasMoreArchived(false)
-            window.electronAPI.claude.clearArchive(sessionId).catch(() => {})
+            host.claude.clearArchive(sessionId).catch(() => {})
           }
           setStreamingText('')
           setStreamingThinking('')
@@ -729,7 +755,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         if (sid !== sessionId) return
         workspaceStore.updateTerminalActivity(sessionId)
         const toolCall = tool as ClaudeToolCall
-        window.electronAPI.debug.log(`[renderer] onToolUse name=${toolCall.toolName} id=${toolCall.id?.slice(0, 12)} status=${toolCall.status} parentToolUseId=${toolCall.parentToolUseId || 'none'}`)
+        host.debug.log(`[renderer] onToolUse name=${toolCall.toolName} id=${toolCall.id?.slice(0, 12)} status=${toolCall.status} parentToolUseId=${toolCall.parentToolUseId || 'none'}`)
         // Route subagent tool calls to separate bucket
         if (toolCall.parentToolUseId) {
           const bucket = subagentMessagesRef.current.get(toolCall.parentToolUseId) || []
@@ -765,7 +791,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         workspaceStore.updateTerminalActivity(sessionId)
         const { id, ...updates } = result as { id: string; status: string; result?: string; description?: string }
         if ((updates as { description?: string }).description) {
-          window.electronAPI.debug.log(`[renderer] onToolResult description update id=${id} desc=${(updates as { description?: string }).description}`)
+          host.debug.log(`[renderer] onToolResult description update id=${id} desc=${(updates as { description?: string }).description}`)
         }
         // Check if tool exists in any subagent bucket
         let foundInSubagent = false
@@ -807,9 +833,17 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const rd = resultData as { result?: string; subtype?: string } | undefined
         if (rd?.result && rd.subtype === 'success') {
           setMessages(prev => {
-            // Skip if any assistant message contains the result text (already shown via onMessage)
+            // Skip only when this turn already produced the same assistant
+            // text via onMessage. Repeated legitimate replies like
+            // "ping" -> "pong" must still append one result per turn.
             const resultText = rd.result!
-            const alreadyShown = prev.some(m =>
+            const currentTurnIdx = currentTurnMsgIdRef.current
+              ? prev.findIndex(m => m.id === currentTurnMsgIdRef.current)
+              : -1
+            const candidates = currentTurnIdx >= 0
+              ? prev.slice(currentTurnIdx + 1)
+              : prev.filter(m => 'timestamp' in m && Date.now() - (m as ClaudeMessage).timestamp < 3000)
+            const alreadyShown = candidates.some(m =>
               'role' in m && m.role === 'assistant' && typeof m.content === 'string' &&
               (m.content === resultText || m.content.includes(resultText) || resultText.includes(m.content))
             )
@@ -865,13 +899,13 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }),
 
       api.onStatus((sid: string, meta: unknown) => {
-        const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+        const dlog = (...args: unknown[]) => host.debug.log(...args)
         if (sid !== sessionId) {
           dlog(`${tag} SKIP onStatus sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        dlog(`${tag} onStatus sdkSessionId=${((meta as SessionMeta).sdkSessionId || '').slice(0, 8)}`)
-        const m = meta as SessionMeta
+        dlog(`${tag} onStatus sdkSessionId=${((meta as unknown as SessionMeta).sdkSessionId || '').slice(0, 8)}`)
+        const m = meta as unknown as SessionMeta
         setSessionMeta(m)
         // Track cache efficiency history (only push when values change)
         if (m.inputTokens > 0 && m.cacheReadTokens !== undefined) {
@@ -968,10 +1002,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       api.onHistory((sid: string, items: unknown[]) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        const dlog2 = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+        const dlog2 = (...args: unknown[]) => host.debug.log(...args)
         dlog2(`${tag} onHistory items=${(items as unknown[]).length} pendingPromptSent=${pendingPromptSentRef.current}`)
         historyLoadedRef.current = true
         setIsResumingHistory(false)
@@ -1010,7 +1044,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         archivedCountRef.current = 0
         loadedFromArchiveRef.current = 0
         setHasMoreArchived(false)
-        window.electronAPI.claude.clearArchive(sessionId).catch(() => {})
+        host.claude.clearArchive(sessionId).catch(() => {})
         setStreamingText('')
         setStreamingThinking('')
 
@@ -1021,7 +1055,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           const prompt = t.pendingPrompt || ''
           const images = t.pendingImages
           workspaceStore.setTerminalPendingPrompt(sessionId, '')
-          window.electronAPI?.debug?.log(`${tag} onHistory AUTO-SENDING pending prompt: "${prompt}" images=${images?.length ?? 0}`)
+          host.debug.log(`${tag} onHistory AUTO-SENDING pending prompt: "${prompt}" images=${images?.length ?? 0}`)
           // Set history + user message together so it doesn't get overwritten
           setMessages([...historyItems, {
             id: `user-fork-${Date.now()}`,
@@ -1031,7 +1065,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             timestamp: Date.now(),
           }])
           setIsStreaming(true)
-          window.electronAPI.claude.sendMessage(sessionId, prompt, images, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+          host.claude.sendMessage(sessionId, prompt, images, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
         } else {
           dlog2(`${tag} onHistory setting messages (history only, no pending prompt)`)
           setMessages(historyItems)
@@ -1062,7 +1096,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     ]
 
     return () => {
-      console.log(`${tag} unsubscribing IPC events`)
+      host.debug.log(`${tag} unsubscribing IPC events`)
       unsubs.forEach(unsub => unsub())
     }
   }, [sessionId])
@@ -1071,46 +1105,53 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   // If a saved sdkSessionId exists (from a previous /resume), auto-resume that session
   useEffect(() => {
     const stag = `[Claude:${sessionId.slice(0, 8)}]`
-    const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+    const dlog = (...args: unknown[]) => host.debug.log(...args)
+    let cancelled = false
     dlog(`${stag} mount effect: startedRef=${sessionStartedRef.current} inSet=${startedSessions.has(sessionId)}`)
     if (!sessionStartedRef.current && !startedSessions.has(sessionId)) {
       sessionStartedRef.current = true
       startedSessions.add(sessionId)
 
-      const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
-      const savedSdkSessionId = terminal?.sdkSessionId
-      const savedModel = normalizeClaudeModelSelection(terminal?.model)
-      const apiVersion = terminal?.agentPreset === 'claude-code-v2' ? 'v2' as const : 'v1' as const
-      const useWorktree = terminal?.agentPreset === 'claude-code-worktree' || !!terminal?.worktreePath
-      const globalSettings = settingsStore.getSettings()
-      dlog(`${stag} sdkSessionId=${savedSdkSessionId?.slice(0, 8)} pendingPrompt="${terminal?.pendingPrompt || ''}" apiVersion=${apiVersion}`)
+      ;(async () => {
+        await waitForTauriAgentListeners()
+        if (cancelled) return
+        const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
+        const savedSdkSessionId = terminal?.sdkSessionId
+        const savedModel = normalizeClaudeModelSelection(terminal?.model)
+        const apiVersion = terminal?.agentPreset === 'claude-code-v2' ? 'v2' as const : 'v1' as const
+        const useWorktree = terminal?.agentPreset === 'claude-code-worktree' || !!terminal?.worktreePath
+        const globalSettings = settingsStore.getSettings()
+        dlog(`${stag} sdkSessionId=${savedSdkSessionId?.slice(0, 8)} pendingPrompt="${terminal?.pendingPrompt || ''}" apiVersion=${apiVersion}`)
 
-      // Restore saved model to UI, or use global default
-      const effectiveModel = normalizeClaudeModelSelection(savedModel || globalSettings.defaultClaudeModel)
-      if (effectiveModel) setCurrentModel(effectiveModel)
+        // Restore saved model to UI, or use global default
+        const effectiveModel = normalizeClaudeModelSelection(savedModel || globalSettings.defaultClaudeModel)
+        if (effectiveModel) setCurrentModel(effectiveModel)
 
-      // Use global default effort
-      const effectiveEffort = globalSettings.defaultEffort || 'high'
-      setEffortLevel(effectiveEffort)
+        // Use global default effort
+        const effectiveEffort = globalSettings.defaultEffort || 'high'
+        setEffortLevel(effectiveEffort)
 
-      if (savedSdkSessionId) {
-        dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
-        historyLoadedRef.current = true
-        window.electronAPI.claude.resumeSession(sessionId, savedSdkSessionId, cwd, savedModel, apiVersion,
-          useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset)
-      } else {
-        dlog(`${stag} FRESH startSession`)
-        window.electronAPI.claude.startSession(sessionId, {
-          cwd, permissionMode, model: effectiveModel,
-          effort: effectiveEffort as EffortLevel, apiVersion,
-          agentPreset: terminal?.agentPreset,
-          ...(isCodexSession ? { codexSandboxMode, codexApprovalPolicy } : {}),
-          ...(useWorktree ? { useWorktree: true, worktreePath: terminal?.worktreePath, worktreeBranch: terminal?.worktreeBranch } : {}),
-          ...(getAutoCompactWindowForModel(effectiveModel, globalSettings.autoCompactWindow) ? { autoCompactWindow: getAutoCompactWindowForModel(effectiveModel, globalSettings.autoCompactWindow)! } : {}),
-        })
-      }
+        if (savedSdkSessionId) {
+          dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
+          historyLoadedRef.current = true
+          host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, effectiveModel || savedModel, apiVersion,
+            useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset,
+            undefined, undefined, permissionMode, effectiveEffort as EffortLevel)
+        } else {
+          dlog(`${stag} FRESH startSession`)
+          host.claude.startSession(sessionId, {
+            cwd, permissionMode, model: effectiveModel,
+            effort: effectiveEffort as EffortLevel, apiVersion,
+            agentPreset: terminal?.agentPreset,
+            ...(isCodexSession ? { codexSandboxMode, codexApprovalPolicy } : {}),
+            ...(useWorktree ? { useWorktree: true, worktreePath: terminal?.worktreePath, worktreeBranch: terminal?.worktreeBranch } : {}),
+            ...(getAutoCompactWindowForModel(effectiveModel, globalSettings.autoCompactWindow) ? { autoCompactWindow: getAutoCompactWindowForModel(effectiveModel, globalSettings.autoCompactWindow)! } : {}),
+          })
+        }
+      })()
     }
     return () => {
+      cancelled = true
       // Don't remove from startedSessions on unmount — StrictMode will remount
     }
   }, [sessionId, cwd, isCodexSession, codexSandboxMode, codexApprovalPolicy])
@@ -1118,19 +1159,57 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   // Refresh session metadata when panel becomes active (fixes stale display after window switch)
   useEffect(() => {
     if (isActive) {
-      window.electronAPI.claude.getSessionMeta(sessionId).then(meta => {
+      host.claude.getSessionMeta(sessionId).then(meta => {
         if (meta) {
-          setSessionMeta(meta as SessionMeta)
-          if ((meta as SessionMeta).model) setCurrentModel(prev => prev || (meta as SessionMeta).model!)
+          setSessionMeta(meta as unknown as SessionMeta)
+          if ((meta as unknown as SessionMeta).model) setCurrentModel(prev => prev || (meta as unknown as SessionMeta).model!)
         }
       }).catch(() => {})
     }
   }, [isActive, sessionId])
 
+  // Project .mcp.json detection. The Claude SDK silently ignores
+  // <cwd>/.mcp.json unless settings.json supplies an approval marker
+  // (`enableAllProjectMcpServers: true` or an exhaustive
+  // `enabledMcpjsonServers: [...]`) — and SDK mode can't show the
+  // CLI's interactive approval prompt. We detect the unapproved-but-
+  // present case on mount and offer a one-click fix that writes
+  // `enableAllProjectMcpServers: true` into project settings. Codex
+  // sessions are skipped — they don't talk to the Claude CLI.
+  useEffect(() => {
+    if (isCodexSession) return
+    if (!cwd) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const status = await host.claude.checkMcpJsonStatus(cwd) as
+          { exists: boolean; approved: boolean; servers: string[] } | undefined
+        if (cancelled || !status?.exists || status.approved) return
+        const servers = Array.isArray(status.servers) && status.servers.length > 0
+          ? status.servers.join(', ')
+          : '(server list empty)'
+        const ok = await host.dialog.confirm(
+          `Project ${cwd} declares MCP servers in .mcp.json:\n\n  ${servers}\n\nThe Claude SDK silently skips them until they're approved. Enable them now?\n\n(Writes "enableAllProjectMcpServers": true into ${cwd}/.claude/settings.json — revoke later by editing that file.)`,
+          'Approve project MCP servers?'
+        )
+        if (!ok || cancelled) return
+        await host.claude.enableAllProjectMcp(cwd)
+        setMessages(prev => [...prev, {
+          id: `sys-mcp-approve-${Date.now()}`,
+          sessionId,
+          role: 'system' as const,
+          content: `Project MCP servers (${servers}) approved. Start a new session for them to attach.`,
+          timestamp: Date.now(),
+        }])
+      } catch { /* silent — detection is best-effort UX */ }
+    })()
+    return () => { cancelled = true }
+  }, [sessionId, cwd, isCodexSession])
+
   // Fetch supported models on demand when model list is opened (no session required)
   useEffect(() => {
     if (showModelList && availableModels.length === 0) {
-      window.electronAPI.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+      host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
         if (models && models.length > 0) setAvailableModels(models)
       }).catch(() => {})
     }
@@ -1144,7 +1223,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   useEffect(() => {
     if (isCodexSession) return
     const handler = () => {
-      window.electronAPI.claude.getAccountInfo(sessionId).then(info => {
+      host.claude.getAccountInfo(sessionId).then(info => {
         if (info) setAccountInfo(info)
       }).catch(() => {})
     }
@@ -1153,35 +1232,67 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [sessionId, isCodexSession])
 
   useEffect(() => {
-    if (sessionMeta?.sdkSessionId && availableModels.length === 0) {
-      window.electronAPI.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+    if (!(sessionMeta?.sdkSessionId && availableModels.length === 0)) return
+    let cancelled = false
+    const cancelRefresh = scheduleAgentMetadataRefresh(() => {
+      host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+        if (cancelled) return
         if (models && models.length > 0) {
           setAvailableModels(models)
         }
       }).catch(() => {})
       if (!isCodexSession) {
-        window.electronAPI.claude.getAccountInfo(sessionId).then(info => {
+        host.claude.getAccountInfo(sessionId).then(info => {
+          if (cancelled) return
           if (info) setAccountInfo(info)
         }).catch(() => {})
-        window.electronAPI.claude.getSupportedCommands(sessionId).then((cmds: SlashCommandInfo[]) => {
+        host.claude.getSupportedCommands(sessionId).then((cmds: SlashCommandInfo[]) => {
+          if (cancelled) return
           if (cmds && cmds.length > 0) {
             setSlashCommands(cmds)
             window.dispatchEvent(new CustomEvent('claude-skills-updated', { detail: { sessionId, commands: cmds } }))
           }
         }).catch(() => {})
-        window.electronAPI.claude.getSupportedAgents(sessionId).then((agentList) => {
+        host.claude.getSupportedAgents(sessionId).then((agentList) => {
+          if (cancelled) return
           if (agentList && agentList.length > 0) {
             window.dispatchEvent(new CustomEvent('claude-agents-updated', { detail: { sessionId, agents: agentList } }))
           }
         }).catch(() => {})
       }
+    })
+    return () => {
+      cancelled = true
+      cancelRefresh()
     }
   }, [sessionId, sessionMeta?.sdkSessionId, availableModels.length, isCodexSession])
 
-  // Fetch git branch on mount and when cwd changes
+  // Fetch git branch on mount/cwd changes, and keep active sessions fresh when
+  // the branch changes outside the running renderer session.
   useEffect(() => {
-    window.electronAPI.git.getBranch(cwd).then(branch => setGitBranch(branch)).catch(() => setGitBranch(null))
-  }, [cwd])
+    let disposed = false
+    const refreshGitBranch = () => {
+      host.git.getBranch(cwd)
+        .then(branch => { if (!disposed) setGitBranch(branch) })
+        .catch(() => { if (!disposed) setGitBranch(null) })
+    }
+    refreshGitBranch()
+    if (!isActive) return () => { disposed = true }
+
+    const interval = window.setInterval(refreshGitBranch, 5000)
+    const handleFocus = () => refreshGitBranch()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshGitBranch()
+    }
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      disposed = true
+      window.clearInterval(interval)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [cwd, isActive])
 
   // Fetch subagent messages from SDK when task modal opens (for completed tasks with no streamed messages)
   useEffect(() => {
@@ -1190,7 +1301,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     if (existing && existing.length > 0) return // already have streamed messages
     const parentTask = allMessages.find(m => isToolCall(m) && m.id === taskModal.taskId) as ClaudeToolCall | undefined
     if (parentTask?.status === 'running') return // still streaming, don't fetch
-    window.electronAPI.claude.fetchSubagentMessages(sessionId, taskModal.taskId).then((msgs: unknown[]) => {
+    host.claude.fetchSubagentMessages(sessionId, taskModal.taskId).then((msgs: unknown[]) => {
       if (msgs && msgs.length > 0) {
         subagentMessagesRef.current.set(taskModal.taskId, msgs as MessageItem[])
         setTaskModalTick(t => t + 1)
@@ -1238,7 +1349,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       return
     }
     const timer = setTimeout(() => {
-      window.electronAPI.fs.search(cwd, filePickerQuery.trim()).then((results: { name: string; path: string; isDirectory: boolean }[]) => {
+      host.fs.search(cwd, filePickerQuery.trim()).then((results: { name: string; path: string; isDirectory: boolean }[]) => {
         setFilePickerResults(results || [])
         setFilePickerIndex(0)
       }).catch(() => {
@@ -1258,23 +1369,23 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const handleModelSelect = useCallback(async (modelValue: string) => {
     const selectedModel = normalizeClaudeModelSelection(modelValue) || modelValue
     if (isCodexSession && selectedModel !== currentModel) {
-      const ok = await window.electronAPI.dialog.confirm(t('claude.codexModelChangeWarning'))
+      const ok = await host.dialog.confirm(t('claude.codexModelChangeWarning'))
       if (!ok) return
     }
     // V2: warn that model change will recreate session and re-apply context
     if (!isCodexSession && isV2Session && selectedModel !== currentModel) {
-      const ok = await window.electronAPI.dialog.confirm(t('claude.v2ModelChangeWarning'))
+      const ok = await host.dialog.confirm(t('claude.v2ModelChangeWarning'))
       if (!ok) return
     }
     // V1: warn about 1M model cache inefficiency
     if (!isCodexSession && !isV2Session && selectedModel.includes('[1m]') && selectedModel !== currentModel) {
-      const ok = await window.electronAPI.dialog.confirm(t('claude.v1Model1mWarning'))
+      const ok = await host.dialog.confirm(t('claude.v1Model1mWarning'))
       if (!ok) return
     }
     setShowModelList(false)
     setCurrentModel(selectedModel)
     setTimeout(() => textareaRef.current?.focus(), 0)
-    await window.electronAPI.claude.setModel(sessionId, selectedModel, getAutoCompactWindowForModel(selectedModel, settingsStore.getSettings().autoCompactWindow) || undefined)
+    await host.claude.setModel(sessionId, selectedModel, getAutoCompactWindowForModel(selectedModel, settingsStore.getSettings().autoCompactWindow) || undefined)
     workspaceStore.updateTerminalModel(sessionId, selectedModel)
     if (isCodexSession && selectedModel !== currentModel) {
       setMessages([])
@@ -1288,12 +1399,12 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       cacheHistoryRef.current = []
       lastResultRef.current = null
       setCacheCountdown(null)
-      await window.electronAPI.claude.resetSession(sessionId)
+      await host.claude.resetSession(sessionId)
     }
   }, [sessionId, isCodexSession, isV2Session, currentModel, t])
 
   const handleResumeSelect = useCallback(async (sdkSessionId: string) => {
-    console.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
+    host.debug.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
     setShowResumeList(false)
     setResumeSessions([])
     // Clear UI immediately so user sees the switch
@@ -1312,18 +1423,33 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Mark that history will be loaded — prevents sys-init from wiping messages
     historyLoadedRef.current = true
     const apiVersion = isV2Session ? 'v2' as const : 'v1' as const
-    await window.electronAPI.claude.resumeSession(sessionId, sdkSessionId, cwd, undefined, apiVersion, undefined, undefined, undefined, terminal?.agentPreset)
+    const resumeModel = currentModel || settingsStore.getSettings().defaultClaudeModel || undefined
+    await host.claude.resumeSession(
+      sessionId,
+      sdkSessionId,
+      cwd,
+      resumeModel,
+      apiVersion,
+      undefined,
+      undefined,
+      undefined,
+      terminal?.agentPreset,
+      undefined,
+      undefined,
+      permissionMode,
+      effortLevel as EffortLevel,
+    )
     workspaceStore.setTerminalSdkSessionId(sessionId, sdkSessionId)
-  }, [sessionId, cwd, isV2Session])
+  }, [sessionId, cwd, isV2Session, terminal?.agentPreset, currentModel, permissionMode, effortLevel])
 
   const handleForkSession = useCallback(async () => {
-    const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+    const dlog = (...args: unknown[]) => host.debug.log(...args)
     const tag = `[Fork:${sessionId.slice(0, 8)}]`
     dlog(`${tag} start hasSdkSession=${hasSdkSession} workspaceId=${workspaceId}`)
     if (!hasSdkSession || !workspaceId) return
     let result: { newSdkSessionId: string } | null = null
     try {
-      result = await window.electronAPI.claude.forkSession(sessionId)
+      result = await host.claude.forkSession(sessionId)
     } catch (e) {
       dlog(`${tag} forkSession threw:`, e)
       alert('Fork failed: ' + (e instanceof Error ? e.message : String(e)))
@@ -1370,7 +1496,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
     let result: { newSdkSessionId: string; removedPromptCount: number } | { error: string }
     try {
-      result = await window.electronAPI.claude.rewindToPrompt(sessionId, promptIndex)
+      result = await host.claude.rewindToPrompt(sessionId, promptIndex)
     } catch (e) {
       alert('Rewind failed: ' + (e instanceof Error ? e.message : String(e)))
       return
@@ -1435,6 +1561,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [isActive, setInputValue])
 
   const handleSend = useCallback(async () => {
+    const __sendT0 = performance.now()
     const trimmed = inputValueRef.current.trim()
     if (!trimmed && attachedImages.length === 0 && attachedFiles.length === 0) return
 
@@ -1459,7 +1586,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       const rest = trimmed.slice(cmd.length).trim()
       let content: string
       if (rest === 'off' || rest === 'stop') {
-        await window.electronAPI.claude.setAutoContinue(sessionId, { enabled: false })
+        await host.claude.setAutoContinue(sessionId, { enabled: false })
         content = 'Auto-continue disabled.'
       } else {
         let max = 3
@@ -1471,7 +1598,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         } else if (rest) {
           prompt = rest
         }
-        await window.electronAPI.claude.setAutoContinue(sessionId, { enabled: true, max, prompt })
+        await host.claude.setAutoContinue(sessionId, { enabled: true, max, prompt })
         content = `Auto-continue enabled (max ${max}). Prompt: "${prompt}"`
       }
       setMessages(prev => [...prev, {
@@ -1487,7 +1614,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       setResumeLoading(true)
       setShowResumeList(true)
       try {
-        const sessions = await window.electronAPI.claude.listSessions(cwd)
+        const sessions = await host.claude.listSessions(cwd)
         setResumeSessions(sessions || [])
       } catch {
         setResumeSessions([])
@@ -1507,7 +1634,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Intercept /abort command — force stop current operation
     if (trimmed === '/abort') {
       clearInput()
-      window.electronAPI.claude.abortSession(sessionId)
+      host.claude.abortSession(sessionId)
       setIsStreaming(false)
       setIsInterrupted(false)
       setStreamingText('')
@@ -1544,7 +1671,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       cacheHistoryRef.current = []
       lastResultRef.current = null
       setCacheCountdown(null)
-      await window.electronAPI.claude.resetSession(sessionId)
+      await host.claude.resetSession(sessionId)
       return
     }
 
@@ -1555,9 +1682,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         id: `sys-login-${Date.now()}`, sessionId, role: 'system' as const,
         content: 'Opening Claude login...', timestamp: Date.now(),
       }])
-      const result = await window.electronAPI.claude.authLogin()
+      const result = await host.claude.authLogin()
       if (result.success) {
-        const status = await window.electronAPI.claude.authStatus()
+        const status = await host.claude.authStatus()
         setMessages(prev => [...prev, {
           id: `sys-login-ok-${Date.now()}`, sessionId, role: 'system' as const,
           content: status?.email
@@ -1567,7 +1694,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         }])
         // Auto-register account when account switching is enabled
         try {
-          await window.electronAPI.claude.accountImportCurrent()
+          await host.claude.accountImportCurrent()
         } catch { /* ignore if not available */ }
       } else {
         setMessages(prev => [...prev, {
@@ -1581,7 +1708,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Intercept /logout command
     if (!isCodexSession && trimmed === '/logout') {
       clearInput()
-      const result = await window.electronAPI.claude.authLogout()
+      const result = await host.claude.authLogout()
       setMessages(prev => [...prev, {
         id: `sys-logout-${Date.now()}`, sessionId, role: 'system' as const,
         content: result.success ? 'Logged out.' : `Logout failed: ${result.error || 'unknown error'}`,
@@ -1593,7 +1720,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Intercept /whoami command — show current auth status
     if (!isCodexSession && trimmed === '/whoami') {
       clearInput()
-      const status = await window.electronAPI.claude.authStatus()
+      const status = await host.claude.authStatus()
       setMessages(prev => [...prev, {
         id: `sys-whoami-${Date.now()}`, sessionId, role: 'system' as const,
         content: status?.loggedIn
@@ -1609,7 +1736,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       const arg = trimmed.slice('/switch'.length).trim()
       clearInput()
       try {
-        const { accounts, activeAccountId } = await window.electronAPI.claude.accountList()
+        const { accounts, activeAccountId } = await host.claude.accountList()
         if (accounts.length === 0) {
           setMessages(prev => [...prev, {
             id: `sys-switch-${Date.now()}`, sessionId, role: 'system' as const,
@@ -1651,7 +1778,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           }])
           return
         }
-        const success = await window.electronAPI.claude.accountSwitch(target.id)
+        const success = await host.claude.accountSwitch(target.id)
         if (success) {
           window.dispatchEvent(new CustomEvent('claude-account-switched'))
           setMessages(prev => [...prev, {
@@ -1682,8 +1809,8 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       clearInput()
       try {
         const snippets = query
-          ? await window.electronAPI.snippet.search(query)
-          : await window.electronAPI.snippet.getByWorkspace(workspaceId)
+          ? await host.snippet.search(query)
+          : await host.snippet.getByWorkspace(workspaceId)
         const snippetsJsonPath = '~/Library/Application Support/better-agent-terminal/snippets.json'
         const snippetList = snippets.length === 0
           ? 'No snippets exist yet.'
@@ -1713,7 +1840,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         setIsInterrupted(false)
         setStreamingText('')
         setStreamingThinking('')
-        await window.electronAPI.claude.sendMessage(sessionId, contextPrompt, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+        await host.claude.sendMessage(sessionId, contextPrompt, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
       } catch {
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
@@ -1732,7 +1859,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       const elapsed = Date.now() - timestamp
       if (totalInput > 150_000 && elapsed > 60 * 60 * 1000) {
         const mins = Math.floor(elapsed / 60000)
-        const ok = await window.electronAPI.dialog.confirm(
+        const ok = await host.dialog.confirm(
           `⚠️ Cache expired\n\nLast turn had ${(totalInput / 1000).toFixed(0)}k input tokens, but ${mins} minutes have passed (cache TTL: 60 min).\n\nThis request will re-process all tokens at full price, which may incur significant costs.\n\nContinue?`
         )
         if (!ok) return
@@ -1783,12 +1910,23 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }])
     }
 
-    await window.electronAPI.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+    const __sendT1 = performance.now()
+    try {
+      await host.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+    } finally {
+      const __sendT2 = performance.now()
+      const sync = __sendT1 - __sendT0
+      const invoke = __sendT2 - __sendT1
+      const total = __sendT2 - __sendT0
+      if (total > 50) {
+        host.debug.log(`[handleSend] sync=${sync.toFixed(1)}ms invoke=${invoke.toFixed(1)}ms total=${total.toFixed(1)}ms sessionId=${sessionId} promptLen=${trimmed.length}`)
+      }
+    }
   }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return
-    window.electronAPI.claude.stopSession(sessionId)
+    host.claude.stopSession(sessionId)
     setIsInterrupted(true)
     setStreamingText('')
     setStreamingThinking('')
@@ -1799,7 +1937,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const handleStop = useCallback(() => {
     if (!isStreaming && !isInterrupted) return
     // Hard abort — immediately kill the query loop
-    window.electronAPI.claude.abortSession(sessionId)
+    host.claude.abortSession(sessionId)
     setIsStreaming(false)
     setIsInterrupted(false)
     setStreamingText('')
@@ -1842,7 +1980,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const idx = availableModes.indexOf(permissionMode as typeof permissionModes[number])
     const nextMode = availableModes[(idx + 1) % availableModes.length]
     setPermissionMode(nextMode)
-    await window.electronAPI.claude.setPermissionMode(sessionId, nextMode)
+    await host.claude.setPermissionMode(sessionId, nextMode)
   }, [sessionId, permissionMode])
 
   useEffect(() => { showSlashMenuRef.current = showSlashMenu }, [showSlashMenu])
@@ -2005,28 +2143,28 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const next = availableModels[(idx + 1) % availableModels.length]
     const selectedModel = normalizeClaudeModelSelection(next.value) || next.value
     setCurrentModel(selectedModel)
-    await window.electronAPI.claude.setModel(sessionId, selectedModel, getAutoCompactWindowForModel(selectedModel, settingsStore.getSettings().autoCompactWindow) || undefined)
+    await host.claude.setModel(sessionId, selectedModel, getAutoCompactWindowForModel(selectedModel, settingsStore.getSettings().autoCompactWindow) || undefined)
     workspaceStore.updateTerminalModel(sessionId, selectedModel)
   }, [sessionId, currentModel, availableModels])
 
   const handleEffortChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = e.target.value
     setEffortLevel(next)
-    await window.electronAPI.claude.setEffort(sessionId, next)
+    await host.claude.setEffort(sessionId, next)
   }, [sessionId])
 
   const handleCodexSandboxModeChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = e.target.value as 'read-only' | 'workspace-write' | 'danger-full-access'
     setCodexSandboxMode(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { sandboxMode: next })
-    await window.electronAPI.claude.setCodexSandboxMode(sessionId, next)
+    await host.claude.setCodexSandboxMode(sessionId, next)
   }, [sessionId])
 
   const handleCodexApprovalPolicyChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = e.target.value as 'untrusted' | 'on-request' | 'never'
     setCodexApprovalPolicy(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { approvalPolicy: next })
-    await window.electronAPI.claude.setCodexApprovalPolicy(sessionId, next)
+    await host.claude.setCodexApprovalPolicy(sessionId, next)
   }, [sessionId])
 
   const showDontAskAgain = (pendingPermission?.suggestions?.length ?? 0) > 0
@@ -2058,20 +2196,20 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       : (['yes', 'no', 'custom'] as const)[choice]
 
     if (action === 'yes') {
-      window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+      host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
         behavior: 'allow',
         updatedInput: pendingPermission.input,
       })
       setPendingPermission(null)
     } else if (action === 'dontAskAgain') {
       if (pendingPermission.toolName === 'ExitPlanMode') {
-        window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+        host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
           behavior: 'allow',
           updatedInput: pendingPermission.input,
           dontAskAgain: true,
         })
       } else {
-        window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+        host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
           behavior: 'allow',
           updatedInput: pendingPermission.input,
           updatedPermissions: pendingPermission.suggestions,
@@ -2086,7 +2224,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         }
         return m
       }))
-      window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+      host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
         behavior: 'deny',
         message: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
       })
@@ -2101,7 +2239,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         }
         return m
       }))
-      window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+      host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
         behavior: 'deny',
         message: msg,
       })
@@ -2113,7 +2251,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   // Read plan file content when ExitPlanMode permission appears
   useEffect(() => {
     if (pendingPermission?.toolName === 'ExitPlanMode' && pendingPermission.input.planFilePath) {
-      window.electronAPI.fs.readFile(String(pendingPermission.input.planFilePath)).then(r => {
+      host.fs.readFile(String(pendingPermission.input.planFilePath)).then(r => {
         if (r.content) setPlanFileContent(r.content)
       }).catch(() => {})
     } else {
@@ -2262,7 +2400,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         finalAnswers[key] = text.trim()
       }
     }
-    window.electronAPI.claude.resolveAskUser(sessionId, pendingQuestion.toolUseId, finalAnswers)
+    host.claude.resolveAskUser(sessionId, pendingQuestion.toolUseId, finalAnswers)
     setPendingQuestion(null)
     setAskAnswers({})
     setAskOtherText({})
@@ -2281,7 +2419,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const current = attachedImages
     if (current.length >= MAX_IMAGES || current.some(img => img.path === filePath)) return
     try {
-      const dataUrl = await window.electronAPI.image.readAsDataUrl(filePath)
+      const dataUrl = await host.image.readAsDataUrl(filePath)
       setAttachedImages(prev => {
         if (prev.length >= MAX_IMAGES) return prev
         if (prev.some(img => img.path === filePath)) return prev
@@ -2322,7 +2460,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           return
         }
         if (!isRemoteConnected) {
-          const filePath = await window.electronAPI.clipboard.saveImage()
+          const filePath = await host.clipboard.saveImage()
           if (filePath) {
             await addImageByPath(filePath)
           }
@@ -2347,18 +2485,27 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragOver(false)
+    // Under Tauri, OS file drops are already handled by the
+    // listenTauriNativeDrop effect below (which has the absolute paths).
+    // The DOM drop event also fires but File.path is undefined, so
+    // getPathForFile would basename-match against an already-claimed
+    // cache entry and surface a spurious "needs the host to expose
+    // paths" alert. Skip OS-file drops here; the dataTransfer.files
+    // branch only matters for browser-internal image drags (no 'Files').
+    if (isTauri() && e.dataTransfer.types.includes('Files')) return
     for (const file of e.dataTransfer.files) {
-      if (isRemoteConnected) {
+      const filePath = isRemoteConnected ? null : host.shell.getPathForFile(file)
+      if (!filePath) {
         if (file.type.startsWith('image/')) {
           const dataUrl = await readFileAsDataUrl(file)
           addImageDataUrl(file.name || filenameForPastedImage(file), dataUrl)
-        } else {
+        } else if (isRemoteConnected) {
           window.alert('Remote sessions can only attach local dropped images. File paths must exist on the host.')
+        } else {
+          window.alert('Drag-drop of non-image files needs the host to expose paths; not yet wired in this build.')
         }
         continue
       }
-      const filePath = window.electronAPI.shell.getPathForFile(file)
-      if (!filePath) continue
       if (file.type.startsWith('image/')) {
         await addImageByPath(filePath)
       } else {
@@ -2368,6 +2515,37 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [addImageByPath, addImageDataUrl, addFileByPath, isRemoteConnected])
 
   const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'])
+
+  const handleNativeDropPaths = useCallback(async (paths: string[]) => {
+    if (isRemoteConnected) {
+      window.alert('Remote sessions can only attach local dropped images. File paths must exist on the host.')
+      return
+    }
+    for (const filePath of paths) {
+      const extensionIndex = filePath.lastIndexOf('.')
+      const ext = extensionIndex >= 0 ? filePath.slice(extensionIndex).toLowerCase() : ''
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        await addImageByPath(filePath)
+      } else {
+        addFileByPath(filePath)
+      }
+    }
+  }, [addImageByPath, addFileByPath, isRemoteConnected])
+
+  useEffect(() => {
+    return listenTauriNativeDrop((detail) => {
+      if (!isTauriNativeDropInside(detail, panelRef.current)) {
+        if (detail.type === 'drop' || detail.type === 'leave') setIsDragOver(false)
+        return
+      }
+      if (detail.type === 'enter' || detail.type === 'over') {
+        setIsDragOver(true)
+        return
+      }
+      setIsDragOver(false)
+      if (detail.type === 'drop') void handleNativeDropPaths(detail.paths)
+    })
+  }, [handleNativeDropPaths])
 
   const handleSelectAttachments = useCallback(() => {
     setFilePickerMode('attach')
@@ -2592,7 +2770,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               {planPath && (
                 <div className="claude-plan-block">
                   <div className="claude-plan-open-btn" onClick={() => {
-                    window.electronAPI.fs.readFile(planPath).then(r => {
+                    host.fs.readFile(planPath).then(r => {
                       if (r.content) setContentModal({ title: 'Plan', content: r.content, markdown: true })
                     }).catch(() => {})
                   }}>
@@ -2679,7 +2857,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 <div className="claude-task-actions">
                   <button className="claude-task-stop-btn" onClick={(e) => {
                     e.stopPropagation()
-                    window.electronAPI.claude.stopTask(sessionId, item.id)
+                    host.claude.stopTask(sessionId, item.id)
                   }}>{t('claude.stop')}</button>
                 </div>
               )}
@@ -3174,6 +3352,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   return (
     <div
+      ref={panelRef}
       className="claude-agent-panel"
       style={{
         '--claude-font-size': `${claudeFontSize}px`,
@@ -3232,7 +3411,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 {Boolean(task.input.run_in_background) && <span className="claude-task-tag">{t('claude.bg')}</span>}
                 <button className="claude-task-stop-btn" onClick={(e) => {
                   e.stopPropagation()
-                  window.electronAPI.claude.stopTask(sessionId, task.id)
+                  host.claude.stopTask(sessionId, task.id)
                 }}>Stop</button>
               </div>
             )
@@ -3249,7 +3428,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         onAuxClick={handleMessagesAuxClick}
         onContextMenu={(e) => {
           e.preventDefault()
-          setContextMenu({ x: e.clientX, y: e.clientY })
+          setContextMenu({ x: e.clientX, y: e.clientY, kind: 'messages' })
         }}
       >
         {(hasMoreArchived || isLoadingMore) && (
@@ -3613,10 +3792,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       )}
 
       {/* Plan file bar — debug only */}
-      {window.electronAPI?.debug?.isDebugMode && activePlanFile && dismissedPlanFileRef.current !== activePlanFile && (
+      {host.debug.isDebugMode && activePlanFile && dismissedPlanFileRef.current !== activePlanFile && (
         <div className="claude-plan-file-bar">
           <span className="claude-plan-file-label" style={{ cursor: 'pointer' }} onClick={() => {
-            window.electronAPI.fs.readFile(activePlanFile).then(r => {
+            host.fs.readFile(activePlanFile).then(r => {
               if (r.content) setContentModal({ title: 'Plan', content: r.content, markdown: true })
             }).catch(() => {})
           }} title={activePlanFile}>
@@ -3640,7 +3819,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             <button
               className="claude-worktree-btn"
               onClick={async () => {
-                const status = await window.electronAPI.claude.getWorktreeStatus(sessionId)
+                const status = await host.claude.getWorktreeStatus(sessionId)
                 if (status?.diff) {
                   // Show diff as a system message
                   setMessages(prev => [...prev, {
@@ -3665,18 +3844,18 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             <button
               className="claude-worktree-btn"
               onClick={async () => {
-                if (!await window.electronAPI.dialog.confirm(`Merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}?`)) return
+                if (!await host.dialog.confirm(`Merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}?`)) return
                 const cmd = `Commit all current changes with a descriptive message, then use host folder (${worktreeInfo.gitRoot}) to merge worktree folder (${worktreeInfo.worktreePath}). Steps:\n1. Stage and commit all changes in the worktree folder with a meaningful commit message\n2. Switch to host folder (${worktreeInfo.gitRoot}) and merge the worktree branch (${worktreeInfo.branchName}) into ${worktreeInfo.sourceBranch}\nDo not push to remote. Do not create a PR.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+                await host.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
               }}
               title={`Commit and merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}`}
             >Merge to Host</button>
             <button
               className="claude-worktree-btn"
               onClick={async () => {
-                if (!await window.electronAPI.dialog.confirm(`Push ${worktreeInfo.branchName} directly to origin/main?`)) return
+                if (!await host.dialog.confirm(`Push ${worktreeInfo.branchName} directly to origin/main?`)) return
                 const cmd = `Commit all current changes with a descriptive message, then push directly to origin/main. Steps:\n1. Stage and commit all changes with a meaningful commit message\n2. Pull origin/main and resolve any conflicts if needed\n3. Push to origin/main\nDo not create a PR. Do not ask for confirmation.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+                await host.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
               }}
               title="Commit, pull, resolve conflicts, and push to origin/main"
             >Push to Main</button>
@@ -3684,7 +3863,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               className="claude-worktree-btn"
               onClick={async () => {
                 const cmd = `Commit all current changes and create or update a pull request to origin/main. Steps:\n1. Stage and commit all changes with a meaningful commit message\n2. Push this branch to origin\n3. Check if a PR from this branch to main already exists (gh pr list --head ${worktreeInfo.branchName})\n4. If a PR exists: update it with the latest changes summary (gh pr edit)\n5. If no PR exists: create one with gh pr create, include a summary of all changes in the description\nDo not merge the PR.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+                await host.claude.sendMessage(sessionId, cmd, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
               }}
               title="Commit, push branch, and create or update PR to main"
             >Create PR</button>
@@ -3826,7 +4005,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 onClick={() => setShowModelList(true)}
                 title={`Model: ${currentModelLabel}${currentSdkModel !== currentModel ? ` (${currentSdkModel})` : ''} (click to select)`}
               >
-                {'</>'} {currentModelLabel}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModelLabel}{currentModelContextSuffix}
               </span>
             )}
             {!isCodexSession && !isV2Session && (
@@ -4389,7 +4568,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             <span key="sessionId" className="claude-statusline-item claude-statusline-clickable"
               onClick={async () => {
                 setResumeLoading(true); setShowResumeList(true)
-                try { setResumeSessions(await window.electronAPI.claude.listSessions(cwd) || []) }
+                try { setResumeSessions(await host.claude.listSessions(cwd) || []) }
                 catch { setResumeSessions([]) }
                 finally { setResumeLoading(false) }
               }}
@@ -4403,9 +4582,25 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           gitBranch: () => !gitBranch ? null : (
             <span key="gitBranch" className="claude-statusline-item">[{gitBranch}]</span>
           ),
+          model: () => {
+            const model = sessionMeta?.model || currentModel
+            if (!model) return null
+            return (
+              <span key="model" className="claude-statusline-item" title={`model: ${model}`}>
+                {displayNameForClaudeSelection(model)}
+              </span>
+            )
+          },
+          effort: () => {
+            const effort = sessionMeta?.effort || effortLevel
+            if (!effort) return null
+            return <span key="effort" className="claude-statusline-item" title={`effort: ${effort}`}>{effort}</span>
+          },
+          sandbox: () => null,
+          approval: () => null,
           tokens: () => !sessionMeta ? null : (
             <span key="tokens" className="claude-statusline-item claude-statusline-clickable" title={`context: ${(sessionMeta.contextTokens || 0).toLocaleString()} tok\ncumulative in: ${sessionMeta.inputTokens.toLocaleString()} / out: ${sessionMeta.outputTokens.toLocaleString()}\nclick to show context breakdown`}
-              onClick={() => { window.electronAPI.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
+              onClick={() => { host.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
               {(sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)).toLocaleString()} tok
             </span>
           ),
@@ -4429,7 +4624,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               : `model context window: ${sessionMeta.contextWindow.toLocaleString()} tokens`
             return (
               <span key="contextPct" className="claude-statusline-item claude-statusline-clickable" style={{ color: ctxColor }} title={`context: ${ctxTokens.toLocaleString()} / ${effectiveWindow.toLocaleString()} tokens\n${denominatorLabel}\ntotal: ${(sessionMeta.inputTokens + sessionMeta.outputTokens).toLocaleString()} tok\nclick to show context breakdown`}
-                onClick={() => { window.electronAPI.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
+                onClick={() => { host.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
                 ctx {pct}%
               </span>
             )
@@ -4529,7 +4724,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           </div>
         )
       })()}
-      {contextMenu && onClose && (
+      {contextMenu && (
         <div
           className="claude-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -4537,9 +4732,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         >
           <button
             className="claude-context-menu-item"
-            onClick={() => { setContextMenu(null); onClose(sessionId) }}
+            onClick={() => { setContextMenu(null); scrollToBottom() }}
           >
-            Close Window
+            {t('claude.scrollToBottom')}
           </button>
         </div>
       )}

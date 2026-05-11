@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+const repoRoot = path.join(__dirname, '..');
+
 // Get version from git tag, environment variable, or generate one
 function getVersion() {
   // 1. Check for VERSION environment variable (set by CI)
@@ -47,8 +49,16 @@ function generateTimestampVersion() {
 }
 
 // Update package.json version
-function updatePackageVersion(version) {
-  const packagePath = path.join(__dirname, '..', 'package.json');
+function updateJsonFile(filePath, update) {
+  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const updated = update(parsed) || parsed;
+  fs.writeFileSync(filePath, JSON.stringify(updated, null, 2) + '\n');
+  return updated;
+}
+
+// Update package.json version
+function updatePackageVersion(version, root = repoRoot) {
+  const packagePath = path.join(root, 'package.json');
   const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 
   const oldVersion = packageJson.version;
@@ -56,7 +66,25 @@ function updatePackageVersion(version) {
 
   fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2) + '\n');
 
-  console.log(`Version updated: ${oldVersion} -> ${version}`);
+  console.log(`package.json version updated: ${oldVersion} -> ${version}`);
+  return version;
+}
+
+function updateTauriVersion(version, root = repoRoot) {
+  const tauriConfigPath = path.join(root, 'src-tauri', 'tauri.conf.json');
+  if (!fs.existsSync(tauriConfigPath)) return false;
+  const oldVersion = JSON.parse(fs.readFileSync(tauriConfigPath, 'utf8')).version;
+  updateJsonFile(tauriConfigPath, (config) => {
+    config.version = version;
+    return config;
+  });
+  console.log(`tauri.conf.json version updated: ${oldVersion} -> ${version}`);
+  return true;
+}
+
+function updateProjectVersion(version, root = repoRoot) {
+  updatePackageVersion(version, root);
+  updateTauriVersion(version, root);
   return version;
 }
 
@@ -67,15 +95,29 @@ function runBuild() {
   console.log(`Running ${command}...\n`);
   execSync(command, {
     stdio: 'inherit',
-    cwd: path.join(__dirname, '..')
+    cwd: repoRoot
   });
 }
 
-// Main
-const version = getVersion();
-console.log(`\nBuilding version: ${version}\n`);
+function main() {
+  const version = getVersion();
+  console.log(`\nBuilding version: ${version}\n`);
 
-updatePackageVersion(version);
-runBuild();
+  updateProjectVersion(version);
+  runBuild();
 
-console.log(`\nBuild completed: v${version}`);
+  console.log(`\nBuild completed: v${version}`);
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  getVersion,
+  updatePackageVersion,
+  updateTauriVersion,
+  updateProjectVersion,
+  runBuild,
+  main,
+};

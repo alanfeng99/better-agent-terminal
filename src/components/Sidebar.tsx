@@ -1,3 +1,4 @@
+import { host, isTauri } from '../host-api'
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Workspace } from '../types'
@@ -5,6 +6,7 @@ import { WORKSPACE_COLORS } from '../types'
 import { workspaceStore } from '../stores/workspace-store'
 import { ActivityIndicator } from './ActivityIndicator'
 import { NotificationBell } from './NotificationBell'
+import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
 
 interface SidebarProps {
   width: number
@@ -63,6 +65,7 @@ export function Sidebar({
   const inputRef = useRef<HTMLInputElement>(null)
   const groupInputRef = useRef<HTMLInputElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
+  const workspaceListRef = useRef<HTMLDivElement>(null)
 
   // Filter workspaces by active group
   const filteredWorkspaces = activeGroup
@@ -103,11 +106,11 @@ export function Sidebar({
     if (!contextMenu) { setGithubUrl(null); setAgentResting(false); return }
     const ws = workspaces.find(w => w.id === contextMenu.workspaceId)
     if (!ws) return
-    window.electronAPI.git.getGithubUrl(ws.folderPath).then(url => setGithubUrl(url))
+    host.git.getGithubUrl(ws.folderPath).then(url => setGithubUrl(url))
     // Check if agent session is resting
     const agent = workspaceStore.getAgentTerminal(contextMenu.workspaceId)
     if (agent) {
-      window.electronAPI.claude.isResting(agent.id).then(r => setAgentResting(r)).catch(() => {})
+      host.claude.isResting(agent.id).then(r => setAgentResting(r)).catch(() => {})
     }
   }, [contextMenu, workspaces])
 
@@ -125,9 +128,36 @@ export function Sidebar({
   }, [contextMenu])
 
   const moveWorkspaceToWindow = useCallback(async (sourceWindowId: string, targetWindowId: string, workspaceId: string, insertIndex: number) => {
-    const ok = await window.electronAPI.workspace.moveToWindow(sourceWindowId, targetWindowId, workspaceId, insertIndex)
+    const ok = await host.workspace.moveToWindow(sourceWindowId, targetWindowId, workspaceId, insertIndex)
     if (!ok) window.alert('Workspace moves only work between host windows, or between remote windows on the same remote.')
   }, [])
+
+  useEffect(() => {
+    return listenTauriNativeDrop((detail) => {
+      if (!isTauriNativeDropInside(detail, workspaceListRef.current)) {
+        if (detail.type === 'drop' || detail.type === 'leave') setExternalDragOver(false)
+        return
+      }
+      if (draggedId) return
+      if (detail.type === 'enter' || detail.type === 'over') {
+        setExternalDragOver(!isRemoteConnected)
+        return
+      }
+      setExternalDragOver(false)
+      if (detail.type !== 'drop') return
+      if (isRemoteConnected) {
+        window.alert('Remote sessions can only add folders that exist on the host.')
+        return
+      }
+      let added = 0
+      for (const filePath of detail.paths) {
+        const name = filePath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace'
+        workspaceStore.addWorkspace(name, filePath)
+        added++
+      }
+      if (added > 0) workspaceStore.save()
+    })
+  }, [draggedId, isRemoteConnected])
 
   // Context menu handler
   const handleContextMenu = useCallback((e: React.MouseEvent, workspaceId: string) => {
@@ -331,6 +361,7 @@ export function Sidebar({
         </div>
       )}
       <div
+        ref={workspaceListRef}
         className={`workspace-list${externalDragOver ? ' external-drag-over' : ''}`}
         onDragOver={(e) => {
           // Only react to external file drops or cross-window workspace drags (not internal workspace reorder)
@@ -380,17 +411,34 @@ export function Sidebar({
             setDragPosition(null)
             return
           }
+          // Under Tauri, native onDragDropEvent already added workspaces in
+          // the useEffect listener above. The DOM drop event fires too, but
+          // File.path is undefined so getPathForFile would basename-match
+          // against an already-claimed cache entry and surface a spurious
+          // "needs the host to expose paths" alert. Skip the DOM-path
+          // workspace addition entirely under Tauri.
+          if (isTauri() && e.dataTransfer.types.includes('Files')) {
+            setDragOverId(null)
+            setDragPosition(null)
+            return
+          }
           const files = Array.from(e.dataTransfer.files)
           let added = 0
+          let pathlessSeen = false
           for (const file of files) {
-            const filePath = window.electronAPI.shell.getPathForFile(file)
+            const filePath = host.shell.getPathForFile(file)
             if (filePath) {
               const name = filePath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace'
               workspaceStore.addWorkspace(name, filePath)
               added++
+            } else {
+              pathlessSeen = true
             }
           }
           if (added > 0) workspaceStore.save()
+          else if (pathlessSeen) {
+            window.alert('Drag-drop of folders to add as workspaces needs the host to expose paths; use the "Add workspace" button instead.')
+          }
         }}
       >
         {filteredWorkspaces.map(workspace => (
@@ -499,7 +547,7 @@ export function Sidebar({
             className="context-menu-item"
             onClick={() => {
               const ws = workspaces.find(w => w.id === contextMenu.workspaceId)
-              if (ws) window.electronAPI.shell.openPath(ws.folderPath)
+              if (ws) host.shell.openPath(ws.folderPath)
               setContextMenu(null)
             }}
           >
@@ -527,7 +575,7 @@ export function Sidebar({
             <div
               className="context-menu-item"
               onClick={() => {
-                window.electronAPI.shell.openExternal(githubUrl)
+                host.shell.openExternal(githubUrl)
                 setContextMenu(null)
               }}
             >
@@ -622,9 +670,9 @@ export function Sidebar({
                 className="context-menu-item"
                 onClick={async () => {
                   if (agentResting) {
-                    await window.electronAPI.claude.wakeSession(agent.id)
+                    await host.claude.wakeSession(agent.id)
                   } else {
-                    await window.electronAPI.claude.restSession(agent.id)
+                    await host.claude.restSession(agent.id)
                   }
                   setContextMenu(null)
                 }}

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { host } from '../host-api'
 
 // Snippet interface (matches backend)
 type SnippetFormat = 'plaintext' | 'markdown'
@@ -155,9 +156,9 @@ export function SnippetSidebar({
         try {
             let data: Snippet[]
             if (searchQuery) {
-                data = await window.electronAPI.snippet.search(searchQuery)
+                data = await host.snippet.search(searchQuery)
             } else {
-                data = await window.electronAPI.snippet.getByWorkspace(workspaceId)
+                data = await host.snippet.getByWorkspace(workspaceId)
             }
             // Apply scope filter
             if (scopeFilter === 'global') {
@@ -179,7 +180,7 @@ export function SnippetSidebar({
 
     const handleCreate = async (data: { title: string; content: string; format: SnippetFormat; workspaceId?: string }) => {
         try {
-            await window.electronAPI.snippet.create(data)
+            await host.snippet.create(data)
             loadSnippets()
         } catch (error) {
             console.error('Failed to create snippet:', error)
@@ -188,7 +189,7 @@ export function SnippetSidebar({
 
     const handleUpdate = async (id: number, data: Partial<{ title: string; content: string; format: SnippetFormat; workspaceId?: string }>) => {
         try {
-            await window.electronAPI.snippet.update(id, data)
+            await host.snippet.update(id, data)
             loadSnippets()
         } catch (error) {
             console.error('Failed to update snippet:', error)
@@ -198,7 +199,7 @@ export function SnippetSidebar({
     const handleDelete = async (id: number) => {
         if (!confirm(t('snippets.deleteConfirm'))) return
         try {
-            await window.electronAPI.snippet.delete(id)
+            await host.snippet.delete(id)
             loadSnippets()
         } catch (error) {
             console.error('Failed to delete snippet:', error)

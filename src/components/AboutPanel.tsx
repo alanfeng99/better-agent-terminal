@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { host } from '../host-api'
 
 interface AboutPanelProps {
   onClose: () => void
@@ -7,7 +8,7 @@ interface AboutPanelProps {
 export function AboutPanel({ onClose }: AboutPanelProps) {
   const { t } = useTranslation()
   const handleLinkClick = (url: string) => {
-    window.electronAPI.shell.openExternal(url)
+    host.shell.openExternal(url)
   }
 
   return (

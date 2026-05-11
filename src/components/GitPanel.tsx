@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
@@ -124,10 +125,10 @@ export function GitPanel({ workspaceFolderPath, worktreePaths = [] }: Readonly<G
     setDiff('')
     try {
       const [logResult, statusResult, branch, root] = await Promise.all([
-        window.electronAPI.git.getLog(activePath),
-        window.electronAPI.git.getStatus(activePath),
-        window.electronAPI.git.getBranch(activePath),
-        window.electronAPI.git.getRoot(activePath),
+        host.git.getLog(activePath),
+        host.git.getStatus(activePath),
+        host.git.getBranch(activePath),
+        host.git.getRoot(activePath),
       ])
       setIsGitRepo(branch !== null)
       setGitRoot(root)
@@ -152,7 +153,7 @@ export function GitPanel({ workspaceFolderPath, worktreePaths = [] }: Readonly<G
       if (hash === 'working') {
         setChangedFiles(status)
       } else {
-        const files = await window.electronAPI.git.getDiffFiles(activePath, hash)
+        const files = await host.git.getDiffFiles(activePath, hash)
         setChangedFiles(files)
       }
     } catch {
@@ -167,7 +168,7 @@ export function GitPanel({ workspaceFolderPath, worktreePaths = [] }: Readonly<G
     setFileContent(null)
     setDiffLoading(true)
     try {
-      const d = await window.electronAPI.git.getDiff(activePath, selectedCommit || undefined, filePath)
+      const d = await host.git.getDiff(activePath, selectedCommit || undefined, filePath)
       if (d.trim()) {
         setDiff(d)
       } else {
@@ -175,9 +176,9 @@ export function GitPanel({ workspaceFolderPath, worktreePaths = [] }: Readonly<G
         const fileEntry = changedFiles.find(f => f.file === filePath)
         if (fileEntry && (fileEntry.status === '??' || fileEntry.status === 'A')) {
           const base = gitRoot || activePath
-          const sep = window.electronAPI.platform === 'win32' ? '\\' : '/'
+          const sep = host.platform === 'win32' ? '\\' : '/'
           const fullPath = base + sep + filePath.replace(/[/\\]/g, sep)
-          const result = await window.electronAPI.fs.readFile(fullPath)
+          const result = await host.fs.readFile(fullPath)
           if (result.content) {
             const lines = result.content.split('\n').map(l => '+' + l).join('\n')
             setDiff(`diff --git a/${filePath} b/${filePath}\nnew file\n--- /dev/null\n+++ b/${filePath}\n@@ -0,0 +1,${result.content.split('\n').length} @@\n${lines}`)
@@ -199,9 +200,9 @@ export function GitPanel({ workspaceFolderPath, worktreePaths = [] }: Readonly<G
     setViewMode('file')
     if (fileContent !== null) return // already loaded
     const base = gitRoot || activePath
-    const sep = window.electronAPI.platform === 'win32' ? '\\' : '/'
+    const sep = host.platform === 'win32' ? '\\' : '/'
     const fullPath = base + sep + selectedFile.replace(/[/\\]/g, sep)
-    const result = await window.electronAPI.fs.readFile(fullPath)
+    const result = await host.fs.readFile(fullPath)
     setFileContent(result.content || result.error || 'Unable to read file')
   }, [selectedFile, fileContent, activePath, gitRoot])
 

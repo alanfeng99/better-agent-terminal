@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { v4 as uuidv4 } from 'uuid'
 import type { Workspace, TerminalInstance, AppState } from '../types'
 import { AgentPresetId, getAgentPreset } from '../types/agent-presets'
@@ -6,6 +7,16 @@ import { clearPreviewCache } from '../components/TerminalThumbnail'
 import { settingsStore } from './settings-store'
 
 type Listener = () => void
+
+function setHostDockBadge(count: number): void {
+  void host.app.setDockBadge(count).catch(() => {})
+}
+
+function normalizePersistedAgentPreset(value: unknown): AgentPresetId | undefined {
+  if (value === 'openai-agent') return 'codex-agent'
+  if (typeof value === 'string' && getAgentPreset(value)) return value as AgentPresetId
+  return undefined
+}
 
 class WorkspaceStore {
   private state: AppState = {
@@ -557,7 +568,7 @@ class WorkspaceStore {
     const settings = settingsStore.getSettings()
     if (settings.showDockBadge === false) return
     const count = this.state.terminals.filter(t => t.hasPendingAction).length
-    window.electronAPI?.app?.setDockBadge?.(count)
+    setHostDockBadge(count)
   }
 
   getWorkspaceLastActivity(workspaceId: string): number | null {
@@ -574,7 +585,7 @@ class WorkspaceStore {
   getWindowId(): string | null { return this.windowId }
 
   listenForReload(): () => void {
-    return window.electronAPI.workspace.onReload((data?: string) => {
+    return host.workspace.onReload((data?: string) => {
       if (data) {
         this.applySerializedData(data, { preserveActiveSelection: true })
         return
@@ -619,7 +630,7 @@ class WorkspaceStore {
         terminals: savedTerminals,
         activeTerminalId: this.state.activeTerminalId,
       })
-      await window.electronAPI.workspace.save(data)
+      await host.workspace.save(data)
     }).catch(e => {
       console.error('Failed to save workspace data:', e)
     })
@@ -628,7 +639,7 @@ class WorkspaceStore {
   }
 
   async load(): Promise<void> {
-    const data = await window.electronAPI.workspace.load()
+    const data = await host.workspace.load()
     if (data) {
       this.applySerializedData(data)
     }
@@ -638,30 +649,34 @@ class WorkspaceStore {
     try {
       const parsed = JSON.parse(data)
       // Restore terminals with empty runtime fields
-      const workspaces: Workspace[] = parsed.workspaces || []
+      const workspaces: Workspace[] = (parsed.workspaces || []).map((w: Workspace) => ({
+        ...w,
+        defaultAgent: normalizePersistedAgentPreset(w.defaultAgent),
+      }))
       const workspaceMap = new Map(workspaces.map((w: Workspace) => [w.id, w]))
       const terminals = (parsed.terminals || []).map((t: Partial<TerminalInstance>): TerminalInstance | null => {
         const ws = t.workspaceId ? workspaceMap.get(t.workspaceId) : undefined
         if (!ws?.folderPath) {
-          window.electronAPI?.debug?.log?.(`[workspace-store] Warning: terminal ${t.id} has no valid workspace, skipping`)
+          host.debug.log?.(`[workspace-store] Warning: terminal ${t.id} has no valid workspace, skipping`)
           return null
         }
         const cwd = ws.folderPath
         // For agent terminals, always derive title from preset to fix any persisted corruption
-        const presetTitle = t.agentPreset && t.agentPreset !== 'none'
-          ? (getAgentPreset(t.agentPreset)?.name || t.title || 'Terminal')
+        const agentPreset = normalizePersistedAgentPreset(t.agentPreset)
+        const presetTitle = agentPreset && agentPreset !== 'none'
+          ? (getAgentPreset(agentPreset)?.name || t.title || 'Terminal')
           : (t.title || 'Terminal')
         return {
           id: t.id || '',
           workspaceId: t.workspaceId || '',
           type: 'terminal' as const,
-          agentPreset: t.agentPreset,
+          agentPreset,
           title: presetTitle,
           alias: t.alias,
           cwd,
           sdkSessionId: t.sdkSessionId,
           model: t.model,
-          agentParams: normalizeAgentParams(t.agentPreset, t.agentParams),
+          agentParams: normalizeAgentParams(agentPreset, t.agentParams),
           sessionMeta: t.sessionMeta,
           procfilePath: t.procfilePath,
           scrollbackBuffer: [],
@@ -697,7 +712,7 @@ class WorkspaceStore {
       this.activeGroup = parsed.activeGroup || null
       this.notify()
     } catch (e) {
-      window.electronAPI?.debug?.log?.(`Failed to parse workspace data: ${e}`)
+      host.debug.log?.(`Failed to parse workspace data: ${e}`)
       console.error('Failed to parse workspace data:', e)
     }
   }

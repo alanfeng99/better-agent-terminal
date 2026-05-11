@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { host } from '../host-api'
 
 interface AgentItem {
   name: string
@@ -27,7 +28,7 @@ export function AgentsPanel({ isVisible, activeSessionId }: AgentsPanelProps) {
     }
 
     const fetchAgents = () => {
-      window.electronAPI.claude.getSupportedAgents(activeSessionId).then(result => {
+      host.claude.getSupportedAgents(activeSessionId).then(result => {
         if (result?.length) {
           setAgents(result)
           if (retryRef.current) { clearInterval(retryRef.current); retryRef.current = null }

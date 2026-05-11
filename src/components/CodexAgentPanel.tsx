@@ -1,3 +1,4 @@
+import { host, isTauri } from '../host-api'
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment, cloneElement, isValidElement } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +15,9 @@ import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
+import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
+import { displayNameForClaudeSelection } from '../utils/claude-model-presets'
+import { CODEX_MODELS, DEFAULT_CODEX_MODEL } from '../utils/codex-models'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
 import { firstMeaningfulLine, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
@@ -21,6 +25,39 @@ import { CodexTodoChecklist } from './CodexTodoChecklist'
 
 // Track sessions that have been started to prevent duplicate calls across StrictMode remounts
 const startedSessions = new Set<string>()
+
+function scheduleAgentMetadataRefresh(callback: () => void): () => void {
+  if (!isTauri()) {
+    callback()
+    return () => {}
+  }
+  const timer = window.setTimeout(callback, 1500)
+  return () => window.clearTimeout(timer)
+}
+
+function waitForTauriAgentListeners(): Promise<void> {
+  if (!isTauri()) return Promise.resolve()
+  return new Promise(resolve => window.setTimeout(resolve, 75))
+}
+
+function displayNameForPanelModel(model?: string): string {
+  const codexModel = CODEX_MODELS.find(m => m.value === model)
+  return codexModel?.displayName || displayNameForClaudeSelection(model)
+}
+
+function resolveCodexModel(saved?: string, fallback?: string): string {
+  if (saved && !saved.startsWith('claude-')) return saved
+  if (fallback && !fallback.startsWith('claude-')) return fallback
+  return DEFAULT_CODEX_MODEL
+}
+
+function formatContextWindowSuffix(displayName: string, contextWindow?: number): string {
+  if (!contextWindow || contextWindow <= 0) return ''
+  const label = contextWindow >= 1000000
+    ? `${Math.round(contextWindow / 1000000)}M`
+    : `${Math.round(contextWindow / 1000)}k`
+  return displayName.toLowerCase().includes(label.toLowerCase()) ? '' : ` (${label})`
+}
 
 function parseGeneratedImageResult(result: unknown): { dataUrl: string; revisedPrompt?: string } | null {
   if (typeof result !== 'string') return null
@@ -85,9 +122,17 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [permissionMode, setPermissionMode] = useState<string>('bypassPermissions')
   const [currentModel, setCurrentModel] = useState<string>(() => {
     const t = workspaceStore.getState().terminals.find(t => t.id === sessionId)
-    if (isCodexSession) return t?.model || settingsStore.getSettings().defaultCodexModel || ''
+    if (isCodexSession) return resolveCodexModel(t?.model, settingsStore.getSettings().defaultCodexModel)
     return t?.model || settingsStore.getSettings().defaultClaudeModel || ''
   })
+  const currentModelLabel = useMemo(() => displayNameForPanelModel(currentModel), [currentModel])
+  const currentModelContextSuffix = useMemo(
+    () => formatContextWindowSuffix(currentModelLabel, sessionMeta?.contextWindow),
+    [currentModelLabel, sessionMeta?.contextWindow],
+  )
+  const currentModelTitle = currentModel
+    ? `${currentModelLabel || currentModel}${currentModelLabel && currentModelLabel !== currentModel ? ` (${currentModel})` : ''}`
+    : '(default)'
   const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
     const value = normalizedAgentParams?.sandboxMode
     return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access'
@@ -160,11 +205,11 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [activePlanFile, planFileShownAt])
 
   const handleSaveGeneratedImage = useCallback(async (image: { dataUrl: string; filename: string }) => {
-    await window.electronAPI.image.saveDataUrl(image.dataUrl, image.filename)
+    await host.image.saveDataUrl(image.dataUrl, image.filename)
   }, [])
   useEffect(() => {
     if (!activePlanFile) { setPlanFileTitle(null); return }
-    window.electronAPI.fs.readFile(activePlanFile).then(r => {
+    host.fs.readFile(activePlanFile).then(r => {
       if (!r.content) return
       const firstLine = r.content.split('\n').find((l: string) => l.trim().length > 0)
       if (firstLine) setPlanFileTitle(firstLine.replace(/^#+\s*/, '').trim())
@@ -240,6 +285,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const streamingThinkingRef = useRef<HTMLPreElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const permissionCardRef = useRef<HTMLDivElement>(null)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
@@ -248,7 +294,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const lastScrollTopRef = useRef(0)
   const userScrollIntentUntilRef = useRef(0)
   const middleMessageScrollRef = useRef<{ startX: number; startY: number; startScrollTop: number; startScrollLeft: number } | null>(null)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; kind: 'messages' } | null>(null)
   const activeTasksRef = useRef<HTMLDivElement>(null)
   const [aboveViewportUserMsgIds, setAboveViewportUserMsgIds] = useState<Set<string>>(new Set())
   const claudeFontSize = useSettings(s => s.fontSize)
@@ -430,7 +476,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     const tasks = allMessages.filter(m => isToolCall(m) && (m.toolName === 'Task' || m.toolName === 'Agent') && m.status === 'running') as ClaudeToolCall[]
     const allTaskTools = allMessages.filter(m => isToolCall(m) && (m.toolName === 'Task' || m.toolName === 'Agent')) as ClaudeToolCall[]
     if (allTaskTools.length > 0) {
-      window.electronAPI.debug.log(`[renderer] activeTasks: ${tasks.length} running / ${allTaskTools.length} total Task/Agent tools (statuses: ${allTaskTools.map(t => `${t.id?.slice(0,8)}=${t.status}`).join(', ')})`)
+      host.debug.log(`[renderer] activeTasks: ${tasks.length} running / ${allTaskTools.length} total Task/Agent tools (statuses: ${allTaskTools.map(t => `${t.id?.slice(0,8)}=${t.status}`).join(', ')})`)
     }
     return tasks
   }, [allMessages])
@@ -515,9 +561,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     setMessages(prev => prev.slice(excess))
     archivedCountRef.current += excess
     setHasMoreArchived(true)
-    window.electronAPI.claude.archiveMessages(sessionId, toArchive)
+    host.claude.archiveMessages(sessionId, toArchive)
       .catch((err) => {
-        window.electronAPI?.debug?.log?.('[CodexAgentPanel] archiveMessages failed:', String(err))
+        host.debug.log?.('[CodexAgentPanel] archiveMessages failed:', String(err))
       })
       .finally(() => { archivingRef.current = false })
   }, [messages.length, sessionId])
@@ -529,7 +575,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     const container = messagesContainerRef.current
     const prevScrollHeight = container?.scrollHeight ?? 0
     try {
-      const result = await window.electronAPI.claude.loadArchived(sessionId, loadedFromArchiveRef.current, LOAD_BATCH)
+      const result = await host.claude.loadArchived(sessionId, loadedFromArchiveRef.current, LOAD_BATCH)
       if (result.messages.length > 0) {
         loadedFromArchiveRef.current += result.messages.length
         setLoadedArchive(prev => [...(result.messages as MessageItem[]), ...prev])
@@ -568,23 +614,23 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
   // Subscribe to IPC events
   useEffect(() => {
-    const api = window.electronAPI.claude
-    const tag = `[Claude:${sessionId.slice(0, 8)}]`
-    window.electronAPI?.debug?.log(`${tag} subscribing to IPC events`)
+    const api = host.claude
+    const tag = `[Codex:${sessionId.slice(0, 8)}]`
+    host.debug.log(`${tag} subscribing to IPC events`)
 
     const unsubs = [
       api.onMessage((sid: string, msg: unknown) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onMessage sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        console.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
+        host.debug.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
         workspaceStore.updateTerminalActivity(sessionId)
         const message = msg as ClaudeMessage
         // On restart, sys-init message arrives again — reset messages
         // But skip reset if history will be loaded (resume flow)
         if (message.id === `sys-init-${sessionId}`) {
-          window.electronAPI?.debug?.log(`${tag} sys-init historyLoaded=${historyLoadedRef.current}`)
+          host.debug.log(`${tag} sys-init historyLoaded=${historyLoadedRef.current}`)
           if (!historyLoadedRef.current) {
             setMessages([message])
             // Clear archive on fresh session start
@@ -592,7 +638,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             archivedCountRef.current = 0
             loadedFromArchiveRef.current = 0
             setHasMoreArchived(false)
-            window.electronAPI.claude.clearArchive(sessionId).catch(() => {})
+            host.claude.clearArchive(sessionId).catch(() => {})
           }
           setStreamingText('')
           setStreamingThinking('')
@@ -671,7 +717,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (sid !== sessionId) return
         workspaceStore.updateTerminalActivity(sessionId)
         const toolCall = tool as ClaudeToolCall
-        window.electronAPI.debug.log(`[renderer] onToolUse name=${toolCall.toolName} id=${toolCall.id?.slice(0, 12)} status=${toolCall.status} parentToolUseId=${toolCall.parentToolUseId || 'none'}`)
+        host.debug.log(`[renderer] onToolUse name=${toolCall.toolName} id=${toolCall.id?.slice(0, 12)} status=${toolCall.status} parentToolUseId=${toolCall.parentToolUseId || 'none'}`)
         // Route subagent tool calls to separate bucket
         if (toolCall.parentToolUseId) {
           const bucket = subagentMessagesRef.current.get(toolCall.parentToolUseId) || []
@@ -706,9 +752,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (sid !== sessionId) return
         workspaceStore.updateTerminalActivity(sessionId)
         const { id, ...updates } = result as { id: string; status: string; result?: string; description?: string }
-        window.electronAPI.debug.log(`[renderer] onToolResult id=${id?.slice(0, 24)} status=${updates.status || 'unknown'} hasResult=${updates.result ? 'yes' : 'no'}`)
+        host.debug.log(`[renderer] onToolResult id=${id?.slice(0, 24)} status=${updates.status || 'unknown'} hasResult=${updates.result ? 'yes' : 'no'}`)
         if ((updates as { description?: string }).description) {
-          window.electronAPI.debug.log(`[renderer] onToolResult description update id=${id} desc=${(updates as { description?: string }).description}`)
+          host.debug.log(`[renderer] onToolResult description update id=${id} desc=${(updates as { description?: string }).description}`)
         }
         // Check if tool exists in any subagent bucket
         let foundInSubagent = false
@@ -757,7 +803,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           }])
           setIsStreaming(true)
           setTimeout(() => {
-            window.electronAPI.claude.sendMessage(sessionId, acPrompt)
+            host.claude.sendMessage(sessionId, acPrompt)
           }, 150)
         }
       }),
@@ -774,9 +820,17 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         const rd = resultData as { result?: string; subtype?: string } | undefined
         if (rd?.result && rd.subtype === 'success') {
           setMessages(prev => {
-            // Skip if any assistant message contains the result text (already shown via onMessage)
+            // Skip only when this turn already produced the same assistant
+            // text via onMessage. Repeated legitimate replies like
+            // "ping" -> "pong" must still append one result per turn.
             const resultText = rd.result!
-            const alreadyShown = prev.some(m =>
+            const currentTurnIdx = currentTurnMsgIdRef.current
+              ? prev.findIndex(m => m.id === currentTurnMsgIdRef.current)
+              : -1
+            const candidates = currentTurnIdx >= 0
+              ? prev.slice(currentTurnIdx + 1)
+              : prev.filter(m => 'timestamp' in m && Date.now() - (m as ClaudeMessage).timestamp < 3000)
+            const alreadyShown = candidates.some(m =>
               'role' in m && m.role === 'assistant' && typeof m.content === 'string' &&
               (m.content === resultText || m.content.includes(resultText) || resultText.includes(m.content))
             )
@@ -832,13 +886,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       }),
 
       api.onStatus((sid: string, meta: unknown) => {
-        const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+        const dlog = (...args: unknown[]) => host.debug.log(...args)
         if (sid !== sessionId) {
           dlog(`${tag} SKIP onStatus sid=${sid.slice(0, 8)} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        dlog(`${tag} onStatus sdkSessionId=${((meta as SessionMeta).sdkSessionId || '').slice(0, 8)}`)
-        const m = meta as SessionMeta
+        dlog(`${tag} onStatus sdkSessionId=${((meta as unknown as SessionMeta).sdkSessionId || '').slice(0, 8)}`)
+        const m = meta as unknown as SessionMeta
         setSessionMeta(m)
         // Track cache efficiency history (only push when values change)
         if (m.inputTokens > 0 && m.cacheReadTokens !== undefined) {
@@ -887,6 +941,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (m.sdkSessionId) {
           setHasSdkSession(true)
           workspaceStore.setTerminalSdkSessionId(sessionId, m.sdkSessionId)
+        } else if (isCodexSession && Object.prototype.hasOwnProperty.call(m, 'sdkSessionId')) {
+          setHasSdkSession(false)
+          workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
         }
       }),
 
@@ -940,10 +997,10 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
       api.onHistory((sid: string, items: unknown[]) => {
         if (sid !== sessionId) {
-          console.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
+          host.debug.log(`${tag} SKIP onHistory sid=${sid.slice(0, 8)} items=${(items as unknown[]).length} (mine=${sessionId.slice(0, 8)})`)
           return
         }
-        const dlog2 = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+        const dlog2 = (...args: unknown[]) => host.debug.log(...args)
         dlog2(`${tag} onHistory items=${(items as unknown[]).length} pendingPromptSent=${pendingPromptSentRef.current}`)
         historyLoadedRef.current = true
         setIsResumingHistory(false)
@@ -982,7 +1039,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         archivedCountRef.current = 0
         loadedFromArchiveRef.current = 0
         setHasMoreArchived(false)
-        window.electronAPI.claude.clearArchive(sessionId).catch(() => {})
+        host.claude.clearArchive(sessionId).catch(() => {})
         setStreamingText('')
         setStreamingThinking('')
 
@@ -993,7 +1050,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           const prompt = t.pendingPrompt || ''
           const images = t.pendingImages
           workspaceStore.setTerminalPendingPrompt(sessionId, '')
-          window.electronAPI?.debug?.log(`${tag} onHistory AUTO-SENDING pending prompt: "${prompt}" images=${images?.length ?? 0}`)
+          host.debug.log(`${tag} onHistory AUTO-SENDING pending prompt: "${prompt}" images=${images?.length ?? 0}`)
           // Set history + user message together so it doesn't get overwritten
           setMessages([...historyItems, {
             id: `user-fork-${Date.now()}`,
@@ -1004,7 +1061,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           }])
           scrollToBottomAfterRender()
           setIsStreaming(true)
-          window.electronAPI.claude.sendMessage(sessionId, prompt, images)
+          host.claude.sendMessage(sessionId, prompt, images)
         } else {
           dlog2(`${tag} onHistory setting messages (history only, no pending prompt)`)
           setMessages(historyItems)
@@ -1036,7 +1093,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     ]
 
     return () => {
-      console.log(`${tag} unsubscribing IPC events`)
+      host.debug.log(`${tag} unsubscribing IPC events`)
       unsubs.forEach(unsub => unsub())
     }
   }, [sessionId, isCodexSession])
@@ -1044,8 +1101,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   // Start session on mount (guarded against StrictMode double-mount)
   // If a saved sdkSessionId exists (from a previous /resume), auto-resume that session
   useEffect(() => {
-    const stag = `[Claude:${sessionId.slice(0, 8)}]`
-    const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+    const stag = `[Codex:${sessionId.slice(0, 8)}]`
+    const dlog = (...args: unknown[]) => host.debug.log(...args)
     let cancelled = false
     dlog(`${stag} mount effect: startedRef=${sessionStartedRef.current} inSet=${startedSessions.has(sessionId)}`)
     if (!sessionStartedRef.current && !startedSessions.has(sessionId)) {
@@ -1053,6 +1110,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       startedSessions.add(sessionId)
 
       ;(async () => {
+        await waitForTauriAgentListeners()
+        if (cancelled) return
         const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
         const savedSdkSessionId = terminal?.sdkSessionId
         const savedModel = terminal?.model
@@ -1062,7 +1121,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         dlog(`${stag} sdkSessionId=${savedSdkSessionId?.slice(0, 8)} pendingPrompt="${terminal?.pendingPrompt || ''}" apiVersion=${apiVersion}`)
 
         const effectiveModel = isCodexSession
-          ? (savedModel || globalSettings.defaultCodexModel || '')
+          ? resolveCodexModel(savedModel, globalSettings.defaultCodexModel)
           : (savedModel || globalSettings.defaultClaudeModel || '')
         if (effectiveModel) setCurrentModel(effectiveModel)
 
@@ -1071,7 +1130,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           : (globalSettings.defaultEffort || 'high')
         if (!isCodexSession) setEffortLevel(effectiveEffort)
 
-        const existingState = await window.electronAPI.claude.getSessionState(sessionId).catch(() => null)
+        const existingState = await host.claude.getSessionState(sessionId).catch(() => null)
         if (cancelled) return
         if (existingState) {
           historyLoadedRef.current = true
@@ -1079,20 +1138,23 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           setIsStreaming(!!existingState.isStreaming)
           setStreamingText(existingState.streamingText || '')
           setStreamingThinking(existingState.streamingThinking || '')
-          const meta = await window.electronAPI.claude.getSessionMeta(sessionId).catch(() => null)
-          if (!cancelled && meta) setSessionMeta(meta as SessionMeta)
-          return
+          const meta = await host.claude.getSessionMeta(sessionId).catch(() => null)
+          if (!cancelled && meta) setSessionMeta(meta as unknown as SessionMeta)
+          if (!isTauri() || !isCodexSession) {
+            return
+          }
+          dlog(`${stag} HYDRATED existing state; binding Tauri Codex runtime`)
         }
 
         if (savedSdkSessionId) {
           dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
           historyLoadedRef.current = true
-          window.electronAPI.claude.resumeSession(sessionId, savedSdkSessionId, cwd, savedModel, apiVersion,
+          host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, effectiveModel || savedModel, apiVersion,
             useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset,
-            codexSandboxMode, codexApprovalPolicy)
+            codexSandboxMode, codexApprovalPolicy, permissionMode, effectiveEffort as EffortLevel)
         } else {
           dlog(`${stag} FRESH startSession`)
-          window.electronAPI.claude.startSession(sessionId, {
+          host.claude.startSession(sessionId, {
             cwd, permissionMode, model: effectiveModel || undefined,
             effort: effectiveEffort as EffortLevel,
             apiVersion,
@@ -1112,11 +1174,11 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   // Refresh session metadata when panel becomes active (fixes stale display after window switch)
   useEffect(() => {
     if (isActive) {
-      window.electronAPI.claude.getSessionMeta(sessionId).then(meta => {
+      host.claude.getSessionMeta(sessionId).then(meta => {
         if (meta) {
-          setSessionMeta(meta as SessionMeta)
-          if ((meta as SessionMeta).model) {
-            const nextModel = (meta as SessionMeta).model!
+          setSessionMeta(meta as unknown as SessionMeta)
+          if ((meta as unknown as SessionMeta).model) {
+            const nextModel = (meta as unknown as SessionMeta).model!
             setCurrentModel(prev => isCodexSession ? nextModel : (prev || nextModel))
             if (isCodexSession) {
               workspaceStore.updateTerminalModel(sessionId, nextModel)
@@ -1130,7 +1192,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   // Fetch supported models on demand when model list is opened (no session required)
   useEffect(() => {
     if (showModelList && availableModels.length === 0) {
-      window.electronAPI.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+      host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
         if (models && models.length > 0) setAvailableModels(models)
       }).catch(() => {})
     }
@@ -1144,7 +1206,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   useEffect(() => {
     if (isCodexSession) return
     const handler = () => {
-      window.electronAPI.claude.getAccountInfo(sessionId).then(info => {
+      host.claude.getAccountInfo(sessionId).then(info => {
         if (info) setAccountInfo(info)
       }).catch(() => {})
     }
@@ -1153,35 +1215,67 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [sessionId, isCodexSession])
 
   useEffect(() => {
-    if (sessionMeta?.sdkSessionId && availableModels.length === 0) {
-      window.electronAPI.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+    if (!(sessionMeta?.sdkSessionId && availableModels.length === 0)) return
+    let cancelled = false
+    const cancelRefresh = scheduleAgentMetadataRefresh(() => {
+      host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+        if (cancelled) return
         if (models && models.length > 0) {
           setAvailableModels(models)
         }
       }).catch(() => {})
       if (!isCodexSession) {
-        window.electronAPI.claude.getAccountInfo(sessionId).then(info => {
+        host.claude.getAccountInfo(sessionId).then(info => {
+          if (cancelled) return
           if (info) setAccountInfo(info)
         }).catch(() => {})
-        window.electronAPI.claude.getSupportedCommands(sessionId).then((cmds: SlashCommandInfo[]) => {
+        host.claude.getSupportedCommands(sessionId).then((cmds: SlashCommandInfo[]) => {
+          if (cancelled) return
           if (cmds && cmds.length > 0) {
             setSlashCommands(cmds)
             window.dispatchEvent(new CustomEvent('claude-skills-updated', { detail: { sessionId, commands: cmds } }))
           }
         }).catch(() => {})
-        window.electronAPI.claude.getSupportedAgents(sessionId).then((agentList) => {
+        host.claude.getSupportedAgents(sessionId).then((agentList) => {
+          if (cancelled) return
           if (agentList && agentList.length > 0) {
             window.dispatchEvent(new CustomEvent('claude-agents-updated', { detail: { sessionId, agents: agentList } }))
           }
         }).catch(() => {})
       }
+    })
+    return () => {
+      cancelled = true
+      cancelRefresh()
     }
   }, [sessionId, sessionMeta?.sdkSessionId, availableModels.length, isCodexSession])
 
-  // Fetch git branch on mount and when cwd changes
+  // Fetch git branch on mount/cwd changes, and keep active sessions fresh when
+  // the branch changes outside the running renderer session.
   useEffect(() => {
-    window.electronAPI.git.getBranch(cwd).then(branch => setGitBranch(branch)).catch(() => setGitBranch(null))
-  }, [cwd])
+    let disposed = false
+    const refreshGitBranch = () => {
+      host.git.getBranch(cwd)
+        .then(branch => { if (!disposed) setGitBranch(branch) })
+        .catch(() => { if (!disposed) setGitBranch(null) })
+    }
+    refreshGitBranch()
+    if (!isActive) return () => { disposed = true }
+
+    const interval = window.setInterval(refreshGitBranch, 5000)
+    const handleFocus = () => refreshGitBranch()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshGitBranch()
+    }
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      disposed = true
+      window.clearInterval(interval)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [cwd, isActive])
 
   // Fetch subagent messages from SDK when task modal opens (for completed tasks with no streamed messages)
   useEffect(() => {
@@ -1190,7 +1284,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     if (existing && existing.length > 0) return // already have streamed messages
     const parentTask = allMessages.find(m => isToolCall(m) && m.id === taskModal.taskId) as ClaudeToolCall | undefined
     if (parentTask?.status === 'running') return // still streaming, don't fetch
-    window.electronAPI.claude.fetchSubagentMessages(sessionId, taskModal.taskId).then((msgs: unknown[]) => {
+    host.claude.fetchSubagentMessages(sessionId, taskModal.taskId).then((msgs: unknown[]) => {
       if (msgs && msgs.length > 0) {
         subagentMessagesRef.current.set(taskModal.taskId, msgs as MessageItem[])
         setTaskModalTick(t => t + 1)
@@ -1238,7 +1332,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       return
     }
     const timer = setTimeout(() => {
-      window.electronAPI.fs.search(cwd, filePickerQuery.trim()).then((results: { name: string; path: string; isDirectory: boolean }[]) => {
+      host.fs.search(cwd, filePickerQuery.trim()).then((results: { name: string; path: string; isDirectory: boolean }[]) => {
         setFilePickerResults(results || [])
         setFilePickerIndex(0)
       }).catch(() => {
@@ -1257,23 +1351,23 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
   const handleModelSelect = useCallback(async (modelValue: string) => {
     if (isCodexSession && modelValue !== currentModel) {
-      const ok = await window.electronAPI.dialog.confirm(t('claude.codexModelChangeWarning'))
+      const ok = await host.dialog.confirm(t('claude.codexModelChangeWarning'))
       if (!ok) return
     }
     // V2: warn that model change will recreate session and re-apply context
     if (!isCodexSession && isV2Session && modelValue !== currentModel) {
-      const ok = await window.electronAPI.dialog.confirm(t('claude.v2ModelChangeWarning'))
+      const ok = await host.dialog.confirm(t('claude.v2ModelChangeWarning'))
       if (!ok) return
     }
     // V1: warn about 1M model cache inefficiency
     if (!isCodexSession && !isV2Session && modelValue.includes('[1m]') && modelValue !== currentModel) {
-      const ok = await window.electronAPI.dialog.confirm(t('claude.v1Model1mWarning'))
+      const ok = await host.dialog.confirm(t('claude.v1Model1mWarning'))
       if (!ok) return
     }
     setShowModelList(false)
     setCurrentModel(modelValue)
     setTimeout(() => textareaRef.current?.focus(), 0)
-    await window.electronAPI.claude.setModel(sessionId, modelValue, settingsStore.getSettings().autoCompactWindow)
+    await host.claude.setModel(sessionId, modelValue, settingsStore.getSettings().autoCompactWindow)
     workspaceStore.updateTerminalModel(sessionId, modelValue)
     if (isCodexSession && modelValue !== currentModel) {
       setMessages([])
@@ -1287,12 +1381,12 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       cacheHistoryRef.current = []
       lastResultRef.current = null
       setCacheCountdown(null)
-      await window.electronAPI.claude.resetSession(sessionId)
+      await host.claude.resetSession(sessionId)
     }
   }, [sessionId, isCodexSession, isV2Session, currentModel, t])
 
   const handleResumeSelect = useCallback(async (sdkSessionId: string) => {
-    console.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
+    host.debug.log(`[Codex:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
     setShowResumeList(false)
     setResumeSessions([])
     // Clear UI immediately so user sees the switch
@@ -1312,30 +1406,33 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     historyLoadedRef.current = true
     const apiVersion = isV2Session ? 'v2' as const : 'v1' as const
     const resumeUsesWorktree = terminal?.agentPreset === 'codex-agent-worktree' || !!terminal?.worktreePath
-    await window.electronAPI.claude.resumeSession(
+    const resumeModel = currentModel || settingsStore.getSettings().defaultCodexModel || DEFAULT_CODEX_MODEL
+    await host.claude.resumeSession(
       sessionId,
       sdkSessionId,
       cwd,
-      undefined,
+      resumeModel,
       apiVersion,
       resumeUsesWorktree ? true : undefined,
       terminal?.worktreePath,
       terminal?.worktreeBranch,
       terminal?.agentPreset,
       codexSandboxMode,
-      codexApprovalPolicy
+      codexApprovalPolicy,
+      permissionMode,
+      effortLevel as EffortLevel
     )
     workspaceStore.setTerminalSdkSessionId(sessionId, sdkSessionId)
-  }, [sessionId, cwd, isV2Session])
+  }, [sessionId, cwd, isV2Session, terminal?.agentPreset, terminal?.worktreePath, terminal?.worktreeBranch, currentModel, codexSandboxMode, codexApprovalPolicy, permissionMode, effortLevel])
 
   const handleForkSession = useCallback(async () => {
-    const dlog = (...args: unknown[]) => window.electronAPI?.debug?.log(...args)
+    const dlog = (...args: unknown[]) => host.debug.log(...args)
     const tag = `[Fork:${sessionId.slice(0, 8)}]`
     dlog(`${tag} start hasSdkSession=${hasSdkSession} workspaceId=${workspaceId}`)
     if (!hasSdkSession || !workspaceId) return
     let result: { newSdkSessionId: string } | null = null
     try {
-      result = await window.electronAPI.claude.forkSession(sessionId)
+      result = await host.claude.forkSession(sessionId)
     } catch (e) {
       dlog(`${tag} forkSession threw:`, e)
       alert('Fork failed: ' + (e instanceof Error ? e.message : String(e)))
@@ -1382,7 +1479,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
     let result: { newSdkSessionId: string; removedPromptCount: number } | { error: string }
     try {
-      result = await window.electronAPI.claude.rewindToPrompt(sessionId, promptIndex)
+      result = await host.claude.rewindToPrompt(sessionId, promptIndex)
     } catch (e) {
       alert('Rewind failed: ' + (e instanceof Error ? e.message : String(e)))
       return
@@ -1505,7 +1602,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       setResumeLoading(true)
       setShowResumeList(true)
       try {
-        const sessions = await window.electronAPI.claude.listSessions(cwd)
+        const sessions = await host.claude.listSessions(cwd, 'codex')
         setResumeSessions(sessions || [])
       } catch {
         setResumeSessions([])
@@ -1527,7 +1624,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       clearInput()
       // User explicitly stopping — also halt any pending auto-continue.
       autoContinueRef.current = { ...autoContinueRef.current, enabled: false, used: 0 }
-      window.electronAPI.claude.abortSession(sessionId)
+      host.claude.abortSession(sessionId)
       setIsStreaming(false)
       setIsInterrupted(false)
       setStreamingText('')
@@ -1564,7 +1661,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       cacheHistoryRef.current = []
       lastResultRef.current = null
       setCacheCountdown(null)
-      await window.electronAPI.claude.resetSession(sessionId)
+      await host.claude.resetSession(sessionId)
       return
     }
 
@@ -1575,9 +1672,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         id: `sys-login-${Date.now()}`, sessionId, role: 'system' as const,
         content: 'Opening Claude login...', timestamp: Date.now(),
       }])
-      const result = await window.electronAPI.claude.authLogin()
+      const result = await host.claude.authLogin()
       if (result.success) {
-        const status = await window.electronAPI.claude.authStatus()
+        const status = await host.claude.authStatus()
         setMessages(prev => [...prev, {
           id: `sys-login-ok-${Date.now()}`, sessionId, role: 'system' as const,
           content: status?.email
@@ -1587,7 +1684,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         }])
         // Auto-register account when account switching is enabled
         try {
-          await window.electronAPI.claude.accountImportCurrent()
+          await host.claude.accountImportCurrent()
         } catch { /* ignore if not available */ }
       } else {
         setMessages(prev => [...prev, {
@@ -1601,7 +1698,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     // Intercept /logout command
     if (!isCodexSession && trimmed === '/logout') {
       clearInput()
-      const result = await window.electronAPI.claude.authLogout()
+      const result = await host.claude.authLogout()
       setMessages(prev => [...prev, {
         id: `sys-logout-${Date.now()}`, sessionId, role: 'system' as const,
         content: result.success ? 'Logged out.' : `Logout failed: ${result.error || 'unknown error'}`,
@@ -1613,7 +1710,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     // Intercept /whoami command — show current auth status
     if (!isCodexSession && trimmed === '/whoami') {
       clearInput()
-      const status = await window.electronAPI.claude.authStatus()
+      const status = await host.claude.authStatus()
       setMessages(prev => [...prev, {
         id: `sys-whoami-${Date.now()}`, sessionId, role: 'system' as const,
         content: status?.loggedIn
@@ -1629,7 +1726,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       const arg = trimmed.slice('/switch'.length).trim()
       clearInput()
       try {
-        const { accounts, activeAccountId } = await window.electronAPI.claude.accountList()
+        const { accounts, activeAccountId } = await host.claude.accountList()
         if (accounts.length === 0) {
           setMessages(prev => [...prev, {
             id: `sys-switch-${Date.now()}`, sessionId, role: 'system' as const,
@@ -1671,7 +1768,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           }])
           return
         }
-        const success = await window.electronAPI.claude.accountSwitch(target.id)
+        const success = await host.claude.accountSwitch(target.id)
         if (success) {
           window.dispatchEvent(new CustomEvent('claude-account-switched'))
           setMessages(prev => [...prev, {
@@ -1702,8 +1799,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       clearInput()
       try {
         const snippets = query
-          ? await window.electronAPI.snippet.search(query)
-          : await window.electronAPI.snippet.getByWorkspace(workspaceId)
+          ? await host.snippet.search(query)
+          : await host.snippet.getByWorkspace(workspaceId)
         const snippetsJsonPath = '~/Library/Application Support/better-agent-terminal/snippets.json'
         const snippetList = snippets.length === 0
           ? 'No snippets exist yet.'
@@ -1733,7 +1830,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         setIsInterrupted(false)
         setStreamingText('')
         setStreamingThinking('')
-        await window.electronAPI.claude.sendMessage(sessionId, contextPrompt)
+        await host.claude.sendMessage(sessionId, contextPrompt)
       } catch {
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
@@ -1752,7 +1849,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       const elapsed = Date.now() - timestamp
       if (totalInput > 150_000 && elapsed > 60 * 60 * 1000) {
         const mins = Math.floor(elapsed / 60000)
-        const ok = await window.electronAPI.dialog.confirm(
+        const ok = await host.dialog.confirm(
           `⚠️ Cache expired\n\nLast turn had ${(totalInput / 1000).toFixed(0)}k input tokens, but ${mins} minutes have passed (cache TTL: 60 min).\n\nThis request will re-process all tokens at full price, which may incur significant costs.\n\nContinue?`
         )
         if (!ok) return
@@ -1803,12 +1900,12 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       }])
     }
 
-    await window.electronAPI.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined)
+    await host.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined)
   }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return
-    window.electronAPI.claude.stopSession(sessionId)
+    host.claude.stopSession(sessionId)
     setIsInterrupted(true)
     setStreamingText('')
     setStreamingThinking('')
@@ -1819,7 +1916,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const handleStop = useCallback(() => {
     // Hard abort — always works, even when frontend state appears idle
     // (backend may still be stuck; this is the user's escape hatch)
-    window.electronAPI.claude.abortSession(sessionId)
+    host.claude.abortSession(sessionId)
     setIsStreaming(false)
     setIsInterrupted(false)
     setStreamingText('')
@@ -1862,7 +1959,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     const idx = availableModes.indexOf(permissionMode as typeof permissionModes[number])
     const nextMode = availableModes[(idx + 1) % availableModes.length]
     setPermissionMode(nextMode)
-    await window.electronAPI.claude.setPermissionMode(sessionId, nextMode)
+    await host.claude.setPermissionMode(sessionId, nextMode)
   }, [sessionId, permissionMode])
 
   useEffect(() => { showSlashMenuRef.current = showSlashMenu }, [showSlashMenu])
@@ -2023,7 +2120,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     const idx = availableModels.findIndex(m => m.value === currentModel)
     const next = availableModels[(idx + 1) % availableModels.length]
     setCurrentModel(next.value)
-    await window.electronAPI.claude.setModel(sessionId, next.value, settingsStore.getSettings().autoCompactWindow)
+    await host.claude.setModel(sessionId, next.value, settingsStore.getSettings().autoCompactWindow)
     workspaceStore.updateTerminalModel(sessionId, next.value)
   }, [sessionId, currentModel, availableModels])
 
@@ -2033,21 +2130,21 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     if (isCodexSession) {
       workspaceStore.updateTerminalAgentParams(sessionId, { effortLevel: next })
     }
-    await window.electronAPI.claude.setEffort(sessionId, next)
+    await host.claude.setEffort(sessionId, next)
   }, [sessionId, isCodexSession])
 
   const handleCodexSandboxModeChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = e.target.value as 'read-only' | 'workspace-write' | 'danger-full-access'
     setCodexSandboxMode(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { sandboxMode: next })
-    await window.electronAPI.claude.setCodexSandboxMode(sessionId, next)
+    await host.claude.setCodexSandboxMode(sessionId, next)
   }, [sessionId])
 
   const handleCodexApprovalPolicyChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const next = e.target.value as 'untrusted' | 'on-request' | 'never'
     setCodexApprovalPolicy(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { approvalPolicy: next })
-    await window.electronAPI.claude.setCodexApprovalPolicy(sessionId, next)
+    await host.claude.setCodexApprovalPolicy(sessionId, next)
   }, [sessionId])
 
   const showDontAskAgain = (pendingPermission?.suggestions?.length ?? 0) > 0
@@ -2079,20 +2176,20 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       : (['yes', 'no', 'custom'] as const)[choice]
 
     if (action === 'yes') {
-      window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+      host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
         behavior: 'allow',
         updatedInput: pendingPermission.input,
       })
       setPendingPermission(null)
     } else if (action === 'dontAskAgain') {
       if (pendingPermission.toolName === 'ExitPlanMode') {
-        window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+        host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
           behavior: 'allow',
           updatedInput: pendingPermission.input,
           dontAskAgain: true,
         })
       } else {
-        window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+        host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
           behavior: 'allow',
           updatedInput: pendingPermission.input,
           updatedPermissions: pendingPermission.suggestions,
@@ -2107,7 +2204,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         }
         return m
       }))
-      window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+      host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
         behavior: 'deny',
         message: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
       })
@@ -2122,7 +2219,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         }
         return m
       }))
-      window.electronAPI.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
+      host.claude.resolvePermission(sessionId, pendingPermission.toolUseId, {
         behavior: 'deny',
         message: msg,
       })
@@ -2134,7 +2231,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   // Read plan file content when ExitPlanMode permission appears
   useEffect(() => {
     if (pendingPermission?.toolName === 'ExitPlanMode' && pendingPermission.input.planFilePath) {
-      window.electronAPI.fs.readFile(String(pendingPermission.input.planFilePath)).then(r => {
+      host.fs.readFile(String(pendingPermission.input.planFilePath)).then(r => {
         if (r.content) setPlanFileContent(r.content)
       }).catch(() => {})
     } else {
@@ -2287,7 +2384,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         finalAnswers[key] = text.trim()
       }
     }
-    window.electronAPI.claude.resolveAskUser(sessionId, pendingQuestion.toolUseId, finalAnswers)
+    host.claude.resolveAskUser(sessionId, pendingQuestion.toolUseId, finalAnswers)
     setPendingQuestion(null)
     setAskAnswers({})
     setAskOtherText({})
@@ -2306,7 +2403,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     const current = attachedImages
     if (current.length >= MAX_IMAGES || current.some(img => img.path === filePath)) return
     try {
-      const dataUrl = await window.electronAPI.image.readAsDataUrl(filePath)
+      const dataUrl = await host.image.readAsDataUrl(filePath)
       setAttachedImages(prev => {
         if (prev.length >= MAX_IMAGES) return prev
         if (prev.some(img => img.path === filePath)) return prev
@@ -2347,7 +2444,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           return
         }
         if (!isRemoteConnected) {
-          const filePath = await window.electronAPI.clipboard.saveImage()
+          const filePath = await host.clipboard.saveImage()
           if (filePath) {
             await addImageByPath(filePath)
           }
@@ -2372,18 +2469,25 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragOver(false)
+    // Under Tauri, OS file drops are already handled by the
+    // listenTauriNativeDrop effect below. The DOM drop also fires but
+    // File.path is undefined; suppress to avoid the spurious "needs
+    // the host to expose paths" alert. Browser-internal image drags
+    // (no 'Files' type) still flow through this handler.
+    if (isTauri() && e.dataTransfer.types.includes('Files')) return
     for (const file of e.dataTransfer.files) {
-      if (isRemoteConnected) {
+      const filePath = isRemoteConnected ? null : host.shell.getPathForFile(file)
+      if (!filePath) {
         if (file.type.startsWith('image/')) {
           const dataUrl = await readFileAsDataUrl(file)
           addImageDataUrl(file.name || filenameForPastedImage(file), dataUrl)
-        } else {
+        } else if (isRemoteConnected) {
           window.alert('Remote sessions can only attach local dropped images. File paths must exist on the host.')
+        } else {
+          window.alert('Drag-drop of non-image files needs the host to expose paths; not yet wired in this build.')
         }
         continue
       }
-      const filePath = window.electronAPI.shell.getPathForFile(file)
-      if (!filePath) continue
       if (file.type.startsWith('image/')) {
         await addImageByPath(filePath)
       } else {
@@ -2393,6 +2497,37 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [addImageByPath, addImageDataUrl, addFileByPath, isRemoteConnected])
 
   const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'])
+
+  const handleNativeDropPaths = useCallback(async (paths: string[]) => {
+    if (isRemoteConnected) {
+      window.alert('Remote sessions can only attach local dropped images. File paths must exist on the host.')
+      return
+    }
+    for (const filePath of paths) {
+      const extensionIndex = filePath.lastIndexOf('.')
+      const ext = extensionIndex >= 0 ? filePath.slice(extensionIndex).toLowerCase() : ''
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        await addImageByPath(filePath)
+      } else {
+        addFileByPath(filePath)
+      }
+    }
+  }, [addImageByPath, addFileByPath, isRemoteConnected])
+
+  useEffect(() => {
+    return listenTauriNativeDrop((detail) => {
+      if (!isTauriNativeDropInside(detail, panelRef.current)) {
+        if (detail.type === 'drop' || detail.type === 'leave') setIsDragOver(false)
+        return
+      }
+      if (detail.type === 'enter' || detail.type === 'over') {
+        setIsDragOver(true)
+        return
+      }
+      setIsDragOver(false)
+      if (detail.type === 'drop') void handleNativeDropPaths(detail.paths)
+    })
+  }, [handleNativeDropPaths])
 
   const handleSelectAttachments = useCallback(() => {
     setFilePickerMode('attach')
@@ -2541,7 +2676,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
               {planPath && (
                 <div className="claude-plan-block">
                   <div className="claude-plan-open-btn" onClick={() => {
-                    window.electronAPI.fs.readFile(planPath).then(r => {
+                    host.fs.readFile(planPath).then(r => {
                       if (r.content) setContentModal({ title: 'Plan', content: r.content, markdown: true })
                     }).catch(() => {})
                   }}>
@@ -2628,7 +2763,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                 <div className="claude-task-actions">
                   <button className="claude-task-stop-btn" onClick={(e) => {
                     e.stopPropagation()
-                    window.electronAPI.claude.stopTask(sessionId, item.id)
+                    host.claude.stopTask(sessionId, item.id)
                   }}>{t('claude.stop')}</button>
                 </div>
               )}
@@ -3128,6 +3263,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
   return (
     <div
+      ref={panelRef}
       className="claude-agent-panel codex-agent-panel"
       style={{
         '--claude-font-size': `${Math.max(11, claudeFontSize - 1)}px`,
@@ -3168,7 +3304,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           ref={activeTasksRef}
           onContextMenu={(e) => {
             e.preventDefault()
-            setContextMenu({ x: e.clientX, y: e.clientY })
+            setContextMenu({ x: e.clientX, y: e.clientY, kind: 'messages' })
           }}
         >
           {activeTasks.map(task => {
@@ -3193,7 +3329,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                 {Boolean(task.input.run_in_background) && <span className="claude-task-tag">{t('claude.bg')}</span>}
                 <button className="claude-task-stop-btn" onClick={(e) => {
                   e.stopPropagation()
-                  window.electronAPI.claude.stopTask(sessionId, task.id)
+                  host.claude.stopTask(sessionId, task.id)
                 }}>Stop</button>
               </div>
             )
@@ -3210,7 +3346,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         onAuxClick={handleMessagesAuxClick}
         onContextMenu={(e) => {
           e.preventDefault()
-          setContextMenu({ x: e.clientX, y: e.clientY })
+          setContextMenu({ x: e.clientX, y: e.clientY, kind: 'messages' })
         }}
       >
         {(hasMoreArchived || isLoadingMore) && (
@@ -3419,7 +3555,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       )}
 
       {/* Resume Session List */}
-      {!isCodexSession && showResumeList && (
+      {showResumeList && (
         <div className="claude-resume-card">
           <div className="claude-permission-title">{t('claude.resumeSession')}</div>
           {resumeLoading ? (
@@ -3574,10 +3710,10 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       )}
 
       {/* Plan file bar — debug only */}
-      {window.electronAPI?.debug?.isDebugMode && activePlanFile && dismissedPlanFileRef.current !== activePlanFile && (
+      {host.debug.isDebugMode && activePlanFile && dismissedPlanFileRef.current !== activePlanFile && (
         <div className="claude-plan-file-bar">
           <span className="claude-plan-file-label" style={{ cursor: 'pointer' }} onClick={() => {
-            window.electronAPI.fs.readFile(activePlanFile).then(r => {
+            host.fs.readFile(activePlanFile).then(r => {
               if (r.content) setContentModal({ title: 'Plan', content: r.content, markdown: true })
             }).catch(() => {})
           }} title={activePlanFile}>
@@ -3601,7 +3737,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <button
               className="claude-worktree-btn"
               onClick={async () => {
-                const status = await window.electronAPI.claude.getWorktreeStatus(sessionId)
+                const status = await host.claude.getWorktreeStatus(sessionId)
                 if (status?.diff) {
                   // Show diff as a system message
                   setMessages(prev => [...prev, {
@@ -3626,18 +3762,18 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <button
               className="claude-worktree-btn"
               onClick={async () => {
-                if (!await window.electronAPI.dialog.confirm(`Merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}?`)) return
+                if (!await host.dialog.confirm(`Merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}?`)) return
                 const cmd = `Commit all current changes with a descriptive message, then use host folder (${worktreeInfo.gitRoot}) to merge worktree folder (${worktreeInfo.worktreePath}). Steps:\n1. Stage and commit all changes in the worktree folder with a meaningful commit message\n2. Switch to host folder (${worktreeInfo.gitRoot}) and merge the worktree branch (${worktreeInfo.branchName}) into ${worktreeInfo.sourceBranch}\nDo not push to remote. Do not create a PR.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd)
+                await host.claude.sendMessage(sessionId, cmd)
               }}
               title={`Commit and merge ${worktreeInfo.branchName} into ${worktreeInfo.sourceBranch}`}
             >Merge to Host</button>
             <button
               className="claude-worktree-btn"
               onClick={async () => {
-                if (!await window.electronAPI.dialog.confirm(`Push ${worktreeInfo.branchName} directly to origin/main?`)) return
+                if (!await host.dialog.confirm(`Push ${worktreeInfo.branchName} directly to origin/main?`)) return
                 const cmd = `Commit all current changes with a descriptive message, then push directly to origin/main. Steps:\n1. Stage and commit all changes with a meaningful commit message\n2. Pull origin/main and resolve any conflicts if needed\n3. Push to origin/main\nDo not create a PR. Do not ask for confirmation.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd)
+                await host.claude.sendMessage(sessionId, cmd)
               }}
               title="Commit, pull, resolve conflicts, and push to origin/main"
             >Push to Main</button>
@@ -3645,7 +3781,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
               className="claude-worktree-btn"
               onClick={async () => {
                 const cmd = `Commit all current changes and create or update a pull request to origin/main. Steps:\n1. Stage and commit all changes with a meaningful commit message\n2. Push this branch to origin\n3. Check if a PR from this branch to main already exists (gh pr list --head ${worktreeInfo.branchName})\n4. If a PR exists: update it with the latest changes summary (gh pr edit)\n5. If no PR exists: create one with gh pr create, include a summary of all changes in the description\nDo not merge the PR.`
-                await window.electronAPI.claude.sendMessage(sessionId, cmd)
+                await host.claude.sendMessage(sessionId, cmd)
               }}
               title="Commit, push branch, and create or update PR to main"
             >Create PR</button>
@@ -3785,9 +3921,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
               <span
                 className="claude-status-btn"
                 onClick={() => setShowModelList(true)}
-                title={`Model: ${currentModel || '(default)'} (click to select)`}
+                title={`Model: ${currentModelTitle} (click to select)`}
               >
-                {'</>'} {currentModel || '(default)'}{sessionMeta && sessionMeta.contextWindow > 0 ? ` (${sessionMeta.contextWindow >= 1000000 ? `${Math.round(sessionMeta.contextWindow / 1000000)}M` : `${Math.round(sessionMeta.contextWindow / 1000)}k`})` : ''}
+                {'</>'} {currentModelLabel || currentModel || '(default)'}{currentModelContextSuffix}
               </span>
             )}
             {(isCodexSession || !isV2Session) && (
@@ -4369,7 +4505,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <span key="sessionId" className="claude-statusline-item claude-statusline-clickable"
               onClick={async () => {
                 setResumeLoading(true); setShowResumeList(true)
-                try { setResumeSessions(await window.electronAPI.claude.listSessions(cwd) || []) }
+                try { setResumeSessions(await host.claude.listSessions(cwd, 'codex') || []) }
                 catch { setResumeSessions([]) }
                 finally { setResumeLoading(false) }
               }}
@@ -4383,13 +4519,40 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           gitBranch: () => !gitBranch ? null : (
             <span key="gitBranch" className="claude-statusline-item">[{gitBranch}]</span>
           ),
+          model: () => {
+            const model = sessionMeta?.model || currentModel
+            if (!model) return null
+            return (
+              <span key="model" className="claude-statusline-item" title={`model: ${model}`}>
+                {displayNameForPanelModel(model)}
+              </span>
+            )
+          },
+          effort: () => {
+            const effort = sessionMeta?.effort || effortLevel
+            if (!effort) return null
+            return <span key="effort" className="claude-statusline-item" title={`effort: ${effort}`}>{effort}</span>
+          },
+          sandbox: () => {
+            if (!isCodexSession) return null
+            const mode = sessionMeta?.codexSandboxMode || codexSandboxMode
+            if (!mode) return null
+            return <span key="sandbox" className="claude-statusline-item" title={`sandbox: ${mode}`}>{mode}</span>
+          },
+          approval: () => {
+            if (!isCodexSession) return null
+            const policy = sessionMeta?.codexApprovalPolicy || codexApprovalPolicy
+            if (!policy) return null
+            return <span key="approval" className="claude-statusline-item" title={`approval: ${policy}`}>{policy}</span>
+          },
           tokens: () => {
             if (!sessionMeta) return null
-            if (isCodexSession && (sessionMeta.contextTokens || 0) <= 0) return null
+            const visibleTokens = sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)
+            if (isCodexSession && visibleTokens <= 0) return null
             return (
-              <span key="tokens" className="claude-statusline-item claude-statusline-clickable" title={`context: ${(sessionMeta.contextTokens || 0).toLocaleString()} tok\ncumulative in: ${sessionMeta.inputTokens.toLocaleString()} / out: ${sessionMeta.outputTokens.toLocaleString()}\nclick to show context breakdown`}
-                onClick={() => { window.electronAPI.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
-                {(sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)).toLocaleString()} tok
+              <span key="tokens" className="claude-statusline-item claude-statusline-clickable" title={`context: ${visibleTokens.toLocaleString()} tok\ncumulative in: ${sessionMeta.inputTokens.toLocaleString()} / out: ${sessionMeta.outputTokens.toLocaleString()}\nclick to show context breakdown`}
+                onClick={() => { host.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
+                {visibleTokens.toLocaleString()} tok
               </span>
             )
           },
@@ -4401,13 +4564,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           ),
           contextPct: () => {
             if (!sessionMeta || sessionMeta.contextWindow <= 0) return null
-            if (isCodexSession && (sessionMeta.contextTokens || 0) <= 0) return null
             const ctxTokens = sessionMeta.contextTokens || (sessionMeta.inputTokens + sessionMeta.outputTokens)
+            if (isCodexSession && ctxTokens <= 0) return null
             const pct = Math.round((ctxTokens / sessionMeta.contextWindow) * 100)
             const ctxColor = pct >= 80 ? '#e05252' : pct >= 50 ? '#e6a700' : '#89ca78'
             return (
               <span key="contextPct" className="claude-statusline-item claude-statusline-clickable" style={{ color: ctxColor }} title={`context: ${ctxTokens.toLocaleString()} / ${sessionMeta.contextWindow.toLocaleString()} tokens\ntotal: ${(sessionMeta.inputTokens + sessionMeta.outputTokens).toLocaleString()} tok\nclick to show context breakdown`}
-                onClick={() => { window.electronAPI.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
+                onClick={() => { host.claude.getContextUsage(sessionId).then(u => { if (u) setContextUsagePopup(u) }).catch(() => {}) }}>
                 ctx {pct}%
               </span>
             )
@@ -4507,7 +4670,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           </div>
         )
       })()}
-      {contextMenu && onClose && (
+      {contextMenu && (
         <div
           className="claude-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -4515,9 +4678,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         >
           <button
             className="claude-context-menu-item"
-            onClick={() => { setContextMenu(null); onClose(sessionId) }}
+            onClick={() => { setContextMenu(null); scrollToBottom() }}
           >
-            Close Window
+            {t('claude.scrollToBottom')}
           </button>
         </div>
       )}

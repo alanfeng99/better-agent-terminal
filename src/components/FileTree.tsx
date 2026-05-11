@@ -1,3 +1,4 @@
+import { host } from '../host-api'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { HighlightedCode } from './PathLinker'
 import { MarkdownPreview } from './MarkdownPreview'
@@ -61,7 +62,7 @@ function FileTreeNode({
       if (children === null) {
         setLoading(true)
         try {
-          const entries = await window.electronAPI.fs.readdir(entry.path)
+          const entries = await host.fs.readdir(entry.path)
           setChildren(entries)
         } catch {
           setChildren([])
@@ -214,7 +215,7 @@ function FilePreview({ filePath, fileName, refreshKey }: { filePath: string; fil
 
     const type = canPreview(fileName)
     if (type === 'text') {
-      window.electronAPI.fs.readFile(filePath).then(result => {
+      host.fs.readFile(filePath).then(result => {
         if (cancelled) return
         if (result.error) {
           setError(result.error === 'File too large' ? `File too large (${Math.round((result.size || 0) / 1024)}KB)` : result.error)
@@ -224,7 +225,7 @@ function FilePreview({ filePath, fileName, refreshKey }: { filePath: string; fil
         setLoading(false)
       })
     } else if (type === 'image') {
-      window.electronAPI.image.readAsDataUrl(filePath).then(url => {
+      host.image.readAsDataUrl(filePath).then(url => {
         if (cancelled) return
         setImageUrl(url)
         setLoading(false)
@@ -400,7 +401,7 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
   const loadRoot = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await window.electronAPI.fs.readdir(rootPath)
+      const result = await host.fs.readdir(rootPath)
       setEntries(result)
     } catch {
       setEntries([])
@@ -446,8 +447,8 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
 
   // Watch for file system changes and auto-refresh
   useEffect(() => {
-    window.electronAPI.fs.watch(rootPath)
-    const unsubscribe = window.electronAPI.fs.onChanged((changedPath: string) => {
+    host.fs.watch(rootPath)
+    const unsubscribe = host.fs.onChanged((changedPath: string) => {
       if (changedPath === rootPath) {
         setRefreshKey(k => k + 1)
         loadRoot()
@@ -455,7 +456,7 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
     })
     return () => {
       unsubscribe()
-      window.electronAPI.fs.unwatch(rootPath)
+      host.fs.unwatch(rootPath)
     }
   }, [rootPath, loadRoot])
 
@@ -483,7 +484,7 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
     setSearching(true)
     searchTimerRef.current = setTimeout(async () => {
       try {
-        const results = await window.electronAPI.fs.search(rootPath, q)
+        const results = await host.fs.search(rootPath, q)
         setSearchResults(results)
       } catch {
         setSearchResults([])
@@ -503,7 +504,7 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
     try {
       const { path, name } = JSON.parse(saved)
       // Check if file still exists
-      window.electronAPI.fs.readFile(path).then(result => {
+      host.fs.readFile(path).then(result => {
         if (!result.error) {
           setSelectedFile({ path, name, isDirectory: false })
         } else {
@@ -550,7 +551,7 @@ export function FileTree({ rootPath }: Readonly<FileTreeProps>) {
     const target = contextMenu.entry.isDirectory
       ? contextMenu.entry.path
       : contextMenu.entry.path.replace(/[\\/][^\\/]+$/, '') // parent dir
-    window.electronAPI.shell.openPath(target)
+    host.shell.openPath(target)
     setContextMenu(null)
   }, [contextMenu])
 
