@@ -197,73 +197,86 @@ pub fn workspace_detach(
     let build_app = app.clone();
     let build_parent_window_id = parent_window_id.clone();
     let build_workspace_id = workspace_id.clone();
-    app.run_on_main_thread(move || {
-        log_tauri(
-            &build_app,
-            &format!("[window] detach-create label={entry_id} url=app:{url}"),
-        );
-        let nav_app = build_app.clone();
-        let nav_label = entry_id.clone();
-        let load_label = entry_id.clone();
-        let detached_window =
-            match WebviewWindowBuilder::new(&build_app, &entry_id, renderer_url(&url))
-                .title("Better Agent Terminal")
-                .inner_size(900.0, 700.0)
-                .min_inner_size(600.0, 400.0)
-                .on_navigation(move |url| {
-                    log_tauri(
-                        &nav_app,
-                        &format!("[window] navigation label={nav_label} url={url}"),
-                    );
-                    true
-                })
-                .on_page_load(move |window, payload| {
-                    log_tauri(
-                        window.app_handle(),
-                        &format!(
-                            "[window] page-load label={load_label} event={:?} url={}",
-                            payload.event(),
-                            payload.url()
-                        ),
-                    );
-                })
-                .build()
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let schedule_app = build_app.clone();
+        let schedule_entry_id = entry_id.clone();
+        if let Err(err) = build_app.run_on_main_thread(move || {
+            log_tauri(
+                &schedule_app,
+                &format!("[window] detach-create label={schedule_entry_id} url=app:{url}"),
+            );
+            let nav_app = schedule_app.clone();
+            let nav_label = schedule_entry_id.clone();
+            let load_label = schedule_entry_id.clone();
+            let detached_window = match WebviewWindowBuilder::new(
+                &schedule_app,
+                &schedule_entry_id,
+                renderer_url(&url),
+            )
+            .title("Better Agent Terminal")
+            .inner_size(900.0, 700.0)
+            .min_inner_size(600.0, 400.0)
+            .on_navigation(move |url| {
+                log_tauri(
+                    &nav_app,
+                    &format!("[window] navigation label={nav_label} url={url}"),
+                );
+                true
+            })
+            .on_page_load(move |window, payload| {
+                log_tauri(
+                    window.app_handle(),
+                    &format!(
+                        "[window] page-load label={load_label} event={:?} url={}",
+                        payload.event(),
+                        payload.url()
+                    ),
+                );
+            })
+            .build()
             {
                 Ok(win) => win,
                 Err(err) => {
-                    let _ = window_registry::remove_detached_entry(&build_app, &build_workspace_id);
+                    let _ =
+                        window_registry::remove_detached_entry(&schedule_app, &build_workspace_id);
                     log_tauri(
-                        &build_app,
-                        &format!("[window] detach-build-failed label={entry_id} error={err}"),
+                        &schedule_app,
+                        &format!(
+                            "[window] detach-build-failed label={schedule_entry_id} error={err}"
+                        ),
                     );
                     return;
                 }
             };
 
-        let close_app = build_app.clone();
-        let close_workspace_id = build_workspace_id.clone();
-        detached_window.on_window_event(move |event| {
-            if matches!(
-                event,
-                WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
-            ) {
-                emit_detached_closed(&close_app, &close_workspace_id);
-            }
-        });
+            let close_app = schedule_app.clone();
+            let close_workspace_id = build_workspace_id.clone();
+            detached_window.on_window_event(move |event| {
+                if matches!(
+                    event,
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+                ) {
+                    emit_detached_closed(&close_app, &close_workspace_id);
+                }
+            });
 
-        log_tauri(
-            &build_app,
-            &format!("[window] detach-created label={entry_id}"),
-        );
-        let _ = build_app.emit_to(
-            &build_parent_window_id,
-            "workspace:detached",
-            build_workspace_id,
-        );
-    })
-    .map_err(|err| CommandError {
-        message: format!("workspace.detach failed to queue window build: {err}"),
-    })?;
+            log_tauri(
+                &schedule_app,
+                &format!("[window] detach-created label={schedule_entry_id}"),
+            );
+            let _ = schedule_app.emit_to(
+                &build_parent_window_id,
+                "workspace:detached",
+                build_workspace_id,
+            );
+        }) {
+            log_tauri(
+                &build_app,
+                &format!("[window] detach-schedule-failed label={entry_id} error={err}"),
+            );
+        }
+    });
     Ok(true)
 }
 

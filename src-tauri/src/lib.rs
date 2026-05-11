@@ -22,7 +22,7 @@ use commands::{
     snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
     worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub fn run() {
     tauri::Builder::default()
@@ -48,7 +48,10 @@ pub fn run() {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(1200));
-                    app_cmd::app_smoke_open_new_window(handle, token);
+                    for _ in 0..12 {
+                        let _ = handle.emit_to("main", "bat:smoke-new-window", token.clone());
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
                 });
             }
             Ok(())

@@ -96,30 +96,27 @@ fn build_window(app: &AppHandle, window_id: &str) -> Result<(), String> {
         app,
         &format!("[window] queue-build label={build_window_id}"),
     );
-    app.run_on_main_thread(move || {
-        if let Err(error) = build_window_now(&build_app, &build_window_id) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let schedule_app = build_app.clone();
+        let schedule_window_id = build_window_id.clone();
+        if let Err(error) = build_app.run_on_main_thread(move || {
+            if let Err(error) = build_window_now(&schedule_app, &schedule_window_id) {
+                log_tauri(
+                    &schedule_app,
+                    &format!(
+                        "[window] queued-build-failed label={schedule_window_id} error={error}"
+                    ),
+                );
+            }
+        }) {
             log_tauri(
                 &build_app,
-                &format!("[window] queued-build-failed label={build_window_id} error={error}"),
+                &format!("[window] queue-schedule-failed label={build_window_id} error={error}"),
             );
         }
-    })
-    .map_err(|err| err.to_string())
-}
-
-pub fn app_smoke_open_new_window(app: AppHandle, token: String) {
-    let entry = window_registry::create_empty_entry_for_profile(&app, "default");
-    let id = entry.id;
-    log_tauri(
-        &app,
-        &format!("[window-smoke:{token}] requested label={id}"),
-    );
-    if let Err(error) = build_window(&app, &id) {
-        log_tauri(
-            &app,
-            &format!("[window-smoke:{token}] queue-failed label={id} error={error}"),
-        );
-    }
+    });
+    Ok(())
 }
 
 fn build_window_now(app: &AppHandle, window_id: &str) -> Result<(), String> {

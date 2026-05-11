@@ -25,6 +25,7 @@ import './styles/skills-panel.css'
 
 const dlog = (...args: unknown[]) => host.debug.log(...args)
 const t0 = (window as unknown as { __t0?: number }).__t0 || Date.now()
+const tauriSmokeWindowTokens = new Set<string>()
 dlog(`[startup] ── renderer ──────────────────────────────`)
 dlog(`[startup] host kind: ${getHostKind()}`)
 dlog(`[startup] location: ${window.location.href}`)
@@ -32,6 +33,21 @@ void host.app.getWindowId()
   .then((windowId) => dlog(`[startup] window id: ${windowId}`))
   .catch((err) => dlog(`[startup] window id failed: ${String((err as { message?: unknown })?.message ?? err)}`))
 dlog(`[startup] main.tsx top-level: +${Date.now() - t0}ms from HTML <script>`)
+
+if (getHostKind() === 'tauri') {
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) => listen<string>('bat:smoke-new-window', async (event) => {
+      const token = event.payload || 'unknown'
+      if (tauriSmokeWindowTokens.has(token)) return
+      tauriSmokeWindowTokens.add(token)
+      const windowId = await host.app.getWindowId().catch(() => null)
+      if (windowId !== 'main') return
+      dlog(`[window-smoke:${token}] renderer-requested`)
+      const id = await host.app.newWindow()
+      dlog(`[window-smoke:${token}] renderer-new-window id=${id}`)
+    }))
+    .catch((err) => dlog(`[window-smoke] listener failed: ${String((err as { message?: unknown })?.message ?? err)}`))
+}
 
 // Surface unhandled rejections with their actual contents. Tauri invoke
 // rejects with a plain object (BridgeError → `{ message }`) which the
