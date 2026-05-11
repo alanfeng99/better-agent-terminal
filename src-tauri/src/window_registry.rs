@@ -274,7 +274,12 @@ fn read_profile_snapshot(app: &AppHandle, profile_id: &str) -> Vec<WindowSnapsho
         return Vec::new();
     };
     if value.get("version").and_then(Value::as_i64) == Some(1) {
-        return vec![snapshot_from_workspace_value(value)];
+        let snapshot = snapshot_from_workspace_value(value);
+        return if snapshot_has_content(&snapshot) {
+            vec![snapshot]
+        } else {
+            Vec::new()
+        };
     }
     value
         .get("windows")
@@ -284,6 +289,7 @@ fn read_profile_snapshot(app: &AppHandle, profile_id: &str) -> Vec<WindowSnapsho
                 .iter()
                 .cloned()
                 .map(snapshot_from_workspace_value)
+                .filter(snapshot_has_content)
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
