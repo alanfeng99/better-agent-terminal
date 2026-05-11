@@ -150,6 +150,7 @@
 - 2026-05-11：補 Tauri Claude/Codex event payload shape parity。`host.claude.onHistory/onResumeLoading` 現在同時接受 Claude sidecar 的 `{items/loading}` 與 Codex app-server/sidecar 的 `{payload}` shape，避免 Codex resume history 進 UI 時變成 `undefined`。
 - 2026-05-11：把 Tauri `claude.accountList` 搬到 Rust native。帳號清單直接讀 Rust `account_store` 的 `<app-data>/claude-accounts.json`，不再為 Settings/Auth UI 的 account list 喚醒 Node sidecar；import/switch/remove 仍沿用同一個 Rust safe storage index。
 - 2026-05-11：把 Tauri `claude.getCliPath` 搬到 Rust native。新增 Rust resolver 會優先找 bundled `node-sidecar/node_modules/@anthropic-ai/claude-agent-sdk-*` 的 `claude` binary，再 fallback PATH / PATHEXT；建立 Claude CLI PTY 不再為查路徑喚醒 Node sidecar。
+- 2026-05-11：把 Tauri `claude.scanSkills` 搬到 Rust native，並修正掃描範圍同時支援 Electron 的 `.claude/commands/*.md` 與 Tauri/新格式 `.claude/skills/**/SKILL.md` / top-level `.md`。project entries 優先於 global entries，Skills panel 不再為掃 skill/command 喚醒 sidecar。
 
 ## 目前判斷
 

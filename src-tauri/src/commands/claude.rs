@@ -20,6 +20,7 @@ use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::commands::notification as notification_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -159,6 +160,135 @@ fn resolve_claude_cli_path(app: &AppHandle) -> String {
     )
     .map(|path| path.to_string_lossy().to_string())
     .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SkillScanEntry {
+    name: String,
+    description: String,
+    scope: String,
+    path: String,
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+fn parse_frontmatter_field(content: &str, field: &str) -> Option<String> {
+    let rest = content.strip_prefix("---")?;
+    let end = rest.find("\n---")?;
+    let block = rest[..end].trim();
+    for line in block.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim() == field {
+            return Some(value.trim().trim_matches(['"', '\'']).to_string());
+        }
+    }
+    None
+}
+
+fn first_heading(content: &str) -> String {
+    let body = if let Some(rest) = content.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            &rest[end + 4..]
+        } else {
+            content
+        }
+    } else {
+        content
+    };
+    body.lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .chars()
+        .take(200)
+        .collect()
+}
+
+fn scan_markdown_file(path: &Path, fallback_name: &str, scope: &str) -> Option<SkillScanEntry> {
+    let content = fs::read_to_string(path).ok()?;
+    let name = parse_frontmatter_field(&content, "name").unwrap_or_else(|| fallback_name.into());
+    let description =
+        parse_frontmatter_field(&content, "description").unwrap_or_else(|| first_heading(&content));
+    Some(SkillScanEntry {
+        name,
+        description,
+        scope: scope.to_string(),
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn scan_commands_dir(dir: &Path, scope: &str) -> Vec<SkillScanEntry> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                return None;
+            }
+            let name = path.file_stem()?.to_string_lossy().to_string();
+            scan_markdown_file(&path, &name, scope)
+        })
+        .collect()
+}
+
+fn scan_skills_dir(dir: &Path, scope: &str) -> Vec<SkillScanEntry> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                let skill_md = path.join("SKILL.md");
+                let name = path.file_name()?.to_string_lossy().to_string();
+                return scan_markdown_file(&skill_md, &name, scope);
+            }
+            if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                let name = path.file_stem()?.to_string_lossy().to_string();
+                return scan_markdown_file(&path, &name, scope);
+            }
+            None
+        })
+        .collect()
+}
+
+fn scan_skills_native(cwd: &Path) -> Vec<SkillScanEntry> {
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_unique = |entry: SkillScanEntry| {
+        if seen.insert(entry.name.clone()) {
+            results.push(entry);
+        }
+    };
+
+    for entry in scan_commands_dir(&cwd.join(".claude").join("commands"), "project") {
+        push_unique(entry);
+    }
+    for entry in scan_skills_dir(&cwd.join(".claude").join("skills"), "project") {
+        push_unique(entry);
+    }
+    if let Some(home) = home_dir() {
+        for entry in scan_commands_dir(&home.join(".claude").join("commands"), "global") {
+            push_unique(entry);
+        }
+        for entry in scan_skills_dir(&home.join(".claude").join("skills"), "global") {
+            push_unique(entry);
+        }
+    }
+    results
 }
 
 fn archive_empty_page() -> Value {
@@ -880,11 +1010,12 @@ pub async fn claude_get_worktree_status(
 
 #[tauri::command]
 pub async fn claude_scan_skills(
-    app: AppHandle,
-    state: State<'_, SidecarState>,
+    _app: AppHandle,
+    _state: State<'_, SidecarState>,
     cwd: String,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.scanSkills", json!({ "cwd": cwd })).await
+    let entries = scan_skills_native(Path::new(&cwd));
+    Ok(serde_json::to_value(entries).unwrap_or_else(|_| json!([])))
 }
 
 #[tauri::command]
@@ -1537,6 +1668,66 @@ mod tests {
             find_claude_cli_on_path(path.to_str(), Some(".CMD"), "windows"),
             Some(bin)
         );
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn scan_commands_dir_reads_markdown_commands() {
+        let base = temp_data_dir("scan-commands");
+        let dir = base.join(".claude").join("commands");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("deploy.md"), "# Deploy app\nRun deployment").unwrap();
+
+        let entries = scan_commands_dir(&dir, "project");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "deploy");
+        assert_eq!(entries[0].description, "Deploy app");
+        assert_eq!(entries[0].scope, "project");
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn scan_skills_dir_reads_skill_frontmatter() {
+        let base = temp_data_dir("scan-skills");
+        let dir = base.join(".claude").join("skills").join("review");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: code-review\ndescription: Review changes\n---\n# Ignored heading",
+        )
+        .unwrap();
+
+        let entries = scan_skills_dir(&base.join(".claude").join("skills"), "project");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "code-review");
+        assert_eq!(entries[0].description, "Review changes");
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn scan_skills_native_project_commands_take_precedence() {
+        let base = temp_data_dir("scan-native");
+        let command_dir = base.join(".claude").join("commands");
+        let skill_dir = base.join(".claude").join("skills").join("deploy");
+        fs::create_dir_all(&command_dir).unwrap();
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(command_dir.join("deploy.md"), "# Command deploy").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: deploy\n---\n# Skill deploy",
+        )
+        .unwrap();
+
+        let entries = scan_skills_native(&base);
+        let deploy = entries
+            .iter()
+            .find(|entry| entry.name == "deploy")
+            .expect("deploy entry");
+        assert_eq!(deploy.description, "Command deploy");
+        assert_eq!(deploy.scope, "project");
 
         fs::remove_dir_all(base).ok();
     }
