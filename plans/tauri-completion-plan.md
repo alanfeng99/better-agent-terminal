@@ -186,6 +186,7 @@
 - 2026-05-11：補強 Tauri dynamic window 白畫面回歸測試。`test:tauri-dynamic-window-smoke` 現在由主 renderer 透過 `host.app.newWindow()` 觸發，覆蓋 Ctrl+N 實際 IPC 路徑；Rust 端也將 dynamic window build 延後到 command return 後再排入 main thread，避免 renderer IPC reentrancy 造成 `WebviewWindowBuilder::build()` 卡住。
 - 2026-05-11：修正 Tauri profile window label 跳號。`app.getWindowIndex` 現在只用目前 live profile windows 計算顯示序號，避免 `windows.json` 內舊的 Ctrl+N / smoke test 殘留 entry 讓第二個視窗顯示成 `Default:17`；profile snapshot 讀寫時也會忽略空 window snapshot，降低日後 restore 空視窗的風險。
 - 2026-05-11：補 Tauri test profile data-dir override。新增 `BAT_TAURI_DATA_DIR`，Rust settings/workspace/profile/window registry/debug/snippet/pty/OpenAI/Claude/sidecar data dir 會一致改讀指定資料夾；`Procfile.tauri` 的 `tauri-dev` 已指到 `D:/workspaces/bat/bat-test-profile`，可用複製出的真實 settings/workspaces 測 Tauri 讀取。
+- 2026-05-11：修正 Electron userData test profile 載入路徑。Tauri `main` window 若沒有既有 snapshot 或只有空 snapshot，會從 Electron `windows.json` 裡最近且有內容的 regular window seed workspace/profile snapshot，避免真實 Electron 設定只有 `windows.json`、沒有 `workspaces.json` 時看起來像沒讀到 workspaces。
 
 ## 目前判斷
 

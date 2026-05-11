@@ -348,6 +348,46 @@ fn snapshot_has_content(snapshot: &WindowSnapshot) -> bool {
         || snapshot.active_group.is_some()
 }
 
+fn best_existing_profile_entry(entries: &[WindowEntry]) -> Option<WindowEntry> {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.detached_workspace_id.is_none() && snapshot_has_content(&entry.snapshot)
+        })
+        .max_by_key(|entry| entry.last_active_at)
+        .cloned()
+}
+
+fn initial_entry_for_window(
+    app: &AppHandle,
+    entries: &[WindowEntry],
+    window_id: &str,
+) -> WindowEntry {
+    let mut entry = WindowEntry {
+        id: window_id.to_string(),
+        profile_id: DEFAULT_PROFILE_ID.into(),
+        snapshot: empty_snapshot(),
+        detached_workspace_id: None,
+        detached_parent_window_id: None,
+        last_active_at: now_millis(),
+    };
+    if window_id != "main" {
+        return entry;
+    }
+
+    let global_snapshot = read_global_workspace_snapshot(app);
+    if snapshot_has_content(&global_snapshot) {
+        entry.snapshot = global_snapshot;
+        return entry;
+    }
+
+    if let Some(seed) = best_existing_profile_entry(entries) {
+        entry.profile_id = seed.profile_id;
+        entry.snapshot = seed.snapshot;
+    }
+    entry
+}
+
 fn bounds_tuple(value: &Value) -> Option<(f64, f64, f64, f64)> {
     Some((
         value.get("x")?.as_f64()?,
@@ -384,23 +424,32 @@ pub fn ensure_entry(app: &AppHandle, window_id: &str) -> WindowEntry {
     if entries.is_empty() {
         *entries = load_entries(app);
     }
-    if let Some(entry) = entries.iter().find(|entry| entry.id == window_id).cloned() {
+    if let Some(index) = entries.iter().position(|entry| entry.id == window_id) {
+        let entry = entries[index].clone();
+        if window_id != "main" || snapshot_has_content(&entry.snapshot) {
+            return entry;
+        }
+
+        let seeded = initial_entry_for_window(app, &entries, window_id);
+        if snapshot_has_content(&seeded.snapshot) {
+            entries[index] = seeded.clone();
+            persist_entries(app, &entries);
+            write_global_workspace(app, &seeded.snapshot);
+            let windows = profile_windows(&entries, &seeded.profile_id);
+            write_profile_snapshot(app, &seeded.profile_id, &windows);
+            return seeded;
+        }
+
         return entry;
     }
-    let entry = WindowEntry {
-        id: window_id.to_string(),
-        profile_id: DEFAULT_PROFILE_ID.into(),
-        snapshot: if window_id == "main" {
-            read_global_workspace_snapshot(app)
-        } else {
-            empty_snapshot()
-        },
-        detached_workspace_id: None,
-        detached_parent_window_id: None,
-        last_active_at: now_millis(),
-    };
+    let entry = initial_entry_for_window(app, &entries, window_id);
     entries.push(entry.clone());
     persist_entries(app, &entries);
+    if window_id == "main" && snapshot_has_content(&entry.snapshot) {
+        write_global_workspace(app, &entry.snapshot);
+        let windows = profile_windows(&entries, &entry.profile_id);
+        write_profile_snapshot(app, &entry.profile_id, &windows);
+    }
     entry
 }
 
@@ -497,18 +546,8 @@ pub fn mark_window_active(app: &AppHandle, window_id: &str) {
     if let Some(entry) = entries.iter_mut().find(|entry| entry.id == window_id) {
         entry.last_active_at = now_millis();
     } else {
-        entries.push(WindowEntry {
-            id: window_id.to_string(),
-            profile_id: DEFAULT_PROFILE_ID.into(),
-            snapshot: if window_id == "main" {
-                read_global_workspace_snapshot(app)
-            } else {
-                empty_snapshot()
-            },
-            detached_workspace_id: None,
-            detached_parent_window_id: None,
-            last_active_at: now_millis(),
-        });
+        let entry = initial_entry_for_window(app, &entries, window_id);
+        entries.push(entry);
     }
     persist_entries(app, &entries);
 }
@@ -936,6 +975,54 @@ mod tests {
         ];
 
         assert_eq!(profile_windows(&entries, "default").len(), 1);
+    }
+
+    #[test]
+    fn best_existing_profile_entry_uses_latest_non_empty_regular_window() {
+        let mut older = empty_snapshot();
+        older.workspaces = json!([{"id": "older"}]);
+        let mut latest_detached = empty_snapshot();
+        latest_detached.workspaces = json!([{"id": "detached"}]);
+        let mut latest = empty_snapshot();
+        latest.workspaces = json!([{"id": "latest"}]);
+        let entries = vec![
+            WindowEntry {
+                id: "empty".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 100,
+            },
+            WindowEntry {
+                id: "older".into(),
+                profile_id: "default".into(),
+                snapshot: older,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 200,
+            },
+            WindowEntry {
+                id: "detached".into(),
+                profile_id: "default".into(),
+                snapshot: latest_detached,
+                detached_workspace_id: Some("w-detached".into()),
+                detached_parent_window_id: Some("older".into()),
+                last_active_at: 400,
+            },
+            WindowEntry {
+                id: "latest".into(),
+                profile_id: "lineage".into(),
+                snapshot: latest,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 300,
+            },
+        ];
+
+        let entry = best_existing_profile_entry(&entries).unwrap();
+        assert_eq!(entry.id, "latest");
+        assert_eq!(entry.profile_id, "lineage");
     }
 
     #[test]

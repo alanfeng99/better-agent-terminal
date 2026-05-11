@@ -2,7 +2,7 @@
 # WorkerPanel auto-start is off by default, so start only the task you need.
 # tauri-dev prepares the latest sidecar/runtime resources before launching.
 
-tauri-dev: pnpm exec cross-env BAT_TAURI_DATA_DIR=D:/workspaces/bat/bat-test-profile pnpm run tauri:dev:latest
+tauri-dev: pnpm exec cross-env BAT_TAURI_DATA_DIR=D:/workspaces/bat/bat-test-profile BAT_SIDECAR_DATA_DIR=D:/workspaces/bat/bat-test-profile pnpm run tauri:dev:latest
 typecheck: pnpm exec tsc --noEmit --pretty false
 tauri-rust-test: pnpm run test:tauri-rust
 sidecar-test: pnpm run test:sidecar
