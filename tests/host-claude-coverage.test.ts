@@ -28,6 +28,14 @@ function collectMatches(source: string, pattern: RegExp): Set<string> {
   return values
 }
 
+function extractClaudeAdapterBlock(hostSource: string): string {
+  const start = hostSource.indexOf('claude: new Proxy')
+  const end = hostSource.indexOf('openai: new Proxy', start)
+  assert.ok(start >= 0, 'Could not find Tauri claude adapter block')
+  assert.ok(end > start, 'Could not find end of Tauri claude adapter block')
+  return hostSource.slice(start, end)
+}
+
 async function main() {
   const files = (await Promise.all(ROOTS.map(collectFiles))).flat()
   const used = new Map<string, Set<string>>()
@@ -39,9 +47,10 @@ async function main() {
   }
 
   const hostSource = await readFile('src/host-api.ts', 'utf8')
+  const claudeAdapterSource = extractClaudeAdapterBlock(hostSource)
   const routed = new Set([
-    ...collectMatches(hostSource, DIRECT_KEY_PATTERN),
-    ...collectMatches(hostSource, OBJECT_KEY_PATTERN),
+    ...collectMatches(claudeAdapterSource, DIRECT_KEY_PATTERN),
+    ...collectMatches(claudeAdapterSource, OBJECT_KEY_PATTERN),
   ])
 
   const missing: string[] = []
