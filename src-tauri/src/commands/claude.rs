@@ -22,10 +22,11 @@ use crate::event_hub::publish_runtime_event;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -34,6 +35,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 // need true cancellation should issue abortSession through a separate
 // invoke rather than relying on this timeout.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
+const SESSION_LIST_LIMIT: usize = 50;
+const PREVIEW_LINE_LIMIT: usize = 20;
+const PREVIEW_CHARS: usize = 120;
 
 fn call(
     app: &AppHandle,
@@ -171,10 +175,271 @@ struct SkillScanEntry {
     path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionListEntry {
+    sdk_session_id: String,
+    timestamp: u128,
+    preview: String,
+    message_count: usize,
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+fn system_time_millis(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn encode_claude_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
+fn claude_project_dir_candidates(projects_dir: &Path, cwd: &str) -> Vec<PathBuf> {
+    let encoded = encode_claude_project_dir(cwd);
+    let mut candidates = vec![projects_dir.join(&encoded)];
+    if cfg!(windows) && !encoded.is_empty() {
+        let mut chars = encoded.chars();
+        if let Some(first) = chars.next() {
+            let rest = chars.as_str();
+            let lower = format!("{}{}", first.to_ascii_lowercase(), rest);
+            let upper = format!("{}{}", first.to_ascii_uppercase(), rest);
+            if lower != encoded {
+                candidates.push(projects_dir.join(lower));
+            }
+            if upper != encoded {
+                candidates.push(projects_dir.join(upper));
+            }
+        }
+    }
+    candidates
+}
+
+fn preview_text_from_claude_content(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.chars().take(PREVIEW_CHARS).collect());
+    }
+    content.as_array().and_then(|blocks| {
+        blocks.iter().find_map(|block| {
+            if block.get("type").and_then(Value::as_str) == Some("text") {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| text.chars().take(PREVIEW_CHARS).collect())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn read_claude_session_preview(path: &Path) -> (String, usize) {
+    let Ok(file) = fs::File::open(path) else {
+        return (String::new(), 0);
+    };
+    let reader = BufReader::new(file);
+    let mut preview = String::new();
+    let mut message_count = 0;
+    for line in reader
+        .lines()
+        .map_while(Result::ok)
+        .take(PREVIEW_LINE_LIMIT)
+    {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        message_count += 1;
+        if preview.is_empty() && value.get("type").and_then(Value::as_str) == Some("user") {
+            if let Some(text) = preview_text_from_claude_content(&value["message"]["content"]) {
+                preview = text;
+            }
+        }
+    }
+    (preview, message_count)
+}
+
+fn list_claude_sessions_in_projects(cwd: &str, projects_dir: &Path) -> Vec<SessionListEntry> {
+    if cwd.is_empty() {
+        return Vec::new();
+    }
+    let mut results = Vec::new();
+    for dir in claude_project_dir_candidates(projects_dir, cwd) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let (preview, message_count) = read_claude_session_preview(&path);
+            results.push(SessionListEntry {
+                sdk_session_id: stem.to_string(),
+                timestamp: metadata
+                    .modified()
+                    .map(system_time_millis)
+                    .unwrap_or_default(),
+                preview: if preview.is_empty() {
+                    "(no preview)".to_string()
+                } else {
+                    preview
+                },
+                message_count,
+            });
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut deduped = results
+        .into_iter()
+        .filter(|entry| seen.insert(entry.sdk_session_id.clone()))
+        .collect::<Vec<_>>();
+    deduped.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    deduped.truncate(SESSION_LIST_LIMIT);
+    deduped
+}
+
+fn walk_jsonl_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_jsonl_files(&path, out);
+        } else if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            out.push(path);
+        }
+    }
+}
+
+fn first_codex_input_text(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    payload
+        .get("input")
+        .or_else(|| payload.get("message"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .get("op")
+                .and_then(|op| op.get("content"))
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items.iter().find_map(|item| {
+                        if item.get("type").and_then(Value::as_str) == Some("input_text") {
+                            item.get("text").and_then(Value::as_str)
+                        } else {
+                            None
+                        }
+                    })
+                })
+        })
+        .map(|text| text.trim())
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            text.lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(PREVIEW_CHARS)
+                .collect()
+        })
+}
+
+fn read_codex_session_summary(path: &Path) -> Option<(String, String)> {
+    let Ok(file) = fs::File::open(path) else {
+        return None;
+    };
+    let reader = BufReader::new(file);
+    let mut thread_id = String::new();
+    let mut preview = String::new();
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if thread_id.is_empty() && value.get("type").and_then(Value::as_str) == Some("session_meta")
+        {
+            if let Some(id) = value["payload"]["id"].as_str().filter(|id| !id.is_empty()) {
+                thread_id = id.to_string();
+            }
+        }
+        if preview.is_empty() {
+            if let Some(text) = first_codex_input_text(&value) {
+                preview = text;
+            }
+        }
+        if !thread_id.is_empty() && !preview.is_empty() {
+            break;
+        }
+    }
+    Some((thread_id, preview))
+}
+
+fn list_codex_sessions_in_root(root: &Path) -> Vec<SessionListEntry> {
+    let mut files = Vec::new();
+    walk_jsonl_files(root, &mut files);
+    let mut results = Vec::new();
+    for path in files {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        let fallback_id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_string();
+        if fallback_id.is_empty() {
+            continue;
+        }
+        let (mut sdk_session_id, preview) =
+            read_codex_session_summary(&path).unwrap_or_else(|| (String::new(), String::new()));
+        if sdk_session_id.is_empty() {
+            sdk_session_id = fallback_id;
+        }
+        let preview = if preview.is_empty() {
+            format!(
+                "({}...)",
+                sdk_session_id.chars().take(8).collect::<String>()
+            )
+        } else {
+            preview
+        };
+        results.push(SessionListEntry {
+            sdk_session_id,
+            timestamp: metadata
+                .modified()
+                .map(system_time_millis)
+                .unwrap_or_default(),
+            preview,
+            message_count: 0,
+        });
+    }
+    results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    results.truncate(SESSION_LIST_LIMIT);
+    results
+}
+
+fn list_sessions_native(cwd: &str, agent_kind: Option<&str>) -> Vec<SessionListEntry> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    if agent_kind == Some("codex") {
+        return list_codex_sessions_in_root(&home.join(".codex").join("sessions"));
+    }
+    list_claude_sessions_in_projects(cwd, &home.join(".claude").join("projects"))
 }
 
 fn parse_frontmatter_field(content: &str, field: &str) -> Option<String> {
@@ -934,18 +1199,15 @@ pub async fn claude_get_cli_path(
 
 #[tauri::command]
 pub async fn claude_list_sessions(
-    app: AppHandle,
-    state: State<'_, SidecarState>,
+    _app: AppHandle,
+    _state: State<'_, SidecarState>,
     cwd: String,
     agent_kind: Option<String>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.listSessions",
-        json!({ "cwd": cwd, "agentKind": agent_kind }),
+    Ok(
+        serde_json::to_value(list_sessions_native(&cwd, agent_kind.as_deref()))
+            .unwrap_or_else(|_| json!([])),
     )
-    .await
 }
 
 #[tauri::command]
@@ -1853,6 +2115,52 @@ mod tests {
 
         let second = enable_all_project_mcp_native(&base).expect("enable mcp again");
         assert_eq!(second["changed"], false);
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn list_claude_sessions_reads_project_jsonl_previews() {
+        let base = temp_data_dir("claude-session-list");
+        let projects_dir = base.join("projects");
+        let cwd = "C:\\repo app";
+        let session_dir = projects_dir.join(encode_claude_project_dir(cwd));
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("sdk-1.jsonl"),
+            r#"{"type":"system","message":{}}
+{"type":"user","message":{"content":[{"type":"text","text":"hello from history"}]}}
+"#,
+        )
+        .unwrap();
+
+        let sessions = list_claude_sessions_in_projects(cwd, &projects_dir);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].sdk_session_id, "sdk-1");
+        assert_eq!(sessions[0].preview, "hello from history");
+        assert_eq!(sessions[0].message_count, 2);
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn list_codex_sessions_reads_nested_session_meta_and_preview() {
+        let base = temp_data_dir("codex-session-list");
+        let nested = base.join("2026").join("05").join("11");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            nested.join("rollout.jsonl"),
+            r#"{"type":"session_meta","payload":{"id":"thread-1"}}
+{"type":"event_msg","payload":{"input":"ping\nsecond line"}}
+"#,
+        )
+        .unwrap();
+
+        let sessions = list_codex_sessions_in_root(&base);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].sdk_session_id, "thread-1");
+        assert_eq!(sessions[0].preview, "ping");
+        assert_eq!(sessions[0].message_count, 0);
 
         fs::remove_dir_all(base).ok();
     }
