@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Bundle the Tauri Node sidecar source tree into a single ESM entry file.
-// npm dependencies stay external so CJS packages and platform-specific SDK
-// packages are still resolved from node-sidecar/node_modules at runtime.
+// Keep only platform-specific native SDK packages external so release
+// resources do not need to extract the whole sidecar node_modules tree.
 
 import { mkdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -22,11 +22,11 @@ await build({
   format: 'esm',
   target: ['node20'],
   external: [
-    '@anthropic-ai/claude-agent-sdk',
-    'selfsigned',
-    'ws',
-    'zod',
+    '@anthropic-ai/claude-agent-sdk-*',
   ],
+  banner: {
+    js: "import { createRequire as __batCreateRequire } from 'node:module'; const require = __batCreateRequire(import.meta.url);",
+  },
   legalComments: 'eof',
 })
 

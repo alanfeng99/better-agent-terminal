@@ -13,7 +13,7 @@ const repoRoot = resolve(here, '..')
 const requiredResourceSources = [
   '../node-sidecar/dist/server.mjs',
   '../node-sidecar/package.json',
-  '../node-sidecar/node_modules/',
+  '../node-sidecar/dist-node_modules/',
   '../node-sidecar/runtime/',
 ]
 
@@ -23,6 +23,14 @@ const runtimeExecutables = {
   'darwin-arm64': join('darwin-aarch64', 'bin', 'node'),
   'linux-x64': join('linux-x86_64', 'bin', 'node'),
   'linux-arm64': join('linux-aarch64', 'bin', 'node'),
+}
+
+const claudeNativePackages = {
+  'win32-x64': 'claude-agent-sdk-win32-x64',
+  'darwin-x64': 'claude-agent-sdk-darwin-x64',
+  'darwin-arm64': 'claude-agent-sdk-darwin-arm64',
+  'linux-x64': 'claude-agent-sdk-linux-x64',
+  'linux-arm64': 'claude-agent-sdk-linux-arm64',
 }
 
 function runtimeKey(platform = process.platform, arch = process.arch) {
@@ -89,8 +97,22 @@ export async function collectTauriPreviewReadiness(options = {}) {
   const sidecarPackagePath = join(sidecarRoot, 'package.json')
   add('sidecar:package-json', await pathExists(sidecarPackagePath), sidecarPackagePath)
 
-  const nodeModulesPath = join(sidecarRoot, 'node_modules')
-  add('sidecar:node-modules', await dirExists(nodeModulesPath), nodeModulesPath)
+  const nodeModulesPath = join(sidecarRoot, 'dist-node_modules')
+  add('sidecar:dist-node-modules', await dirExists(nodeModulesPath), nodeModulesPath)
+  const claudeNativePackage = claudeNativePackages[key]
+  if (claudeNativePackage) {
+    const exeName = platform === 'win32' ? 'claude.exe' : 'claude'
+    const claudeBinary = join(
+      nodeModulesPath,
+      '@anthropic-ai',
+      claudeNativePackage,
+      exeName,
+    )
+    const claudeBinaryBytes = await fileSize(claudeBinary)
+    add(`sidecar:claude-native:${key}`, claudeBinaryBytes > 0, `${claudeBinary} (${claudeBinaryBytes} bytes)`)
+  } else {
+    add(`sidecar:claude-native:${key}`, false, `unsupported platform/arch for Claude native package: ${key}`)
+  }
 
   const runtimeRoot = join(sidecarRoot, 'runtime')
   add('runtime:root', await dirExists(runtimeRoot), runtimeRoot)

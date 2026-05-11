@@ -34,12 +34,14 @@
     "resources": {
       "../node-sidecar/dist/server.mjs": "node-sidecar/dist/server.mjs",
       "../node-sidecar/package.json": "node-sidecar/package.json",
-      "../node-sidecar/node_modules/": "node-sidecar/node_modules/",
+      "../node-sidecar/dist-node_modules/": "node-sidecar/node_modules/",
       "../node-sidecar/runtime/": "node-runtime/"
     },
     "windows": {
       "nsis": {
-        "compression": "zlib"
+        "compression": "zlib",
+        "installMode": "currentUser",
+        "installerHooks": "windows/nsis-hooks.nsh"
       }
     }
   }

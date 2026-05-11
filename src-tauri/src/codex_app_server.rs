@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +27,16 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const TURN_START_TIMEOUT: Duration = Duration::from_secs(60);
 const MSG_BUFFER_CAP: usize = 300;
 const DEFAULT_CODEX_CONTEXT_WINDOW: u64 = 1_000_000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(windows)]
+fn suppress_subprocess_window(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn suppress_subprocess_window(_command: &mut Command) {}
 
 type ReplySender = Sender<Result<Value, String>>;
 
@@ -449,6 +461,7 @@ fn build_codex_command(app: &AppHandle) -> Command {
     if let Some(api_key) = openai::configured_openai_key_for_runtime(app) {
         command.env("OPENAI_API_KEY", api_key);
     }
+    suppress_subprocess_window(&mut command);
     command
 }
 
