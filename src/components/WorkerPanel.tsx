@@ -27,6 +27,29 @@ interface WorkerProcess {
   autoStart: boolean
 }
 
+interface WorkerLogEntry {
+  name: string
+  color: string
+  data: string
+}
+
+function parseWorkerBuffer(raw: string): WorkerLogEntry[] {
+  if (!raw.trim()) return []
+  const entries: WorkerLogEntry[] = []
+  for (const line of raw.trim().split('\n')) {
+    if (!line) continue
+    try {
+      const parsed = JSON.parse(line) as Partial<WorkerLogEntry>
+      if (typeof parsed.name === 'string' && typeof parsed.color === 'string' && typeof parsed.data === 'string') {
+        entries.push({ name: parsed.name, color: parsed.color, data: parsed.data })
+      }
+    } catch {
+      // Ignore malformed persisted lines; new output will continue appending.
+    }
+  }
+  return entries
+}
+
 // Persist auto-start preferences per Procfile
 function loadAutoStartPrefs(procfilePath: string): Record<string, boolean> {
   try {
@@ -158,7 +181,8 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   const shellRef = useRef<string | undefined>()
   const ptyIdsRef = useRef<Set<string>>(new Set())
   const logVisibleRef = useRef<Map<string, boolean>>(new Map())
-  const pendingBatchRef = useRef<Array<{ name: string; color: string; data: string }>>([])
+  const entriesRef = useRef<WorkerLogEntry[]>([])
+  const pendingBatchRef = useRef<WorkerLogEntry[]>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const spotlightRef = useRef<string | null>(null)
 
@@ -194,7 +218,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
   }, [flushToDisk])
 
   // Re-render terminal from entries with only visible processes
-  const reRenderTerminal = useCallback((entries: Array<{ name: string; color: string; data: string }>, visibleMap: Map<string, boolean>) => {
+  const reRenderTerminal = useCallback((entries: WorkerLogEntry[], visibleMap: Map<string, boolean>) => {
     const terminal = terminalRef.current
     if (!terminal) return
 
@@ -229,20 +253,15 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     logVisibleRef.current = map
     setLogVisible(next)
 
-    // Flush pending batch, then read full buffer from disk
+    // Flush pending batch before re-rendering from the in-memory log.
     if (flushTimerRef.current) {
       clearTimeout(flushTimerRef.current)
       flushTimerRef.current = null
     }
     await flushToDisk()
 
-    const raw = await host.workerBuffer.readAll(terminalId)
-    const entries: Array<{ name: string; color: string; data: string }> = raw
-      ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
-      : []
-
-    reRenderTerminal(entries, map)
-  }, [flushToDisk, terminalId, reRenderTerminal])
+    reRenderTerminal(entriesRef.current, map)
+  }, [flushToDisk, reRenderTerminal])
 
   const toggleSpotlight = useCallback(async (name: string) => {
     const next = spotlightRef.current === name ? null : name
@@ -255,18 +274,13 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     }
     await flushToDisk()
 
-    const raw = await host.workerBuffer.readAll(terminalId)
-    const entries: Array<{ name: string; color: string; data: string }> = raw
-      ? raw.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
-      : []
-
     // Build visibility map: spotlight overrides individual toggles
     const map = new Map<string, boolean>(logVisibleRef.current)
     if (next !== null) {
       for (const proc of processesRef.current) map.set(proc.name, proc.name === next)
     }
-    reRenderTerminal(entries, map)
-  }, [flushToDisk, terminalId, reRenderTerminal])
+    reRenderTerminal(entriesRef.current, map)
+  }, [flushToDisk, reRenderTerminal])
 
   const clearLog = useCallback(async () => {
     if (flushTimerRef.current) {
@@ -275,6 +289,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     }
     pendingBatchRef.current = []
     await host.workerBuffer.clear(terminalId)
+    entriesRef.current = []
 
     midLineRef.current = new Map()
     const headerText = buildWorkerHeader(procfilePath, processesRef.current.length)
@@ -285,7 +300,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       terminal.write(headerText)
     }
 
-    pendingBatchRef.current.push({ name: '__header__', color: '', data: headerText })
+    const headerEntry = { name: '__header__', color: '', data: headerText }
+    entriesRef.current.push(headerEntry)
+    pendingBatchRef.current.push(headerEntry)
     scheduleFlush()
   }, [procfilePath, scheduleFlush, terminalId])
 
@@ -307,8 +324,11 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const terminal = terminalRef.current
     if (!terminal) return
 
+    const entry = { name, color, data }
+    entriesRef.current.push(entry)
+
     // Queue for disk flush
-    pendingBatchRef.current.push({ name, color, data })
+    pendingBatchRef.current.push(entry)
     scheduleFlush()
 
     // __header__ entries are pre-formatted, write directly
@@ -632,7 +652,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
 
     // --- Async: read Procfile and start processes ---
     ;(async () => {
-      // Init worker buffer file on disk
+      // Init worker buffer without discarding existing scrollback for this panel.
       await host.workerBuffer.init(terminalId)
 
       const remoteStatus = await host.remote.clientStatus().catch(() => ({ connected: false }))
@@ -684,9 +704,16 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       processesRef.current = procs
       setProcesses(procs)
 
-      // Write header (use __header__ as a virtual name so it's always visible during re-render)
-      const headerText = buildWorkerHeader(procfilePath, procs.length)
-      writeOutput('__header__', '', headerText)
+      const rawBuffer = await host.workerBuffer.readAll(terminalId).catch(() => '')
+      const restoredEntries = parseWorkerBuffer(rawBuffer)
+      if (restoredEntries.length > 0) {
+        entriesRef.current = restoredEntries
+        reRenderTerminal(restoredEntries, logVisibleRef.current)
+      } else {
+        // Write header (use __header__ as a virtual name so it's always visible during re-render)
+        const headerText = buildWorkerHeader(procfilePath, procs.length)
+        writeOutput('__header__', '', headerText)
+      }
 
       // Start only processes with autoStart enabled
       for (const proc of procs) {
@@ -704,13 +731,16 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       unsubscribeCopyShortcut()
       document.removeEventListener('keydown', onDocKeyDown, true)
       if (resizeTimer) clearTimeout(resizeTimer)
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current)
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
+      void flushToDisk()
       resizeObserver.disconnect()
       doResizeRef.current = null
       terminal.dispose()
       terminalRef.current = null
       fitAddonRef.current = null
-      host.workerBuffer.clear(terminalId)
       if (isRemoteClientRef.current) return
       const idsToKill = new Set([
         ...ptyIdsRef.current,
@@ -721,7 +751,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
         host.pty.kill(id)
       }
     }
-  }, [terminalId, procfilePath, processCwd, writeOutput, startProcess])
+  }, [terminalId, procfilePath, processCwd, writeOutput, startProcess, reRenderTerminal, flushToDisk])
 
   // Handle resize/refresh when becoming active
   useEffect(() => {
@@ -763,19 +793,13 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
                   <span className={`worker-status-dot worker-status-${proc.status}`} />
                   <span
                     className="worker-process-name"
-                    style={{ color: proc.color }}
-                    title={proc.name}
+                    style={{ color: proc.color, cursor: 'pointer' }}
+                    onClick={() => toggleSpotlight(proc.name)}
+                    title={spotlightService === proc.name ? 'Exit spotlight' : `Spotlight: ${proc.name}`}
                   >
                     {proc.name}
                   </span>
                   <div className="worker-process-actions">
-                    <button
-                      className={`worker-btn worker-btn-focus ${spotlightService === proc.name ? 'active' : ''}`}
-                      onClick={() => toggleSpotlight(proc.name)}
-                      title={spotlightService === proc.name ? 'Show all logs' : `Focus log: ${proc.name}`}
-                    >
-                      {spotlightService === proc.name ? '◉' : '◎'}
-                    </button>
                     <button
                       className={`worker-btn worker-btn-log ${isVisible ? 'active' : ''}`}
                       onClick={() => toggleLogVisible(proc.name)}

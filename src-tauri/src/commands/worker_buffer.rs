@@ -43,7 +43,7 @@ pub fn worker_buffer_init(
         });
     }
     let mut map = state.inner.lock().expect("worker_buffer lock");
-    map.insert(panel_id, String::new());
+    map.entry(panel_id).or_default();
     Ok(true)
 }
 
@@ -111,10 +111,19 @@ mod tests {
         // We can't construct a tauri::State<'_, T> directly in tests — instead
         // test the underlying map behaviour through a thin helper.
         let mut map = s.inner.lock().unwrap();
-        map.insert("p".to_string(), String::new());
+        map.entry("p".to_string()).or_default();
         map.get_mut("p").unwrap().push_str("hello\n");
         map.get_mut("p").unwrap().push_str("world\n");
         assert_eq!(map.get("p").unwrap(), "hello\nworld\n");
+    }
+
+    #[test]
+    fn init_preserves_existing_buffer() {
+        let s = fresh_state();
+        let mut map = s.inner.lock().unwrap();
+        map.insert("p".to_string(), "existing\n".to_string());
+        map.entry("p".to_string()).or_default();
+        assert_eq!(map.get("p").unwrap(), "existing\n");
     }
 
     #[test]

@@ -506,6 +506,10 @@
   user-select: none;
 }
 
+.worker-process-name:hover {
+  text-decoration: underline;
+}
+
 .worker-card-dimmed {
   opacity: 0.35;
 }
@@ -539,13 +543,11 @@
 }
 
 .worker-btn-log,
-.worker-btn-focus,
 .worker-btn-auto {
   opacity: 0.5;
 }
 
-.worker-btn-log.active,
-.worker-btn-focus.active {
+.worker-btn-log.active {
   opacity: 1;
   color: var(--accent-color);
 }
