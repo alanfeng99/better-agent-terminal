@@ -329,6 +329,10 @@ fn profile_windows(entries: &[WindowEntry], profile_id: &str) -> Vec<WindowSnaps
         .collect()
 }
 
+fn remove_profile_window_entries(entries: &mut Vec<WindowEntry>, profile_id: &str) {
+    entries.retain(|entry| entry.profile_id != profile_id || entry.detached_workspace_id.is_some());
+}
+
 fn make_window_id(profile_id: &str, index: usize) -> String {
     let safe = profile_id
         .chars()
@@ -590,6 +594,7 @@ pub fn create_entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<Wind
     if entries.is_empty() {
         *entries = load_entries(app);
     }
+    remove_profile_window_entries(&mut entries, profile_id);
     let mut created = Vec::new();
     for (idx, snapshot) in snapshots.into_iter().enumerate() {
         let entry = WindowEntry {
@@ -650,6 +655,44 @@ mod tests {
         let id = make_window_id("my profile", 1);
         assert!(id.starts_with("profile-my-profile-"));
         assert!(id.ends_with("-1"));
+    }
+
+    #[test]
+    fn remove_profile_window_entries_keeps_other_profiles_and_detached_entries() {
+        let mut entries = vec![
+            WindowEntry {
+                id: "profile-a-1".into(),
+                profile_id: "a".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+            WindowEntry {
+                id: "detached-a".into(),
+                profile_id: "a".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: Some("w1".into()),
+                detached_parent_window_id: Some("profile-a-1".into()),
+                last_active_at: 0,
+            },
+            WindowEntry {
+                id: "profile-b-1".into(),
+                profile_id: "b".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+        ];
+
+        remove_profile_window_entries(&mut entries, "a");
+
+        let ids = entries
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["detached-a", "profile-b-1"]);
     }
 
     #[test]

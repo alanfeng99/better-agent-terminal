@@ -116,6 +116,7 @@
 - 2026-05-11：補 Tauri dock/app badge route。`app.setDockBadge` 不再是 Rust no-op，會對目前 live webview windows 呼叫 Tauri `set_badge_count`；非正數會清除 badge，不支援平台的錯誤維持 best-effort 忽略。
 - 2026-05-11：補 Tauri remote profile token safe storage。profile `remoteToken` 新寫入會優先存 OS keyring，舊 `remote-tokens.enc.json` `{enc:false}` 只保留為 migration/fallback；`index.json` 仍不寫入 token。
 - 2026-05-11：收斂 Tauri remote profile token deletion。刪除 remote profile 時會同步清 OS keyring token；legacy fallback token store 也有 regression test 覆蓋 profile 移除後不殘留。
+- 2026-05-11：收斂 Tauri profile window restore registry。`app.openNewInstance(profileId)` 依 profile snapshot 建立視窗前會清掉同 profile 的 stale non-detached registry entries，避免 profile 視窗關閉後再次開啟累積重複 window entry；detached entry 與其他 profile entry 會保留。
 
 ## 目前判斷
 
