@@ -470,7 +470,10 @@ function createTauriHost(): BatAppAPI {
       newWindow: () => getInvoke()<string>('app_new_window'),
       focusNextWindow: () => getInvoke()<boolean>('app_focus_next_window'),
       openNewInstance: (profileId: string) =>
-        getInvoke()<{ alreadyOpen: boolean }>('app_open_new_instance', { profileId }),
+        getInvoke()<{ alreadyOpen: boolean; windowIds?: string[]; error?: string }>(
+          'app_open_new_instance',
+          { profileId },
+        ),
       setDockBadge: (count: number) => getInvoke()<void>('app_set_dock_badge', { count }),
     },
     github: {

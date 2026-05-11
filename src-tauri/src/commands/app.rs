@@ -1,47 +1,46 @@
-// app:* — single-window stand-ins for the Electron multi-window
-// shell. The Tauri MVP runs a single OS window, so anything that
-// previously branched on windowId / windowIndex collapses to a
-// constant. We still expose the full surface so renderer code that
-// reads getWindowProfile() during initial render doesn't see a
-// "not implemented" throw — it just gets null and the existing
-// fallback path engages.
+// app:* — Tauri window/profile shell.
 //
-// Multi-window support is a Phase 3 concern (see
-// plans/tauri-migration-plan.md): tauri::WebviewWindowBuilder works
-// fine, but we'd also need to rebuild the per-window profile
-// registry, the launch-profile flag plumbing, and the tray badge
-// handling. None of that blocks the MVP.
+// Electron owns multi-window behaviour in its main process. The Tauri port
+// keeps the renderer-facing contract intact, but the window registry and local
+// profile restore now live in Rust so profile windows do not need the Node
+// sidecar.
 
+use crate::window_registry;
 use serde::Serialize;
-
-// The single-window MVP always reports the same window identity.
-// "main" matches Tauri's default `tauri.conf.json` window label;
-// keep it in sync if the label ever changes.
-const SINGLE_WINDOW_ID: &str = "main";
-// The Electron renderer uses 1-indexed window numbers in the title
-// bar ("[1] foo / project"). Pinning the index to 1 keeps the
-// existing display logic intact.
-const SINGLE_WINDOW_INDEX: u32 = 1;
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct OpenNewInstanceResult {
-    // Renderer reads `result?.alreadyOpen` to decide whether to
-    // surface a "profile already open in this window" toast. Under
-    // Tauri MVP we have one window so opening a "new instance"
-    // never spawns; we report alreadyOpen=true so the renderer's
-    // existing toast path trips and the user gets feedback.
     #[serde(rename = "alreadyOpen")]
     pub already_open: bool,
+    #[serde(rename = "windowIds", skip_serializing_if = "Vec::is_empty")]
+    pub window_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn build_window(app: &AppHandle, window_id: &str) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(window_id) {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, window_id, WebviewUrl::App("index.html".into()))
+        .title("Better Agent Terminal")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .build()
+        .map(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn app_get_window_id() -> String {
-    SINGLE_WINDOW_ID.to_string()
+pub fn app_get_window_id(window: WebviewWindow) -> String {
+    window.label().to_string()
 }
 
 #[tauri::command]
-pub fn app_get_window_index() -> u32 {
-    SINGLE_WINDOW_INDEX
+pub fn app_get_window_index(app: AppHandle, window: WebviewWindow) -> u32 {
+    window_registry::window_index(&app, window.label())
 }
 
 #[tauri::command]
@@ -50,34 +49,81 @@ pub fn app_get_launch_profile() -> Option<String> {
 }
 
 #[tauri::command]
-pub fn app_get_window_profile() -> Option<String> {
-    None
+pub fn app_get_window_profile(app: AppHandle, window: WebviewWindow) -> Option<String> {
+    Some(window_registry::get_entry(&app, window.label()).profile_id)
 }
 
 #[tauri::command]
-pub fn app_new_window() -> String {
-    // Multi-window rebuild lives in Phase 3; until then we just
-    // surface the existing window's id so the renderer's "focus the
-    // newly created window" code path does no harm.
-    SINGLE_WINDOW_ID.to_string()
+pub fn app_new_window(app: AppHandle, window: WebviewWindow) -> String {
+    let current = window_registry::get_entry(&app, window.label());
+    let entry = window_registry::create_empty_entry_for_profile(&app, &current.profile_id);
+    let id = entry.id;
+    let _ = build_window(&app, &id);
+    id
 }
 
 #[tauri::command]
-pub fn app_focus_next_window() -> bool {
-    // No other windows to cycle to; the renderer treats `false` as
-    // "no-op" (the keyboard-shortcut callsite ignores it).
+pub fn app_focus_next_window(app: AppHandle, window: WebviewWindow) -> bool {
+    let windows = app.webview_windows();
+    if windows.len() <= 1 {
+        return false;
+    }
+    let mut labels = windows.keys().cloned().collect::<Vec<_>>();
+    labels.sort();
+    let current = window.label().to_string();
+    let next = labels
+        .iter()
+        .position(|label| label == &current)
+        .map(|idx| labels[(idx + 1) % labels.len()].clone())
+        .or_else(|| labels.first().cloned());
+    if let Some(label) = next {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.set_focus();
+            return true;
+        }
+    }
     false
 }
 
 #[tauri::command]
-pub fn app_open_new_instance(_profile_id: String) -> OpenNewInstanceResult {
-    OpenNewInstanceResult { already_open: true }
+pub fn app_open_new_instance(app: AppHandle, profile_id: String) -> OpenNewInstanceResult {
+    let live = window_registry::entries_for_profile(&app, &profile_id)
+        .into_iter()
+        .filter(|entry| app.get_webview_window(&entry.id).is_some())
+        .collect::<Vec<_>>();
+    if let Some(entry) = live.iter().max_by_key(|entry| entry.last_active_at) {
+        if let Some(win) = app.get_webview_window(&entry.id) {
+            let _ = win.set_focus();
+        }
+        return OpenNewInstanceResult {
+            already_open: true,
+            window_ids: live.into_iter().map(|entry| entry.id).collect(),
+            error: None,
+        };
+    }
+
+    let created = window_registry::create_entries_for_profile(&app, &profile_id);
+    let mut ids = Vec::new();
+    for entry in &created {
+        if let Err(error) = build_window(&app, &entry.id) {
+            return OpenNewInstanceResult {
+                already_open: false,
+                window_ids: ids,
+                error: Some(error),
+            };
+        }
+        ids.push(entry.id.clone());
+    }
+    OpenNewInstanceResult {
+        already_open: false,
+        window_ids: ids,
+        error: None,
+    }
 }
 
 #[tauri::command]
 pub fn app_set_dock_badge(_count: i64) {
-    // Tauri tray badge needs a tray + per-platform icon work; tracked
-    // alongside multi-window support in Phase 3.
+    // Tauri tray badge needs a tray + per-platform icon work.
 }
 
 #[cfg(test)]
@@ -85,42 +131,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_window_constants_are_stable() {
-        // These constants are part of the renderer contract — bumping
-        // them changes the title bar's window number and the
-        // workspace.getDetachedId fallback, so guard them with a test.
-        assert_eq!(app_get_window_id(), "main");
-        assert_eq!(app_get_window_index(), 1);
-        assert_eq!(app_get_launch_profile(), None);
-        assert_eq!(app_get_window_profile(), None);
-        assert_eq!(app_new_window(), "main");
-        assert!(!app_focus_next_window());
-    }
-
-    #[test]
-    fn open_new_instance_reports_already_open() {
-        // Until multi-window is real, every "open profile in new
-        // instance" attempt should bounce with alreadyOpen=true so
-        // the renderer surfaces the existing toast instead of
-        // silently doing nothing.
-        let r = app_open_new_instance("profile-x".into());
-        assert_eq!(r, OpenNewInstanceResult { already_open: true });
-    }
-
-    #[test]
     fn open_new_instance_serializes_camel_case() {
-        // The renderer reads `result?.alreadyOpen` (camelCase). The
-        // serde rename has to match exactly or the toast never fires.
-        let r = app_open_new_instance("profile-x".into());
+        let r = OpenNewInstanceResult {
+            already_open: false,
+            window_ids: vec!["w1".into()],
+            error: None,
+        };
         let json = serde_json::to_string(&r).unwrap();
-        assert!(json.contains("\"alreadyOpen\":true"), "got: {json}");
+        assert!(json.contains("\"alreadyOpen\":false"), "got: {json}");
+        assert!(json.contains("\"windowIds\":[\"w1\"]"), "got: {json}");
         assert!(!json.contains("already_open"), "snake_case leaked: {json}");
     }
 
     #[test]
     fn set_dock_badge_is_a_noop() {
-        // No return value; we just call to confirm no panic on
-        // negative / zero / large counts.
         app_set_dock_badge(0);
         app_set_dock_badge(42);
         app_set_dock_badge(-1);

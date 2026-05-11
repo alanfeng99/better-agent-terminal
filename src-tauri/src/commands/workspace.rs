@@ -14,11 +14,12 @@
 // calls flowing through window.batAppAPI under Electron and they throw
 // `not implemented` under Tauri until we have multi-window support.
 
+use crate::window_registry;
 use serde::Serialize;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Manager, WebviewWindow};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -50,7 +51,13 @@ fn workspace_path(app: &tauri::AppHandle) -> Result<PathBuf, WorkspaceError> {
     Ok(dir.join("workspaces.json"))
 }
 
-fn workspace_load_impl(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
+fn workspace_load_impl(
+    app: tauri::AppHandle,
+    window_label: String,
+) -> Result<Option<String>, CommandError> {
+    if let Some(text) = window_registry::workspace_json(&app, &window_label) {
+        return Ok(Some(text));
+    }
     let path = workspace_path(&app)?;
     if !path.exists() {
         return Ok(None);
@@ -60,15 +67,26 @@ fn workspace_load_impl(app: tauri::AppHandle) -> Result<Option<String>, CommandE
 }
 
 #[tauri::command]
-pub async fn workspace_load(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
-    tauri::async_runtime::spawn_blocking(move || workspace_load_impl(app))
+pub async fn workspace_load(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<Option<String>, CommandError> {
+    let window_label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || workspace_load_impl(app, window_label))
         .await
         .map_err(|err| CommandError {
             message: format!("workspace.load worker failed: {err}"),
         })?
 }
 
-fn workspace_save_impl(app: tauri::AppHandle, data: String) -> Result<bool, CommandError> {
+fn workspace_save_impl(
+    app: tauri::AppHandle,
+    window_label: String,
+    data: String,
+) -> Result<bool, CommandError> {
+    if window_registry::save_workspace_json(&app, &window_label, &data) {
+        return Ok(true);
+    }
     let path = workspace_path(&app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(WorkspaceError::from)?;
@@ -78,8 +96,13 @@ fn workspace_save_impl(app: tauri::AppHandle, data: String) -> Result<bool, Comm
 }
 
 #[tauri::command]
-pub async fn workspace_save(app: tauri::AppHandle, data: String) -> Result<bool, CommandError> {
-    tauri::async_runtime::spawn_blocking(move || workspace_save_impl(app, data))
+pub async fn workspace_save(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    data: String,
+) -> Result<bool, CommandError> {
+    let window_label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || workspace_save_impl(app, window_label, data))
         .await
         .map_err(|err| CommandError {
             message: format!("workspace.save worker failed: {err}"),

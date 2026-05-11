@@ -1,0 +1,403 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager};
+
+const WINDOWS_FILE: &str = "windows.json";
+const WORKSPACES_FILE: &str = "workspaces.json";
+const PROFILES_DIR: &str = "profiles";
+const DEFAULT_PROFILE_ID: &str = "default";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSnapshot {
+    #[serde(default)]
+    pub workspaces: Value,
+    #[serde(default)]
+    pub active_workspace_id: Option<String>,
+    #[serde(default)]
+    pub active_group: Option<String>,
+    #[serde(default)]
+    pub terminals: Value,
+    #[serde(default)]
+    pub active_terminal_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowEntry {
+    pub id: String,
+    pub profile_id: String,
+    #[serde(flatten)]
+    pub snapshot: WindowSnapshot,
+    pub last_active_at: i64,
+}
+
+#[derive(Default)]
+pub struct WindowRegistryState {
+    entries: Mutex<Vec<WindowEntry>>,
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn empty_snapshot() -> WindowSnapshot {
+    WindowSnapshot {
+        workspaces: json!([]),
+        active_workspace_id: None,
+        active_group: None,
+        terminals: json!([]),
+        active_terminal_id: None,
+        bounds: None,
+    }
+}
+
+fn workspace_value_from_snapshot(snapshot: &WindowSnapshot) -> Value {
+    json!({
+        "workspaces": snapshot.workspaces,
+        "activeWorkspaceId": snapshot.active_workspace_id,
+        "activeGroup": snapshot.active_group,
+        "terminals": snapshot.terminals,
+        "activeTerminalId": snapshot.active_terminal_id,
+    })
+}
+
+fn snapshot_from_workspace_value(value: Value) -> WindowSnapshot {
+    WindowSnapshot {
+        workspaces: value
+            .get("workspaces")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+        active_workspace_id: value
+            .get("activeWorkspaceId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        active_group: value
+            .get("activeGroup")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        terminals: value.get("terminals").cloned().unwrap_or_else(|| json!([])),
+        active_terminal_id: value
+            .get("activeTerminalId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        bounds: None,
+    }
+}
+
+fn app_data_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok()
+}
+
+fn windows_path(app: &AppHandle) -> Option<PathBuf> {
+    app_data_dir(app).map(|dir| dir.join(WINDOWS_FILE))
+}
+
+fn workspace_path(app: &AppHandle) -> Option<PathBuf> {
+    app_data_dir(app).map(|dir| dir.join(WORKSPACES_FILE))
+}
+
+fn profile_path(app: &AppHandle, profile_id: &str) -> Option<PathBuf> {
+    app_data_dir(app).map(|dir| dir.join(PROFILES_DIR).join(format!("{profile_id}.json")))
+}
+
+fn profile_index_path(app: &AppHandle) -> Option<PathBuf> {
+    app_data_dir(app).map(|dir| dir.join(PROFILES_DIR).join("index.json"))
+}
+
+fn load_entries(app: &AppHandle) -> Vec<WindowEntry> {
+    let Some(path) = windows_path(app) else {
+        return Vec::new();
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<WindowEntry>>(&raw).unwrap_or_default()
+}
+
+fn persist_entries(app: &AppHandle, entries: &[WindowEntry]) {
+    let Some(path) = windows_path(app) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        path,
+        serde_json::to_string_pretty(entries).unwrap_or_else(|_| "[]".into()),
+    );
+}
+
+fn read_global_workspace_snapshot(app: &AppHandle) -> WindowSnapshot {
+    workspace_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .map(snapshot_from_workspace_value)
+        .unwrap_or_else(empty_snapshot)
+}
+
+fn write_global_workspace(app: &AppHandle, snapshot: &WindowSnapshot) {
+    let Some(path) = workspace_path(app) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        path,
+        serde_json::to_string_pretty(&workspace_value_from_snapshot(snapshot))
+            .unwrap_or_else(|_| "{}".into()),
+    );
+}
+
+fn read_profile_snapshot(app: &AppHandle, profile_id: &str) -> Vec<WindowSnapshot> {
+    let Some(path) = profile_path(app, profile_id) else {
+        return Vec::new();
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return Vec::new();
+    };
+    if value.get("version").and_then(Value::as_i64) == Some(1) {
+        return vec![snapshot_from_workspace_value(value)];
+    }
+    value
+        .get("windows")
+        .and_then(Value::as_array)
+        .map(|windows| {
+            windows
+                .iter()
+                .cloned()
+                .map(snapshot_from_workspace_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn write_profile_snapshot(app: &AppHandle, profile_id: &str, windows: &[WindowSnapshot]) {
+    let Some(path) = profile_path(app, profile_id) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let name = profile_name(app, profile_id).unwrap_or_else(|| profile_id.to_string());
+    let payload = json!({
+        "id": profile_id,
+        "name": name,
+        "version": 2,
+        "windows": windows,
+    });
+    let _ = fs::write(
+        path,
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into()),
+    );
+}
+
+fn profile_name(app: &AppHandle, profile_id: &str) -> Option<String> {
+    let raw = fs::read_to_string(profile_index_path(app)?).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    value
+        .get("profiles")?
+        .as_array()?
+        .iter()
+        .find(|profile| profile.get("id").and_then(Value::as_str) == Some(profile_id))
+        .and_then(|profile| profile.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn profile_windows(entries: &[WindowEntry], profile_id: &str) -> Vec<WindowSnapshot> {
+    entries
+        .iter()
+        .filter(|entry| entry.profile_id == profile_id)
+        .map(|entry| entry.snapshot.clone())
+        .collect()
+}
+
+fn make_window_id(profile_id: &str, index: usize) -> String {
+    let safe = profile_id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>();
+    format!("profile-{safe}-{}-{index}", now_millis())
+}
+
+pub fn ensure_entry(app: &AppHandle, window_id: &str) -> WindowEntry {
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    if let Some(entry) = entries.iter().find(|entry| entry.id == window_id).cloned() {
+        return entry;
+    }
+    let entry = WindowEntry {
+        id: window_id.to_string(),
+        profile_id: DEFAULT_PROFILE_ID.into(),
+        snapshot: if window_id == "main" {
+            read_global_workspace_snapshot(app)
+        } else {
+            empty_snapshot()
+        },
+        last_active_at: now_millis(),
+    };
+    entries.push(entry.clone());
+    persist_entries(app, &entries);
+    entry
+}
+
+pub fn get_entry(app: &AppHandle, window_id: &str) -> WindowEntry {
+    ensure_entry(app, window_id)
+}
+
+pub fn window_index(app: &AppHandle, window_id: &str) -> u32 {
+    let entry = ensure_entry(app, window_id);
+    let state = app.state::<WindowRegistryState>();
+    let entries = state.entries.lock().unwrap();
+    entries
+        .iter()
+        .filter(|candidate| candidate.profile_id == entry.profile_id)
+        .position(|candidate| candidate.id == window_id)
+        .map(|idx| idx as u32 + 1)
+        .unwrap_or(1)
+}
+
+pub fn workspace_json(app: &AppHandle, window_id: &str) -> Option<String> {
+    let entry = ensure_entry(app, window_id);
+    serde_json::to_string_pretty(&workspace_value_from_snapshot(&entry.snapshot)).ok()
+}
+
+pub fn save_workspace_json(app: &AppHandle, window_id: &str, data: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        return false;
+    };
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    let mut entry = entries
+        .iter()
+        .find(|entry| entry.id == window_id)
+        .cloned()
+        .unwrap_or_else(|| WindowEntry {
+            id: window_id.to_string(),
+            profile_id: DEFAULT_PROFILE_ID.into(),
+            snapshot: empty_snapshot(),
+            last_active_at: now_millis(),
+        });
+    entry.snapshot = snapshot_from_workspace_value(value);
+    entry.last_active_at = now_millis();
+    if let Some(slot) = entries
+        .iter_mut()
+        .find(|candidate| candidate.id == window_id)
+    {
+        *slot = entry.clone();
+    } else {
+        entries.push(entry.clone());
+    }
+    persist_entries(app, &entries);
+    if window_id == "main" {
+        write_global_workspace(app, &entry.snapshot);
+    }
+    let windows = profile_windows(&entries, &entry.profile_id);
+    write_profile_snapshot(app, &entry.profile_id, &windows);
+    true
+}
+
+pub fn entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    entries
+        .iter()
+        .filter(|entry| entry.profile_id == profile_id)
+        .cloned()
+        .collect()
+}
+
+pub fn create_entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
+    let snapshots = {
+        let loaded = read_profile_snapshot(app, profile_id);
+        if loaded.is_empty() {
+            vec![empty_snapshot()]
+        } else {
+            loaded
+        }
+    };
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    let mut created = Vec::new();
+    for (idx, snapshot) in snapshots.into_iter().enumerate() {
+        let entry = WindowEntry {
+            id: make_window_id(profile_id, idx + 1),
+            profile_id: profile_id.to_string(),
+            snapshot,
+            last_active_at: now_millis(),
+        };
+        entries.push(entry.clone());
+        created.push(entry);
+    }
+    persist_entries(app, &entries);
+    created
+}
+
+pub fn create_empty_entry_for_profile(app: &AppHandle, profile_id: &str) -> WindowEntry {
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    let entry = WindowEntry {
+        id: make_window_id(profile_id, entries.len() + 1),
+        profile_id: profile_id.to_string(),
+        snapshot: empty_snapshot(),
+        last_active_at: now_millis(),
+    };
+    entries.push(entry.clone());
+    persist_entries(app, &entries);
+    entry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_snapshot_round_trips_shape() {
+        let snapshot = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "w1"}],
+            "activeWorkspaceId": "w1",
+            "activeGroup": "g1",
+            "terminals": [{"id": "t1"}],
+            "activeTerminalId": "t1",
+        }));
+        let value = workspace_value_from_snapshot(&snapshot);
+        assert_eq!(value["workspaces"][0]["id"], "w1");
+        assert_eq!(value["activeWorkspaceId"], "w1");
+        assert_eq!(value["terminals"][0]["id"], "t1");
+    }
+
+    #[test]
+    fn window_ids_are_profile_scoped() {
+        let id = make_window_id("my profile", 1);
+        assert!(id.starts_with("profile-my-profile-"));
+        assert!(id.ends_with("-1"));
+    }
+}

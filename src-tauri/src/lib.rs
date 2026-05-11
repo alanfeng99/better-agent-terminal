@@ -11,6 +11,7 @@ mod commands;
 mod event_hub;
 mod path_guard;
 mod sidecar;
+mod window_registry;
 
 use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
@@ -32,6 +33,7 @@ pub fn run() {
         .manage(worker_buffer_cmd::WorkerBufferState::default())
         .manage(event_hub::RuntimeEventHubState::default())
         .manage(codex_app_server::CodexAppServerState::default())
+        .manage(window_registry::WindowRegistryState::default())
         .manage(sidecar::SidecarState::new())
         .invoke_handler(tauri::generate_handler![
             settings::settings_load,
