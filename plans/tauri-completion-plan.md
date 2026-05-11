@@ -26,6 +26,7 @@
 - 2026-05-10：收斂 dock badge direct host calls。settings/workspace store 的 dock badge 更新已改走 `host.app.setDockBadge`，保留失敗時不阻塞 store 更新的既有行為，避免 Tauri 下 pending action badge 繞過 host adapter。
 - 2026-05-10：收斂 `App.tsx` direct host calls。啟動時 auth status、remote profile connect、remote client polling/resume refresh、Windows window-cycle platform 判斷、全域 send-to-agent 已改走 `host.*`，主 App shell 不再直接依賴 Electron preload。
 - 2026-05-10：收斂 platform/systemVersion direct reads。`GitPanel` 的 path separator 與 `TerminalPanel` 的 Windows ConPTY build detection 已改讀 `host.platform` / `host.systemVersion`，renderer 同步平台資訊不再直接依賴 Electron preload。
+- 2026-05-11：補 Tauri top-level platform parity。`createTauriHost()` 現在直接提供 `host.platform` 與 `host.systemVersion`，避免 App/GitPanel/SettingsPanel/TerminalPanel 透過 `host.*` 讀平台時拿到 missing-method proxy；host-api regression 已鎖住此同步值。
 - 2026-05-10：收斂 `Sidebar` agent resting controls。workspace context menu 的 `isResting` / `restSession` / `wakeSession` 已改走 `host.claude.*`，對齊已存在的 Tauri sidecar route。
 - 2026-05-10：收斂 `WorkspaceView` direct host calls。agent preset list、worktree create/remove、Claude CLI path、session start/stop/resume/send、cleanupWorktree 已改走 `host.*`，workspace shell 的新增、重啟、關閉與 send-to-agent 流程不再旁路 host adapter。
 - 2026-05-10：收斂 `ClaudeAgentPanel` direct Claude calls。archive/history、session lifecycle、metadata、permission/ask-user、account、MCP、worktree/context usage 等 `window.batAppAPI.claude.*` 呼叫已改走 `host.claude.*`，保留既有 Electron 行為並讓 Tauri adapter 統一承接。

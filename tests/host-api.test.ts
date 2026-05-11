@@ -242,6 +242,11 @@ async function run() {
     assert.equal(mod.getHostKind(), 'tauri')
     assert.equal(mod.isElectron(), false)
     assert.equal(mod.isTauri(), true)
+    assert.ok(
+      ['win32', 'darwin', 'linux'].includes(mod.host.platform),
+      `unexpected platform: ${mod.host.platform}`,
+    )
+    assert.equal(mod.host.systemVersion, '')
 
     const loaded = await mod.host.settings.load()
     assert.equal(loaded, null)

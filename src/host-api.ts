@@ -289,7 +289,10 @@ type NotificationEntry = {
 function createTauriHost(): BatAppAPI {
   // Build a partial implementation: only ported namespaces are real; the rest
   // throw via a Proxy so missing coverage fails loudly.
+  const platform = detectPlatform()
   const ported: Record<string, unknown> = {
+    platform,
+    systemVersion: '',
     settings: {
       load: () => getInvoke()<string | null>('settings_load'),
       save: (data: string) => getInvoke()<void>('settings_save', { data }),
