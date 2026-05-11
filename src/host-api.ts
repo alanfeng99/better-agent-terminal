@@ -1035,6 +1035,17 @@ function createTauriHost(): BatAppAPI {
         getInvoke()<boolean>('worker_buffer_clear', { panelId }),
       loadProcfile: (filePath: string) =>
         getInvoke()<Array<{ name: string; command: string }>>('worker_procfile_load', { filePath }),
+      startProcess: (options: {
+        panelId: string
+        name: string
+        command: string
+        cwd: string
+        shell?: string
+        customEnv?: Record<string, string>
+      }) =>
+        getInvoke()<string>('worker_procfile_start', { options }),
+      stopProcess: (panelId: string, name: string) =>
+        getInvoke()<boolean>('worker_procfile_stop', { panelId, name }),
     },
     remote: {
       // Phase 3 namespace; sidecar stubs return shaped objects so the

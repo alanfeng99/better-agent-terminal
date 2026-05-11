@@ -118,21 +118,6 @@ function prefixWorkerChunk(data: string, prefix: string, wasMidLine: boolean): {
   return { output, midLine: !atLineStart }
 }
 
-// Build the line written to the PTY to launch a Procfile command so that the
-// PTY exits with the command's status. The wrapper differs per shell because
-// `exec` is a POSIX shell builtin and PowerShell has no direct equivalent.
-function buildLaunchCommand(shell: string | undefined, command: string): string {
-  const isPowerShell = !!shell && /pwsh|powershell/i.test(shell)
-  if (isPowerShell) {
-    // PowerShell: run inline, then exit with the child's status code so the
-    // pty onExit handler reports the real result.
-    return `${command}; exit $LASTEXITCODE\r`
-  }
-  // POSIX shells: exec replaces the parent shell with the command.
-  const escaped = command.replace(/'/g, "'\\''")
-  return `exec bash -c '${escaped}'\r`
-}
-
 function getProcfileWorkingDirectory(procfilePath: string, fallbackCwd: string): string {
   const normalized = procfilePath.replace(/\\/g, '/')
   const lastSlash = normalized.lastIndexOf('/')
@@ -361,24 +346,21 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       p.ptyId === proc.ptyId ? { ...p, status: 'starting' as const, exitCode: undefined } : p
     ))
 
-    ptyIdsRef.current.add(proc.ptyId)
-    await host.pty.create({
-      id: proc.ptyId,
+    const ptyId = await host.workerBuffer.startProcess({
+      panelId: terminalId,
+      name: proc.name,
+      command: proc.command,
       cwd: processCwd,
-      type: 'terminal',
       shell: shellRef.current,
       customEnv: getWorktreeProcessEnv(processCwd),
     })
-
-    // Use exec to replace the shell — pty exits when command exits
-    const launch = buildLaunchCommand(shellRef.current, proc.command)
+    ptyIdsRef.current.add(ptyId)
     setTimeout(() => {
-      host.pty.write(proc.ptyId, launch)
       setProcesses(prev => prev.map(p =>
         p.ptyId === proc.ptyId && p.status === 'starting' ? { ...p, status: 'running' as const } : p
       ))
     }, 300)
-  }, [processCwd])
+  }, [processCwd, terminalId])
 
   // Re-read Procfile and sync process list (add new, remove deleted, update commands)
   const reloadProcfile = useCallback(async () => {
@@ -397,7 +379,7 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const proc of current) {
       if (!newNames.has(proc.name)) {
         if (proc.status === 'running' || proc.status === 'starting') {
-          host.pty.kill(proc.ptyId)
+          await host.workerBuffer.stopProcess(terminalId, proc.name)
           ptyIdsRef.current.delete(proc.ptyId)
         }
         writeOutput(proc.name, proc.color, `\n\x1b[90mRemoved from Procfile\x1b[0m\n`)
@@ -438,9 +420,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     const fresh = processesRef.current.find(p => p.name === proc.name)
     if (!fresh) return
     dlog(`[worker] stopping process: ${fresh.name}`)
-    host.pty.kill(fresh.ptyId)
+    await host.workerBuffer.stopProcess(terminalId, fresh.name)
     ptyIdsRef.current.delete(fresh.ptyId)
-  }, [reloadProcfile])
+  }, [reloadProcfile, terminalId])
 
   // Restart a single process (reload Procfile first to pick up command changes)
   const restartProcess = useCallback(async (proc: WorkerProcess) => {
@@ -449,13 +431,13 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     if (!fresh) return // process was removed from Procfile
 
     dlog(`[worker] restarting process: ${fresh.name}`)
-    await host.pty.kill(fresh.ptyId)
+    await host.workerBuffer.stopProcess(terminalId, fresh.name)
     ptyIdsRef.current.delete(fresh.ptyId)
 
     midLineRef.current.set(fresh.name, false)
     writeOutput(fresh.name, fresh.color, `\n\x1b[33mRestarting...\x1b[0m\n`)
     await startProcess(fresh)
-  }, [startProcess, writeOutput, reloadProcfile])
+  }, [startProcess, writeOutput, reloadProcfile, terminalId])
 
   // Batch operations (reload Procfile once, then act on fresh list)
   const startAll = useCallback(async () => {
@@ -470,11 +452,11 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const p of processesRef.current) {
       if (p.status === 'running' || p.status === 'starting') {
         dlog(`[worker] stopping process: ${p.name}`)
-        host.pty.kill(p.ptyId)
+        await host.workerBuffer.stopProcess(terminalId, p.name)
         ptyIdsRef.current.delete(p.ptyId)
       }
     }
-  }, [reloadProcfile])
+  }, [reloadProcfile, terminalId])
 
   const restartAll = useCallback(async () => {
     const updated = await reloadProcfile()
@@ -482,14 +464,14 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
     for (const p of procs) {
       dlog(`[worker] restarting process: ${p.name}`)
       if (p.status === 'running' || p.status === 'starting') {
-        await host.pty.kill(p.ptyId)
+        await host.workerBuffer.stopProcess(terminalId, p.name)
         ptyIdsRef.current.delete(p.ptyId)
       }
       midLineRef.current.set(p.name, false)
       writeOutput(p.name, p.color, `\n\x1b[33mRestarting...\x1b[0m\n`)
       await startProcess(p)
     }
-  }, [reloadProcfile, startProcess, writeOutput])
+  }, [reloadProcfile, startProcess, writeOutput, terminalId])
 
   // Main init effect: create xterm, parse Procfile, start processes
   useEffect(() => {
@@ -742,13 +724,9 @@ export const WorkerPanel = memo(function WorkerPanel({ terminalId, procfilePath,
       terminalRef.current = null
       fitAddonRef.current = null
       if (isRemoteClientRef.current) return
-      const idsToKill = new Set([
-        ...ptyIdsRef.current,
-        ...processesRef.current.map(proc => proc.ptyId),
-      ])
       ptyIdsRef.current.clear()
-      for (const id of idsToKill) {
-        host.pty.kill(id)
+      for (const proc of processesRef.current) {
+        host.workerBuffer.stopProcess(terminalId, proc.name)
       }
     }
   }, [terminalId, procfilePath, processCwd, writeOutput, startProcess, reRenderTerminal, flushToDisk])

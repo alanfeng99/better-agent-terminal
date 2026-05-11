@@ -2,6 +2,17 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CreatePtyOptions } from '../src/types'
 import type { NotificationEntry } from './notification-center'
 
+function buildWorkerPtyId(panelId: string, name: string): string {
+  return `${panelId}__w__${name}`
+}
+
+function buildWorkerLaunchCommand(shell: string | undefined, command: string): string {
+  const isPowerShell = !!shell && /pwsh|powershell/i.test(shell)
+  if (isPowerShell) return `${command}; exit $LASTEXITCODE\r`
+  const escaped = command.replace(/'/g, "'\\''")
+  return `exec bash -c '${escaped}'\r`
+}
+
 const batAppAPI = {
   platform: process.platform as 'win32' | 'darwin' | 'linux',
   systemVersion: typeof process.getSystemVersion === 'function' ? process.getSystemVersion() : '',
@@ -479,6 +490,32 @@ const batAppAPI = {
         if (name && command) entries.push({ name, command })
       }
       return entries
+    },
+    startProcess: async (options: {
+      panelId: string
+      name: string
+      command: string
+      cwd: string
+      shell?: string
+      customEnv?: Record<string, string>
+    }) => {
+      const id = buildWorkerPtyId(options.panelId, options.name)
+      await ipcRenderer.invoke('pty:create', {
+        id,
+        cwd: options.cwd,
+        type: 'terminal',
+        shell: options.shell,
+        customEnv: options.customEnv,
+      } satisfies CreatePtyOptions)
+      const launch = buildWorkerLaunchCommand(options.shell, options.command)
+      setTimeout(() => {
+        void ipcRenderer.invoke('pty:write', id, launch)
+      }, 300)
+      return id
+    },
+    stopProcess: async (panelId: string, name: string) => {
+      await ipcRenderer.invoke('pty:kill', buildWorkerPtyId(panelId, name))
+      return true
     },
   },
 }

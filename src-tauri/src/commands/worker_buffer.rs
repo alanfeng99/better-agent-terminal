@@ -7,11 +7,15 @@
 // rough order of magnitude as the Electron implementation but keeps memory
 // from blowing up if a runaway producer never calls clear().
 
+use crate::commands::pty::{
+    kill_pty_session, start_pty_session, write_pty_session, CreatePtyOptions, PtyState,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use std::time::Duration;
+use tauri::{AppHandle, State};
 
 const MAX_BYTES_PER_PANEL: usize = 1 << 20; // 1 MiB
 
@@ -54,6 +58,18 @@ pub struct ProcfileEntry {
     command: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerProcessStartOptions {
+    panel_id: String,
+    name: String,
+    command: String,
+    cwd: String,
+    shell: Option<String>,
+    #[serde(default)]
+    custom_env: Option<HashMap<String, String>>,
+}
+
 pub fn parse_procfile_content(content: &str) -> Vec<ProcfileEntry> {
     let mut entries = Vec::new();
     for raw in content.lines() {
@@ -77,6 +93,24 @@ pub fn parse_procfile_content(content: &str) -> Vec<ProcfileEntry> {
         }
     }
     entries
+}
+
+fn worker_pty_id(panel_id: &str, name: &str) -> String {
+    format!("{panel_id}__w__{name}")
+}
+
+fn build_worker_launch_command(shell: Option<&str>, command: &str) -> String {
+    let is_powershell = shell
+        .map(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("pwsh") || lower.contains("powershell")
+        })
+        .unwrap_or(false);
+    if is_powershell {
+        return format!("{command}; exit $LASTEXITCODE\r");
+    }
+    let escaped = command.replace('\'', "'\\''");
+    format!("exec bash -c '{escaped}'\r")
 }
 
 fn append_lines_to_map(map: &mut HashMap<String, String>, panel_id: &str, lines: &str) {
@@ -177,6 +211,60 @@ pub async fn worker_procfile_load(file_path: String) -> Result<Vec<ProcfileEntry
     })?
 }
 
+#[tauri::command]
+pub async fn worker_procfile_start(
+    app: AppHandle,
+    pty_state: State<'_, PtyState>,
+    worker_state: State<'_, WorkerBufferState>,
+    options: WorkerProcessStartOptions,
+) -> Result<String, CommandError> {
+    let pty_id = worker_pty_id(&options.panel_id, &options.name);
+    let launch = build_worker_launch_command(options.shell.as_deref(), &options.command);
+    let pty_handle = pty_state.handle();
+    let worker_handle = worker_state.handle();
+    let create_options = CreatePtyOptions {
+        id: pty_id.clone(),
+        cwd: options.cwd,
+        r#type: "terminal".to_string(),
+        shell: options.shell,
+        agent_preset: None,
+        custom_env: options.custom_env,
+        per_terminal_history: None,
+        history_key: None,
+    };
+    let started_id = tauri::async_runtime::spawn_blocking(move || {
+        start_pty_session(&app, pty_handle, Some(worker_handle), create_options)
+    })
+    .await
+    .map_err(|err| CommandError {
+        message: format!("worker.procfileStart worker failed: {err}"),
+    })?
+    .map_err(|err| CommandError {
+        message: format!("{err:?}"),
+    })?;
+
+    let pty_state = (*pty_state).clone();
+    let started_id_for_write = started_id.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = write_pty_session(&pty_state, &started_id_for_write, &launch);
+    });
+    Ok(started_id)
+}
+
+#[tauri::command]
+pub fn worker_procfile_stop(
+    pty_state: State<'_, PtyState>,
+    panel_id: String,
+    name: String,
+) -> Result<bool, CommandError> {
+    let pty_id = worker_pty_id(&panel_id, &name);
+    kill_pty_session(&pty_state, &pty_id).map_err(|err| CommandError {
+        message: format!("{err:?}"),
+    })?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +309,30 @@ mod tests {
                     command: "node worker.js:with-arg".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn worker_pty_id_matches_renderer_convention() {
+        assert_eq!(worker_pty_id("panel", "web"), "panel__w__web");
+    }
+
+    #[test]
+    fn launch_command_uses_powershell_exit_code_wrapper() {
+        assert_eq!(
+            build_worker_launch_command(
+                Some("C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+                "pnpm dev"
+            ),
+            "pnpm dev; exit $LASTEXITCODE\r",
+        );
+    }
+
+    #[test]
+    fn launch_command_uses_posix_exec_wrapper() {
+        assert_eq!(
+            build_worker_launch_command(Some("/bin/bash"), "node 'worker.js'"),
+            "exec bash -c 'node '\\''worker.js'\\'''\r",
         );
     }
 

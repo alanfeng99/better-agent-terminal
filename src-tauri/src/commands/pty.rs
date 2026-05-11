@@ -70,6 +70,7 @@ pub struct PtySession {
     kind: String,
 }
 
+#[derive(Clone)]
 pub struct PtyState {
     inner: Arc<Mutex<HashMap<String, PtySession>>>,
 }
@@ -83,11 +84,11 @@ impl Default for PtyState {
 }
 
 impl PtyState {
-    fn handle(&self) -> Arc<Mutex<HashMap<String, PtySession>>> {
+    pub(crate) fn handle(&self) -> Arc<Mutex<HashMap<String, PtySession>>> {
         Arc::clone(&self.inner)
     }
 
-    fn with_session<R>(
+    pub(crate) fn with_session<R>(
         &self,
         id: &str,
         f: impl FnOnce(&mut PtySession) -> Result<R, CommandError>,
@@ -363,7 +364,7 @@ fn spawn_output_coalescer(
     tx
 }
 
-fn start_pty_session(
+pub(crate) fn start_pty_session(
     app: &AppHandle,
     map_handle: Arc<Mutex<HashMap<String, PtySession>>>,
     worker_buffer_handle: Option<Arc<Mutex<HashMap<String, String>>>>,
@@ -514,6 +515,14 @@ pub async fn pty_create(
 
 #[tauri::command]
 pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), CommandError> {
+    write_pty_session(&state, &id, &data)
+}
+
+pub(crate) fn write_pty_session(
+    state: &PtyState,
+    id: &str,
+    data: &str,
+) -> Result<(), CommandError> {
     state.with_session(&id, |s| {
         s.writer
             .write_all(data.as_bytes())
@@ -551,10 +560,14 @@ pub fn pty_resize(
 
 #[tauri::command]
 pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), CommandError> {
+    kill_pty_session(&state, &id)
+}
+
+pub(crate) fn kill_pty_session(state: &PtyState, id: &str) -> Result<(), CommandError> {
     let mut map = state.inner.lock().map_err(|e| CommandError {
         message: e.to_string(),
     })?;
-    if let Some(mut session) = map.remove(&id) {
+    if let Some(mut session) = map.remove(id) {
         let _ = session.child.kill();
     }
     Ok(())

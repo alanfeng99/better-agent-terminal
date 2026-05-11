@@ -201,6 +201,7 @@
 - 2026-05-11：修正 WorkerPanel Procfile log retention。Tauri/Rust `workerBuffer.init` 不再覆蓋既有 buffer，WorkerPanel mount 時會恢復同一 terminal 的 Procfile scrollback，unmount 前會 flush pending batch 且不再無條件 clear buffer；process name spotlight/highlight 行為保留，避免切換/重掛載後只剩後啟動 process 的 log。
 - 2026-05-11：開始 Procfile runtime Rust 化。Tauri PTY reader 會辨識 `terminalId__w__processName` 的 Procfile worker PTY id，直接在 Rust 端把 PTY output append 到 `workerBuffer`；renderer 仍即時顯示與負責 header/exit/control 訊息，但 Tauri 下不再靠 renderer lifecycle 保存 process stdout/stderr，降低切換 UI 時掉 log 的風險。
 - 2026-05-11：把 Procfile 讀取/解析接到 host workerBuffer contract。Tauri 使用 Rust `worker_procfile_load` 直接讀 Procfile 並套用 renderer-compatible parser 規則；Electron preload 提供同名 fallback。WorkerPanel 不再自行 `fs.readFile + parseProcfile`，為後續 start/stop supervisor 搬到 Rust 先收斂入口。
+- 2026-05-11：把 Procfile worker start/stop 接到 Rust command。Tauri `worker_procfile_start/stop` 會建立 Procfile worker PTY、寫入 shell launch wrapper 並用 Rust workerBuffer 保存輸出；WorkerPanel 改走 `host.workerBuffer.startProcess/stopProcess`，Electron preload 保留相同行為 fallback。
 
 ## 目前判斷
 
