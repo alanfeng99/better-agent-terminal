@@ -379,6 +379,7 @@ function createTauriHost(): BatAppAPI {
       // Renderer logs forward to Rust and are persisted under
       // <app-data>/logs/debug.log, matching Electron's debuggability.
       log: (...args: unknown[]) => getInvoke()<void>('debug_log', { args }),
+      openLogsFolder: () => getInvoke()<boolean>('debug_open_logs_folder'),
       // The renderer reads this synchronously during render.
       isDebugMode: false,
     },

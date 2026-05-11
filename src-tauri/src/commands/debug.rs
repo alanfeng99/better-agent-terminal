@@ -11,8 +11,11 @@
 
 use crate::log_file::append_line;
 use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
 pub async fn debug_log(app: tauri::AppHandle, args: Vec<Value>) {
@@ -27,6 +30,24 @@ pub async fn debug_log(app: tauri::AppHandle, args: Vec<Value>) {
         let line = debug_log_line(&message);
         let _ = tauri::async_runtime::spawn_blocking(move || append_line(&path, &line)).await;
     }
+}
+
+#[tauri::command]
+pub async fn debug_open_logs_folder(app: tauri::AppHandle) -> Result<bool, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map(|dir| logs_dir(&dir))
+        .map_err(|err| err.to_string())?;
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+fn logs_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("logs")
 }
 
 fn format_args(args: Vec<Value>) -> String {
@@ -75,5 +96,13 @@ mod tests {
     fn log_line_has_renderer_prefix() {
         let line = debug_log_line("hello");
         assert!(line.contains(" [renderer] hello\n"));
+    }
+
+    #[test]
+    fn logs_dir_lives_under_app_data_logs() {
+        assert_eq!(
+            logs_dir(Path::new("app-data")),
+            PathBuf::from("app-data").join("logs")
+        );
     }
 }

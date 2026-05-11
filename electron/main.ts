@@ -1024,6 +1024,10 @@ function bindProxiedHandlersToIpc() {
 ipcMain.on('debug:log', (_event, ...args: unknown[]) => {
   logger.log('[renderer]', ...args)
 })
+ipcMain.handle('debug:open-logs-folder', async () => {
+  await shell.openPath(app.getPath('userData'))
+  return true
+})
 
 // ── Local-only IPC handlers (not proxied) ──
 

@@ -429,6 +429,7 @@ const batAppAPI = {
   },
   debug: {
     log: (...args: unknown[]) => ipcRenderer.send('debug:log', ...args),
+    openLogsFolder: () => ipcRenderer.invoke('debug:open-logs-folder') as Promise<boolean>,
     isDebugMode: !!process.env.BAT_DEBUG,
   },
   snippet: {

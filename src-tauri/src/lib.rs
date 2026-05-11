@@ -87,6 +87,7 @@ pub fn run() {
             update_cmd::update_get_version,
             update_cmd::update_check,
             debug_cmd::debug_log,
+            debug_cmd::debug_open_logs_folder,
             git_cmd::git_get_github_url,
             git_cmd::git_get_branch,
             git_cmd::git_get_log,

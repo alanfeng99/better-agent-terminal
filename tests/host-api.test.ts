@@ -107,6 +107,7 @@ async function run() {
         return { hasUpdate: false, currentVersion: '0.1.0', latestRelease: null } as unknown as T
       }
       if (cmd === 'debug_log') return undefined as unknown as T
+      if (cmd === 'debug_open_logs_folder') return true as unknown as T
       if (cmd === 'git_get_github_url') return 'https://github.com/owner/repo' as unknown as T
       if (cmd === 'git_get_branch') return 'main' as unknown as T
       if (cmd === 'git_get_log') {
@@ -357,6 +358,7 @@ async function run() {
     assert.deepEqual(updateInfo, { hasUpdate: false, currentVersion: '0.1.0', latestRelease: null })
     // Renderer log forwarding takes any arg shape and packs into `args`.
     await mod.host.debug.log('boot', { phase: 1 }, 42)
+    assert.equal(await mod.host.debug.openLogsFolder(), true)
 
     // git.* — read-only ops mirroring the Electron handlers.
     const ghUrl = await mod.host.git.getGithubUrl('/repo')
@@ -618,6 +620,7 @@ async function run() {
       'clipboard_write_image',
       'pty_restart',
       'pty_get_cwd',
+      'debug_open_logs_folder',
       'openai_set_api_key',
       'worktree_create',
       'worktree_rehydrate',
@@ -683,6 +686,7 @@ async function run() {
       { cmd: 'update_get_version', args: undefined },
       { cmd: 'update_check', args: undefined },
       { cmd: 'debug_log', args: { args: ['boot', { phase: 1 }, 42] } },
+      { cmd: 'debug_open_logs_folder', args: undefined },
       { cmd: 'git_get_github_url', args: { folderPath: '/repo' } },
       { cmd: 'git_get_branch', args: { cwd: '/repo' } },
       { cmd: 'git_get_log', args: { cwd: '/repo', count: 25 } },
