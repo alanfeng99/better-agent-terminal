@@ -66,6 +66,11 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
+          if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+            sudo apt-get install -y libfuse2t64
+          else
+            sudo apt-get install -y libfuse2
+          fi
 
       - name: Cache Cargo registry and target
         uses: actions/cache@v4
