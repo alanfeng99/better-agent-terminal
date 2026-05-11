@@ -463,12 +463,44 @@ function createTauriHost(): BatAppAPI {
         listenAdapter<NotificationEntry[]>('notification:update', cb),
     },
     system: {
-      // Sleep/wake detection isn't wired up on the Tauri side yet —
-      // tauri-plugin-os surfaces platform info but not power events.
-      // Returning a no-op unsub keeps subscribers happy; the
-      // Electron-side App.tsx handler that re-checks accounts on
-      // resume just doesn't fire.
-      onResume: (_cb: () => void) => () => {},
+      // Tauri does not expose Electron's powerMonitor resume event here.
+      // Approximate it from renderer lifecycle signals so remote/account
+      // status refreshes after the app comes back from sleep or network
+      // reconnect. This stays behind the existing system.onResume contract.
+      onResume: (cb: () => void) => {
+        const win = typeof window !== 'undefined' ? window : null
+        const doc = typeof document !== 'undefined' ? document : null
+        if (!win?.addEventListener) return () => {}
+        let hiddenAt = 0
+        let lastFired = 0
+        const fire = () => {
+          const now = Date.now()
+          if (now - lastFired < 1000) return
+          lastFired = now
+          cb()
+        }
+        const onVisibility = () => {
+          if (!doc) return
+          if (doc.visibilityState === 'hidden') {
+            hiddenAt = Date.now()
+            return
+          }
+          if (hiddenAt && Date.now() - hiddenAt > 5000) fire()
+          hiddenAt = 0
+        }
+        const onFocus = () => {
+          if (hiddenAt && Date.now() - hiddenAt > 5000) fire()
+        }
+        const onOnline = () => fire()
+        doc?.addEventListener?.('visibilitychange', onVisibility)
+        win.addEventListener('focus', onFocus)
+        win.addEventListener('online', onOnline)
+        return () => {
+          doc?.removeEventListener?.('visibilitychange', onVisibility)
+          win.removeEventListener('focus', onFocus)
+          win.removeEventListener('online', onOnline)
+        }
+      },
     },
     app: {
       // Single-window MVP: see src-tauri/src/commands/app.rs.
