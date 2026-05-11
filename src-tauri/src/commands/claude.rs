@@ -630,6 +630,9 @@ fn claude_context_window_for_model(model: Option<&str>) -> u64 {
 fn session_meta_from_notification_snapshot(
     session: &notification_cmd::AgentNotificationSession,
 ) -> Value {
+    if let Some(meta) = session.latest_meta.as_ref() {
+        return meta.clone();
+    }
     let model = session.model.as_deref();
     json!({
         "permissionMode": session.permission_mode.as_deref().unwrap_or("default"),
@@ -2546,6 +2549,7 @@ mod tests {
             sdk_session_id: Some("sdk-1".into()),
             codex_sandbox_mode: None,
             codex_approval_policy: None,
+            latest_meta: None,
         };
 
         let meta = session_meta_from_notification_snapshot(&session);
@@ -2559,6 +2563,35 @@ mod tests {
         assert_eq!(meta["inputTokens"], 0);
         assert_eq!(meta["outputTokens"], 0);
         assert_eq!(meta["numTurns"], 0);
+    }
+
+    #[test]
+    fn notification_session_meta_prefers_latest_status_meta() {
+        let session = notification_cmd::AgentNotificationSession {
+            window_id: Some("main".into()),
+            profile_id: Some("default".into()),
+            cwd: "C:/repo".into(),
+            agent_kind: Some("claude".into()),
+            model: Some("claude-sonnet-4-6".into()),
+            permission_mode: Some("default".into()),
+            effort: None,
+            auto_compact_window: None,
+            sdk_session_id: None,
+            codex_sandbox_mode: None,
+            codex_approval_policy: None,
+            latest_meta: Some(json!({
+                "model": "claude-sonnet-4-6",
+                "sdkSessionId": "sdk-live",
+                "inputTokens": 12,
+                "outputTokens": 5,
+                "numTurns": 1
+            })),
+        };
+
+        let meta = session_meta_from_notification_snapshot(&session);
+        assert_eq!(meta["sdkSessionId"], "sdk-live");
+        assert_eq!(meta["inputTokens"], 12);
+        assert_eq!(meta["numTurns"], 1);
     }
 
     #[test]

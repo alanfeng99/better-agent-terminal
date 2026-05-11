@@ -22,6 +22,7 @@ impl RuntimeEventHubState {
         // be added without changing renderer event payloads.
         let _seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = app.emit(topic, payload.clone());
+        notification::update_agent_session_meta_from_event(app, topic, &payload);
         notification::add_agent_completion_from_event(app, topic, &payload);
     }
 }

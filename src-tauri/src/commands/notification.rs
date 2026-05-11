@@ -67,6 +67,7 @@ pub struct AgentNotificationSession {
     pub sdk_session_id: Option<String>,
     pub codex_sandbox_mode: Option<String>,
     pub codex_approval_policy: Option<String>,
+    pub latest_meta: Option<Value>,
 }
 
 #[derive(Default)]
@@ -258,6 +259,7 @@ pub fn register_agent_session_from_options(
             sdk_session_id,
             codex_sandbox_mode,
             codex_approval_policy,
+            latest_meta: None,
         },
     );
 }
@@ -329,6 +331,50 @@ pub fn add_agent_completion_from_event(app: &AppHandle, topic: &str, payload: &V
             agent_kind: session.agent_kind,
         },
     );
+}
+
+pub fn update_agent_session_meta_from_event(app: &AppHandle, topic: &str, payload: &Value) {
+    if topic != "claude:status" {
+        return;
+    }
+    let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(meta) = payload.get("meta") else {
+        return;
+    };
+    let Some(agent_state) = app.try_state::<AgentNotificationState>() else {
+        return;
+    };
+    let mut sessions = agent_state.lock();
+    let Some(session) = sessions.get_mut(session_id) else {
+        return;
+    };
+    session.latest_meta = Some(meta.clone());
+    if let Some(cwd) = string_option(meta, "cwd") {
+        session.cwd = cwd;
+    }
+    if let Some(model) = string_option(meta, "model") {
+        session.model = Some(model);
+    }
+    if let Some(permission_mode) = string_option(meta, "permissionMode") {
+        session.permission_mode = Some(permission_mode);
+    }
+    if let Some(effort) = string_option(meta, "effort") {
+        session.effort = Some(effort);
+    }
+    if let Some(sdk_session_id) = string_option(meta, "sdkSessionId") {
+        session.sdk_session_id = Some(sdk_session_id);
+    }
+    if let Some(value) = meta.get("autoCompactWindow").and_then(Value::as_i64) {
+        session.auto_compact_window = Some(value);
+    }
+    if let Some(mode) = string_option(meta, "codexSandboxMode") {
+        session.codex_sandbox_mode = Some(mode);
+    }
+    if let Some(policy) = string_option(meta, "codexApprovalPolicy") {
+        session.codex_approval_policy = Some(policy);
+    }
 }
 
 fn focus_notification_window(app: &AppHandle, window_id: &str) -> Option<()> {
