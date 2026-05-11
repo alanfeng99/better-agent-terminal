@@ -40,6 +40,7 @@ const SESSION_LIST_LIMIT: usize = 50;
 const PREVIEW_LINE_LIMIT: usize = 20;
 const PREVIEW_CHARS: usize = 120;
 const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn call(
     app: &AppHandle,
@@ -168,45 +169,82 @@ fn resolve_claude_cli_path(app: &AppHandle) -> String {
     .unwrap_or_default()
 }
 
-fn parse_auth_status_stdout(stdout: &str) -> Value {
-    serde_json::from_str::<Value>(stdout).unwrap_or(Value::Null)
+fn build_claude_cli_command(cli_path: &str, args: &[&str]) -> Command {
+    if cfg!(windows) {
+        let ext = Path::new(cli_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase());
+        if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+            let mut command = Command::new("cmd");
+            command.arg("/C").arg(cli_path).args(args);
+            return command;
+        }
+    }
+    let mut command = Command::new(cli_path);
+    command.args(args);
+    command
 }
 
-fn fetch_auth_status_native(app: &AppHandle) -> Value {
+fn run_claude_cli_native(
+    app: &AppHandle,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, String> {
     let cli_path = resolve_claude_cli_path(app);
     if cli_path.trim().is_empty() {
-        return Value::Null;
+        return Err("Claude CLI not found".to_string());
     }
-    let mut child = match Command::new(cli_path)
-        .args(["auth", "status"])
+    let mut child = build_claude_cli_command(&cli_path, args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return Value::Null,
-    };
+        .map_err(|err| err.to_string())?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    return Value::Null;
+                    return Err(status.to_string());
                 }
                 let mut stdout = String::new();
                 if let Some(mut pipe) = child.stdout.take() {
                     let _ = pipe.read_to_string(&mut stdout);
                 }
-                return parse_auth_status_stdout(&stdout);
+                return Ok(stdout);
             }
-            Ok(None) if started.elapsed() >= AUTH_STATUS_TIMEOUT => {
+            Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Value::Null;
+                return Err("Claude CLI timed out".to_string());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(_) => return Value::Null,
+            Err(err) => return Err(err.to_string()),
         }
+    }
+}
+
+fn parse_auth_status_stdout(stdout: &str) -> Value {
+    serde_json::from_str::<Value>(stdout).unwrap_or(Value::Null)
+}
+
+fn fetch_auth_status_native(app: &AppHandle) -> Value {
+    run_claude_cli_native(app, &["auth", "status"], AUTH_STATUS_TIMEOUT)
+        .map(|stdout| parse_auth_status_stdout(&stdout))
+        .unwrap_or(Value::Null)
+}
+
+fn auth_login_native(app: &AppHandle) -> Value {
+    match run_claude_cli_native(app, &["auth", "login"], AUTH_LOGIN_TIMEOUT) {
+        Ok(_) => json!({ "success": true }),
+        Err(err) => json!({ "success": false, "error": err }),
+    }
+}
+
+fn auth_logout_native(app: &AppHandle) -> Value {
+    match run_claude_cli_native(app, &["auth", "logout"], AUTH_STATUS_TIMEOUT) {
+        Ok(_) => json!({ "success": true }),
+        Err(err) => json!({ "success": false, "error": err }),
     }
 }
 
@@ -1173,17 +1211,25 @@ pub async fn claude_stop_task(
 #[tauri::command]
 pub async fn claude_auth_login(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.authLogin", Value::Null).await
+    tauri::async_runtime::spawn_blocking(move || auth_login_native(&app))
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("claude.authLogin worker failed: {err}"),
+        })
 }
 
 #[tauri::command]
 pub async fn claude_auth_logout(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.authLogout", Value::Null).await
+    tauri::async_runtime::spawn_blocking(move || auth_logout_native(&app))
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("claude.authLogout worker failed: {err}"),
+        })
 }
 
 #[tauri::command]
@@ -1213,14 +1259,18 @@ pub async fn claude_account_import_current(
 #[tauri::command]
 pub async fn claude_account_login_new(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
     let app_data_dir = app_data_dir(&app)?;
     let index = account_store::read_index(&app_data_dir);
     let active_account_id = index.active_account_id.clone();
     let backup_credential = account_store::read_cli_credentials();
-    let login_result =
-        call_blocking(app.clone(), state.clone(), "claude.authLogin", Value::Null).await?;
+    let login_app = app.clone();
+    let login_result = tauri::async_runtime::spawn_blocking(move || auth_login_native(&login_app))
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("claude.accountLoginNew authLogin worker failed: {err}"),
+        })?;
     if !login_success(&login_result) {
         return Ok(login_result);
     }
