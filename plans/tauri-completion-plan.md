@@ -107,6 +107,7 @@
 - 2026-05-11：補 Tauri profile metadata persistence。`profile.create/rename/update/delete/duplicate/activate/deactivate` 不再是 single-default stub，會寫入 `<app-data>/profiles/index.json`；remote token 會存到 `remote-tokens.enc.json` envelope 並於 list/get hydrate，避免 token 寫進 index。profile workspace snapshot save/load 仍沿用既有 workspace-store 路徑，待後續補 Electron ProfileManager snapshot parity。
 - 2026-05-11：補 Tauri local profile snapshot persistence。local profile create 會建立 Electron v2 profile snapshot，`profile.save` 會把目前 `workspaces.json` 包成 `<app-data>/profiles/{id}.json`，`profile.load` 會讀 v1/v2 snapshot 並把第一個 window 寫回 `workspaces.json`；仍不等於完整多視窗 profile switching，因 Tauri `app.openNewInstance` 仍是 single-window MVP。
 - 2026-05-11：補 sidecar remote profile snapshot bridge。sidecar `profile.list/getActiveIds/load/loadSnapshot/activate/deactivate` 會讀 `<data-dir>/profiles/index.json` 與 `{id}.json`，讓 remote server 透過 `profile:*` proxy 可取得真實 profile/snapshot；測試固定 `BAT_SIDECAR_DATA_DIR`，避免讀到開發機使用者資料。
+- 2026-05-11：開始 Rust safe storage account management。新增 Rust `account_store`，用 OS credential store/keyring 保存 Claude account credential backup；Tauri `claude.accountImportCurrent/loginNew/switch/remove/markWarningShown` 不再回 sidecar stub，account index 仍寫 `<app-data>/claude-accounts.json`，Claude CLI login/status 仍借用 sidecar bundled CLI route。
 
 ## 目前判斷
 

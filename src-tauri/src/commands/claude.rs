@@ -15,12 +15,14 @@
 // find both `node` on PATH and the bundled sidecar script. Failures bubble
 // up as { message } strings to the renderer.
 
+use crate::account_store;
 use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::event_hub::publish_runtime_event;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 // Long-running calls (startSession can boot the agent SDK, sendMessage may
@@ -57,6 +59,25 @@ async fn call_blocking(
     params: Value,
 ) -> Result<Value, BridgeError> {
     call_with_timeout_blocking(app, state, method, params, DEFAULT_TIMEOUT).await
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, BridgeError> {
+    app.path().app_data_dir().map_err(|err| BridgeError {
+        message: format!("could not resolve app data dir: {err}"),
+    })
+}
+
+fn account_error(err: impl std::fmt::Display) -> BridgeError {
+    BridgeError {
+        message: err.to_string(),
+    }
+}
+
+fn login_success(value: &Value) -> bool {
+    value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 async fn call_with_timeout_blocking(
@@ -410,7 +431,17 @@ pub async fn claude_account_import_current(
     app: AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.accountImportCurrent", Value::Null).await
+    let app_data_dir = app_data_dir(&app)?;
+    let status_value = call_blocking(app, state, "claude.authStatus", Value::Null).await?;
+    let Some(status) = account_store::auth_status_from_value(&status_value) else {
+        return Ok(Value::Null);
+    };
+    let Some(credential) = account_store::read_cli_credentials() else {
+        return Ok(Value::Null);
+    };
+    let account = account_store::import_current_account(&app_data_dir, status, credential)
+        .map_err(account_error)?;
+    Ok(serde_json::to_value(account).unwrap_or(Value::Null))
 }
 
 #[tauri::command]
@@ -418,45 +449,78 @@ pub async fn claude_account_login_new(
     app: AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.accountLoginNew", Value::Null).await
+    let app_data_dir = app_data_dir(&app)?;
+    let index = account_store::read_index(&app_data_dir);
+    let active_account_id = index.active_account_id.clone();
+    let backup_credential = account_store::read_cli_credentials();
+    let login_result =
+        call_blocking(app.clone(), state.clone(), "claude.authLogin", Value::Null).await?;
+    if !login_success(&login_result) {
+        return Ok(login_result);
+    }
+    let status_value = call_blocking(app, state, "claude.authStatus", Value::Null).await?;
+    let Some(status) = account_store::auth_status_from_value(&status_value) else {
+        if let Some(backup) = backup_credential {
+            let _ = account_store::write_cli_credentials(&backup);
+        }
+        return Ok(
+            json!({ "success": false, "error": "Login completed but could not verify account" }),
+        );
+    };
+    let Some(new_credential) = account_store::read_cli_credentials() else {
+        if let Some(backup) = backup_credential {
+            let _ = account_store::write_cli_credentials(&backup);
+        }
+        return Ok(json!({ "success": false, "error": "Could not read credentials after login" }));
+    };
+    let account =
+        match account_store::upsert_new_login_account(&app_data_dir, status, new_credential) {
+            Ok(account) => account,
+            Err(err) => {
+                if let Some(backup) = backup_credential {
+                    let _ = account_store::write_cli_credentials(&backup);
+                }
+                return Ok(json!({ "success": false, "error": err.to_string() }));
+            }
+        };
+    if let (Some(backup), Some(active_id)) = (backup_credential, active_account_id) {
+        if active_id != account.id {
+            let _ = account_store::write_cli_credentials(&backup);
+        }
+    }
+    Ok(json!({ "success": true, "account": account }))
 }
 
 #[tauri::command]
 pub async fn claude_account_switch(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
     account_id: String,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.accountSwitch",
-        json!({ "accountId": account_id }),
-    )
-    .await
+    let app_data_dir = app_data_dir(&app)?;
+    let ok = account_store::switch_account(&app_data_dir, &account_id).map_err(account_error)?;
+    Ok(Value::Bool(ok))
 }
 
 #[tauri::command]
 pub async fn claude_account_remove(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
     account_id: String,
 ) -> Result<Value, BridgeError> {
-    call_blocking(
-        app,
-        state,
-        "claude.accountRemove",
-        json!({ "accountId": account_id }),
-    )
-    .await
+    let app_data_dir = app_data_dir(&app)?;
+    let ok = account_store::remove_account(&app_data_dir, &account_id).map_err(account_error)?;
+    Ok(Value::Bool(ok))
 }
 
 #[tauri::command]
 pub async fn claude_account_mark_warning_shown(
     app: AppHandle,
-    state: State<'_, SidecarState>,
+    _state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    call_blocking(app, state, "claude.accountMarkWarningShown", Value::Null).await
+    let app_data_dir = app_data_dir(&app)?;
+    account_store::mark_warning_shown(&app_data_dir).map_err(account_error)?;
+    Ok(Value::Bool(true))
 }
 
 // --- read-only metadata ---------------------------------------------------

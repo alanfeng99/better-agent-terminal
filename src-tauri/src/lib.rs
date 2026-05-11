@@ -5,6 +5,7 @@
 // a strongly typed signature, and the renderer reaches it via the
 // host-api adapter (src/host-api.ts). See plans/tauri-migration-plan.md.
 
+mod account_store;
 mod codex_app_server;
 mod commands;
 mod event_hub;
