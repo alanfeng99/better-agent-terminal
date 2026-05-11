@@ -104,6 +104,7 @@
 - 2026-05-11：補 Tauri native drop DOM duplicate guard。Sidebar / Claude / Codex 的 DOM drop handler 在 Tauri + OS file drop 時會讓 native drop listener 負責處理，避免同一次 drop 被 DOM fallback 再處理一次並誤報「host needs to expose paths」。
 - 2026-05-11：補 `worktree.merge` 實作。Electron WorktreeManager 與 Tauri sidecar handler 現在都支援保守的 merge / cherry-pick：先要求 host repo clean、切回 source branch，再合併 worktree branch；sidecar test 覆蓋實際 ephemeral git repo merge。
 - 2026-05-11：補 remote profile listing 的 sidecar handler。sidecar 新增 minimal `profile.list/getActiveIds/load/loadSnapshot/activate/deactivate` default-profile surface，讓 remote server 內部 `profile:list` bridge 不再回 method-not-found；`remote.listProfiles` sidecar test 改為期待 default profile。
+- 2026-05-11：補 Tauri profile metadata persistence。`profile.create/rename/update/delete/duplicate/activate/deactivate` 不再是 single-default stub，會寫入 `<app-data>/profiles/index.json`；remote token 會存到 `remote-tokens.enc.json` envelope 並於 list/get hydrate，避免 token 寫進 index。profile workspace snapshot save/load 仍沿用既有 workspace-store 路徑，待後續補 Electron ProfileManager snapshot parity。
 
 ## 目前判斷
 
