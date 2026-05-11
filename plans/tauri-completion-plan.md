@@ -173,6 +173,7 @@
 - 2026-05-11：修正 sidecar module prune 規則。`prune-node-sidecar-modules` 只刪 `@openai/codex-{platform}-{arch}` optional native package，不再誤刪 `@openai/codex` / `@openai/codex-sdk` 這類非 platform package；實測若把 `@openai/codex-sdk` 打進 packaged sidecar 會把 resources 拉到約 576 MB，暫不納入 preview bundle，Codex packaged 主路徑仍是 Rust app-server。
 - 2026-05-11：補 Tauri preview preflight coverage。`verify:tauri-preview` 現在也會跑 `test:sidecar`、`test:node-resolver` 與 `test:tauri-bundle-prune`，避免 sidecar/runtime startup 或 bundle prune regression 被 preview 前檢查漏掉。
 - 2026-05-11：補 Tauri preview preflight artifact freshness。`verify:tauri-preview` 會先跑 `build:tauri-sidecar` 重建 `node-sidecar/dist/server.mjs`，避免 sidecar source 已通過測試但 preview resources 仍打包舊 dist。
+- 2026-05-11：修正 Tauri Ctrl+N 新視窗白畫面。`src-tauri/capabilities/default.json` 原本只授權 `main` window，動態建立的 `profile-*` / `detached-*` window 沒有 renderer IPC capability，會在初始化時被 Tauri ACL 擋掉；現在 default capability 覆蓋這些動態 window label，並加入 `test:tauri-capabilities` guard 到 preview preflight。
 
 ## 目前判斷
 
