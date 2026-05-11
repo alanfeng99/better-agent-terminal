@@ -294,7 +294,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const lastScrollTopRef = useRef(0)
   const userScrollIntentUntilRef = useRef(0)
   const middleMessageScrollRef = useRef<{ startX: number; startY: number; startScrollTop: number; startScrollLeft: number } | null>(null)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; kind: 'messages' } | null>(null)
   const activeTasksRef = useRef<HTMLDivElement>(null)
   const [aboveViewportUserMsgIds, setAboveViewportUserMsgIds] = useState<Set<string>>(new Set())
   const claudeFontSize = useSettings(s => s.fontSize)
@@ -3304,7 +3304,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           ref={activeTasksRef}
           onContextMenu={(e) => {
             e.preventDefault()
-            setContextMenu({ x: e.clientX, y: e.clientY })
+            setContextMenu({ x: e.clientX, y: e.clientY, kind: 'messages' })
           }}
         >
           {activeTasks.map(task => {
@@ -3346,7 +3346,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         onAuxClick={handleMessagesAuxClick}
         onContextMenu={(e) => {
           e.preventDefault()
-          setContextMenu({ x: e.clientX, y: e.clientY })
+          setContextMenu({ x: e.clientX, y: e.clientY, kind: 'messages' })
         }}
       >
         {(hasMoreArchived || isLoadingMore) && (
@@ -4670,7 +4670,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           </div>
         )
       })()}
-      {contextMenu && onClose && (
+      {contextMenu && (
         <div
           className="claude-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -4678,9 +4678,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         >
           <button
             className="claude-context-menu-item"
-            onClick={() => { setContextMenu(null); onClose(sessionId) }}
+            onClick={() => { setContextMenu(null); scrollToBottom() }}
           >
-            Close Window
+            {t('claude.scrollToBottom')}
           </button>
         </div>
       )}
