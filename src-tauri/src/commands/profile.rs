@@ -632,6 +632,7 @@ pub fn profile_delete(app: AppHandle, profile_id: String) -> bool {
     if before == index.profiles.len() {
         return false;
     }
+    delete_remote_token_from_safe_store(&profile_id);
     let _ = fs::remove_file(profile_path(&dir, &profile_id));
     write_index_at(&dir, index).is_ok()
 }
@@ -869,6 +870,18 @@ mod tests {
             .find(|profile| profile.id == "remote-1")
             .unwrap();
         assert_eq!(remote.remote_token.as_deref(), Some("secret-token"));
+
+        write_index_at(
+            &dir,
+            ProfileIndex {
+                profiles: vec![default_entry()],
+                active_profile_ids: vec![DEFAULT_PROFILE_ID.into()],
+                active_profile_id: None,
+            },
+        )
+        .unwrap();
+        let store = read_token_store(&dir);
+        assert!(!store.tokens.contains_key("remote-1"));
         fs::remove_dir_all(dir).ok();
     }
 
