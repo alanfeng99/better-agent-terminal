@@ -873,11 +873,13 @@ async function run() {
     assert.equal(mod.host.debug.isDebugMode, true)
   }
 
-  // 7) Electron wins when both markers exist
+  // 7) Tauri wins when both markers exist because installTauriShim() itself
+  //    attaches window.batAppAPI inside the Tauri runtime.
   {
     setWindow({ batAppAPI: { ping: () => 'pong' }, __TAURI_INTERNALS__: { invoke: () => Promise.resolve(null) } })
     const mod = await loadFreshAdapter()
-    assert.equal(mod.getHostKind(), 'electron')
+    assert.equal(mod.getHostKind(), 'tauri')
+    assert.equal(mod.isTauri(), true)
   }
 
   // 8) installTauriShim() lets unmigrated callsites no-op gracefully.
@@ -899,6 +901,8 @@ async function run() {
     mod.installTauriShim()
     const shimmed = (win as unknown as { batAppAPI?: Record<string, unknown> }).batAppAPI
     assert.ok(shimmed, 'installTauriShim should attach window.batAppAPI')
+    assert.equal(mod.getHostKind(), 'tauri')
+    assert.equal(mod.isTauri(), true)
 
     // platform is synchronous and required by App.tsx during render
     const platform = (shimmed as { platform: string }).platform

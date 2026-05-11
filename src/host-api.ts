@@ -30,8 +30,8 @@ export function getHostKind(): HostKind {
   const g = globalThis as unknown as { window?: unknown }
   const win = g.window as (TauriInternals & { batAppAPI?: unknown }) | undefined
   if (!win) return 'unknown'
-  if (win.batAppAPI) return 'electron'
   if (win.__TAURI_INTERNALS__ !== undefined || win.__TAURI__ !== undefined) return 'tauri'
+  if (win.batAppAPI) return 'electron'
   return 'unknown'
 }
 
@@ -1133,7 +1133,8 @@ export function installTauriShim(): void {
   if (getHostKind() !== 'tauri') return
   const win = (globalThis as unknown as { window?: Record<string, unknown> }).window
   if (!win || win.batAppAPI) return
-  const api = createTauriHost()
+  if (!tauriImpl) tauriImpl = createTauriHost()
+  const api = tauriImpl
   const real = api as unknown as Record<string, unknown>
   installTauriMetricLogger(api)
   installTauriDropPathCache(api)
