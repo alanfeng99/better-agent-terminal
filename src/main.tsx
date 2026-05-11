@@ -27,6 +27,10 @@ const dlog = (...args: unknown[]) => host.debug.log(...args)
 const t0 = (window as unknown as { __t0?: number }).__t0 || Date.now()
 dlog(`[startup] ── renderer ──────────────────────────────`)
 dlog(`[startup] host kind: ${getHostKind()}`)
+dlog(`[startup] location: ${window.location.href}`)
+void host.app.getWindowId()
+  .then((windowId) => dlog(`[startup] window id: ${windowId}`))
+  .catch((err) => dlog(`[startup] window id failed: ${String((err as { message?: unknown })?.message ?? err)}`))
 dlog(`[startup] main.tsx top-level: +${Date.now() - t0}ms from HTML <script>`)
 
 // Surface unhandled rejections with their actual contents. Tauri invoke

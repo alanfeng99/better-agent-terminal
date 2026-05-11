@@ -6,9 +6,11 @@
 // sidecar.
 
 use super::profile as profile_cmd;
+use crate::log_file::append_line;
 use crate::window_registry;
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -50,21 +52,89 @@ pub(crate) fn renderer_url(path: &str) -> WebviewUrl {
     WebviewUrl::App(path.into())
 }
 
+pub(crate) fn log_tauri(app: &AppHandle, message: &str) {
+    eprintln!("[tauri] {message}");
+    let Some(path) = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("logs").join("debug.log"))
+    else {
+        return;
+    };
+    let line = tauri_log_line(message);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = append_line(&path, &line);
+    });
+}
+
+fn tauri_log_line(message: &str) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("{millis} [tauri] {message}\n")
+}
+
+fn webview_url_debug(url: &WebviewUrl) -> String {
+    match url {
+        WebviewUrl::App(path) => format!("app:{}", path.to_string_lossy()),
+        WebviewUrl::External(url) => format!("external:{url}"),
+        other => format!("{other:?}"),
+    }
+}
+
 fn build_window(app: &AppHandle, window_id: &str) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(window_id) {
         window_registry::mark_window_active(app, window_id);
         let _ = win.set_focus();
         return Ok(());
     }
-    let mut builder = WebviewWindowBuilder::new(app, window_id, renderer_url("index.html"))
+    let url = renderer_url("index.html");
+    log_tauri(
+        app,
+        &format!(
+            "[window] create label={window_id} url={}",
+            webview_url_debug(&url)
+        ),
+    );
+    let nav_app = app.clone();
+    let nav_label = window_id.to_string();
+    let load_label = window_id.to_string();
+    let mut builder = WebviewWindowBuilder::new(app, window_id, url)
         .title("Better Agent Terminal")
-        .min_inner_size(800.0, 600.0);
+        .min_inner_size(800.0, 600.0)
+        .on_navigation(move |url| {
+            log_tauri(
+                &nav_app,
+                &format!("[window] navigation label={nav_label} url={url}"),
+            );
+            true
+        })
+        .on_page_load(move |window, payload| {
+            log_tauri(
+                window.app_handle(),
+                &format!(
+                    "[window] page-load label={load_label} event={:?} url={}",
+                    payload.event(),
+                    payload.url()
+                ),
+            );
+        });
     if let Some((x, y, width, height)) = window_registry::window_bounds(app, window_id) {
         builder = builder.inner_size(width, height).position(x, y);
     } else {
         builder = builder.inner_size(1280.0, 800.0);
     }
-    let window = builder.build().map_err(|err| err.to_string())?;
+    let window = builder.build().map_err(|err| {
+        let error = err.to_string();
+        log_tauri(
+            app,
+            &format!("[window] build-failed label={window_id} error={error}"),
+        );
+        error
+    })?;
+    log_tauri(app, &format!("[window] created label={window_id}"));
     attach_window_lifecycle(&window);
     Ok(())
 }
@@ -89,6 +159,7 @@ pub fn attach_window_lifecycle(window: &WebviewWindow) {
                 }
             }
         } else if matches!(event, WindowEvent::Destroyed) {
+            log_tauri(&app, &format!("[window] destroyed label={window_id}"));
             if let Some(profile_id) = window_registry::profile_id_for_window(&app, &window_id) {
                 if !window_registry::has_other_live_profile_windows(&app, &profile_id, &window_id) {
                     let _ = profile_cmd::deactivate_profile_id(&app, &profile_id);
@@ -317,5 +388,11 @@ mod tests {
             }
             other => panic!("expected Tauri app URL, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tauri_log_line_has_tauri_prefix() {
+        let line = tauri_log_line("hello");
+        assert!(line.contains(" [tauri] hello\n"));
     }
 }
