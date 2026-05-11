@@ -67,6 +67,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [serverStatus, setServerStatus] = useState<RemoteServerStatus>({ running: false, port: null, fingerprint: null, bindInterface: null, boundHost: null, clients: [] })
   const [serverPort, setServerPort] = useState(String(settings.remoteServerPort || 9876))
   const [serverToken, setServerToken] = useState<string | null>(null)
+  const [serverTokenFingerprint, setServerTokenFingerprint] = useState<string | null>(null)
   const [bindInterface, setBindInterface] = useState<BindInterface>(settings.remoteServerBindInterface || 'localhost')
   const [clientStatus, setClientStatus] = useState<RemoteClientStatus>({ connected: false, info: null })
 
@@ -104,12 +105,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [accountLoginLoading, setAccountLoginLoading] = useState(false)
   const [accountSwitchingId, setAccountSwitchingId] = useState<string | null>(null)
   const [accountStatusMsg, setAccountStatusMsg] = useState('')
+  const [accountStatusIsError, setAccountStatusIsError] = useState(false)
 
   // Get current platform for filtering shell options
   const platform = host.platform || 'darwin'
   const platformShellOptions = SHELL_OPTIONS.filter(opt => opt.platforms.includes(platform))
   const isDebugMode = host.debug.isDebugMode === true
-  const visibleAgentPresets = getVisiblePresets().filter(p => p.id !== 'none')
+  const visibleAgentPresets = getVisiblePresets(isDebugMode).filter(p => p.id !== 'none')
   const defaultAgentValue = visibleAgentPresets.some(p => p.id === settings.defaultAgent)
     ? settings.defaultAgent
     : 'claude-code'
@@ -189,12 +191,19 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   }, [])
 
   useEffect(() => {
-    loadAccounts()
-  }, [loadAccounts])
+    if (settings.accountSwitching !== false) {
+      loadAccounts()
+    } else {
+      setAccountStatusMsg('')
+      setAccountStatusIsError(false)
+      setAccountsLoading(false)
+    }
+  }, [loadAccounts, settings.accountSwitching])
 
   const handleAccountSwitch = async (accountId: string) => {
     if (accountId === activeAccountId) return
     setAccountStatusMsg('')
+    setAccountStatusIsError(false)
     if (!switchWarningShown) {
       const confirmed = confirm(t('settings.accountSwitchingWarning'))
       if (!confirmed) return
@@ -206,15 +215,18 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       const success = await host.claude.accountSwitch(accountId)
       if (success) {
         setActiveAccountId(accountId)
-        setAccountStatusMsg('Account switched.')
+        setAccountStatusMsg(t('settings.accountSwitchingSwitched'))
+        setAccountStatusIsError(false)
         await loadAccounts()
         window.dispatchEvent(new CustomEvent('claude-account-switched'))
       } else {
-        setAccountStatusMsg('Switch failed: credential is missing. Re-add this account in Tauri.')
+        setAccountStatusMsg(t('settings.accountSwitchingMissingCredential'))
+        setAccountStatusIsError(true)
       }
     } catch (e) {
       host.debug.log?.(`[SettingsPanel] Account switch failed: ${e}`)
-      setAccountStatusMsg(`Switch failed: ${e instanceof Error ? e.message : 'unknown error'}`)
+      setAccountStatusMsg(t('settings.accountSwitchingSwitchFailed', { error: e instanceof Error ? e.message : t('common.unknownError', 'unknown error') }))
+      setAccountStatusIsError(true)
     } finally {
       setAccountSwitchingId(null)
     }
@@ -233,18 +245,22 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const handleAccountLoginNew = async () => {
     setAccountLoginLoading(true)
-    setAccountStatusMsg('Opening login in browser...')
+    setAccountStatusMsg(t('settings.accountSwitchingOpeningLogin'))
+    setAccountStatusIsError(false)
     try {
       const result = await host.claude.accountLoginNew()
       if (result.success) {
         await loadAccounts()
-        setAccountStatusMsg(result.account ? `Added ${result.account.email}` : 'Account added.')
+        setAccountStatusMsg(result.account ? t('settings.accountSwitchingAddedAccount', { email: result.account.email }) : t('settings.accountSwitchingAccountAdded'))
+        setAccountStatusIsError(false)
       } else {
-        setAccountStatusMsg(`Login failed: ${result.error || 'unknown error'}`)
+        setAccountStatusMsg(t('settings.accountSwitchingLoginFailed', { error: result.error || t('common.unknownError', 'unknown error') }))
+        setAccountStatusIsError(true)
       }
     } catch (e) {
       host.debug.log?.(`[SettingsPanel] Account login failed: ${e}`)
-      setAccountStatusMsg(`Error: ${e instanceof Error ? e.message : 'unknown error'}`)
+      setAccountStatusMsg(t('settings.accountSwitchingError', { error: e instanceof Error ? e.message : t('common.unknownError', 'unknown error') }))
+      setAccountStatusIsError(true)
     }
     setAccountLoginLoading(false)
   }
@@ -298,16 +314,22 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     return () => clearInterval(interval)
   }, [])
 
-  // Resolve a usable host for the connection URL. boundHost is the literal
-  // listen address — for `bind=all` that's `0.0.0.0`, which clients can't
-  // connect to, so fall back to enumerating real interfaces.
+  // Resolve a usable host and token for the connection URL. boundHost is the
+  // literal listen address — for `bind=all` that's `0.0.0.0`, which clients
+  // can't connect to, so fall back to enumerating real interfaces. If the
+  // server was auto-started or started by another window, serverStatus does
+  // not include the persisted token, so tunnel.getConnection fills it in.
   useEffect(() => {
     if (!serverStatus.running || !serverStatus.boundHost) {
       setConnectionUrlHost(null)
+      setServerToken(null)
+      setServerTokenFingerprint(null)
       return
     }
     const bh = serverStatus.boundHost
-    if (bh !== '0.0.0.0' && bh !== '::') {
+    const needsResolvedHost = bh === '0.0.0.0' || bh === '::'
+    const tokenMatchesServer = !!serverToken && serverTokenFingerprint === serverStatus.fingerprint
+    if (!needsResolvedHost && tokenMatchesServer) {
       setConnectionUrlHost(bh)
       return
     }
@@ -318,10 +340,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setConnectionUrlHost(bh)
         return
       }
+      if (result.token) {
+        setServerToken(result.token)
+        setServerTokenFingerprint(result.fingerprint || serverStatus.fingerprint || null)
+      }
       setConnectionUrlHost(result.addresses[0].ip)
     }).catch(() => { if (!cancelled) setConnectionUrlHost(bh) })
     return () => { cancelled = true }
-  }, [serverStatus.running, serverStatus.boundHost, serverStatus.port])
+  }, [serverStatus.running, serverStatus.boundHost, serverStatus.port, serverStatus.fingerprint, serverToken, serverTokenFingerprint])
 
   const connectionUrl = (() => {
     if (!serverStatus.running || !serverStatus.port || !serverStatus.fingerprint || !serverToken) return null
@@ -342,6 +368,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       alert(t('settings.failedToStartServer', { error: result.error }))
     } else {
       setServerToken(result.token)
+      setServerTokenFingerprint(result.fingerprint)
       setServerPort(String(result.port))
     }
     const ss = await host.remote.serverStatus()
@@ -351,6 +378,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const handleStopServer = async () => {
     await host.remote.stopServer()
     setServerToken(null)
+    setServerTokenFingerprint(null)
     const ss = await host.remote.serverStatus()
     setServerStatus(ss)
   }
@@ -382,7 +410,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       // Refresh server status since we may have started it
       const ss = await host.remote.serverStatus()
       setServerStatus(ss)
-      if (result.token) setServerToken(result.token)
+      if (result.token) {
+        setServerToken(result.token)
+        setServerTokenFingerprint(result.fingerprint || ss.fingerprint || null)
+      }
     } catch (err) {
       setQrError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1261,7 +1292,7 @@ Reference: https://github.com/ind-igo/cx`
                                   onClick={() => handleAccountSwitch(account.id)}
                                   disabled={accountSwitchingId !== null}
                                 >
-                                  {accountSwitchingId === account.id ? 'Switching...' : t('settings.accountSwitchingSwitch')}
+                                  {accountSwitchingId === account.id ? t('settings.accountSwitchingSwitching') : t('settings.accountSwitchingSwitch')}
                                 </button>
                                 {!account.isDefault && (
                                   <button className="statusline-template-btn" style={{ fontSize: '11px', color: '#f85149' }} onClick={() => handleAccountRemove(account.id)}>{t('settings.accountSwitchingRemove')}</button>
@@ -1273,10 +1304,10 @@ Reference: https://github.com/ind-igo/cx`
                       </div>
                     )}
                     <button className="statusline-template-btn" style={{ marginTop: '10px', fontSize: '12px' }} onClick={handleAccountLoginNew} disabled={accountLoginLoading}>
-                      {accountLoginLoading ? 'Opening login...' : t('settings.accountSwitchingAddAccount')}
+                      {accountLoginLoading ? t('settings.accountSwitchingOpeningLoginShort') : t('settings.accountSwitchingAddAccount')}
                     </button>
                     {accountStatusMsg && (
-                      <p style={{ fontSize: '11px', color: accountStatusMsg.startsWith('Error') || accountStatusMsg.startsWith('Login failed') || accountStatusMsg.startsWith('Switch failed') ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
+                      <p style={{ fontSize: '11px', color: accountStatusIsError ? '#f85149' : 'var(--text-secondary)', marginTop: '6px' }}>
                         {accountStatusMsg}
                       </p>
                     )}

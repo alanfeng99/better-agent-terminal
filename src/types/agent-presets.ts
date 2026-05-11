@@ -97,8 +97,10 @@ export function getDefaultAgentPreset(): AgentPreset {
 }
 
 /** Get presets visible in UI, filtering debug-only presets unless BAT_DEBUG is set */
-export function getVisiblePresets(): AgentPreset[] {
-  const isDebug = typeof window !== 'undefined'
-    && (window as unknown as { batAppAPI?: { debug?: { isDebugMode?: boolean } } }).batAppAPI?.debug?.isDebugMode === true
+export function getVisiblePresets(isDebugOverride?: boolean): AgentPreset[] {
+  const isDebug = typeof isDebugOverride === 'boolean'
+    ? isDebugOverride
+    : typeof window !== 'undefined'
+      && (window as unknown as { batAppAPI?: { debug?: { isDebugMode?: boolean } } }).batAppAPI?.debug?.isDebugMode === true
   return AGENT_PRESETS.filter(p => !p.debug || isDebug)
 }

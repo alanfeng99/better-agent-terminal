@@ -45,6 +45,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 app_cmd::attach_window_lifecycle(&window);
             }
+            remote_cmd::spawn_auto_start_remote_server(app.handle().clone());
             if let Ok(token) = std::env::var("BAT_TAURI_DYNAMIC_WINDOW_SMOKE_TOKEN") {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
