@@ -404,8 +404,8 @@ function createTauriHost(): BatAppAPI {
     },
     profile: {
       // Tauri persists profile metadata and local profile snapshots using the
-      // Electron profile JSON layout. Multi-window profile opening is still a
-      // single-window MVP concern under app.openNewInstance below.
+      // Electron profile JSON layout. Multi-window profile open/restore lives
+      // under app.openNewInstance / app.restoreActiveProfiles below.
       list: () => getInvoke()<unknown>('profile_list'),
       listLocal: () => getInvoke()<unknown>('profile_list_local'),
       get: (profileId: string) => getInvoke()<unknown>('profile_get', { profileId }),

@@ -127,6 +127,7 @@ async function run() {
       if (cmd === 'app_new_window') return 'main' as unknown as T
       if (cmd === 'app_focus_next_window') return false as unknown as T
       if (cmd === 'app_open_new_instance') return { alreadyOpen: true } as unknown as T
+      if (cmd === 'app_restore_active_profiles') return ['profile-y'] as unknown as T
       if (cmd === 'app_set_dock_badge') return undefined as unknown as T
       if (cmd === 'notification_list') return [] as unknown as T
       if (cmd === 'notification_mark_read') return true as unknown as T
@@ -378,7 +379,7 @@ async function run() {
     const status = await mod.host.git.getStatus('/repo')
     assert.deepEqual(status, [{ status: 'M', file: 'a.ts' }])
 
-    // app.* — single-window MVP returns constants from the Rust side.
+    // app.* — Tauri window/profile shell.
     assert.equal(await mod.host.app.getWindowId(), 'main')
     assert.equal(await mod.host.app.getWindowIndex(), 1)
     assert.equal(await mod.host.app.getLaunchProfile(), null)
@@ -387,6 +388,7 @@ async function run() {
     assert.equal(await mod.host.app.focusNextWindow(), false)
     const newInst = await mod.host.app.openNewInstance('profile-x')
     assert.deepEqual(newInst, { alreadyOpen: true })
+    assert.deepEqual(await mod.host.app.restoreActiveProfiles('profile-x'), ['profile-y'])
     await mod.host.app.setDockBadge(7)
 
     // notification.* — in-memory store on the Rust side.
@@ -698,6 +700,7 @@ async function run() {
       { cmd: 'app_new_window', args: undefined },
       { cmd: 'app_focus_next_window', args: undefined },
       { cmd: 'app_open_new_instance', args: { profileId: 'profile-x' } },
+      { cmd: 'app_restore_active_profiles', args: { currentProfileId: 'profile-x' } },
       { cmd: 'app_set_dock_badge', args: { count: 7 } },
       { cmd: 'notification_list', args: undefined },
       { cmd: 'notification_mark_read', args: { id: 'n1' } },
