@@ -436,7 +436,8 @@ function createTauriHost(): BatAppAPI {
     },
     update: {
       getVersion: () => getInvoke()<string>('update_get_version'),
-      // Forwards to the sidecar (Node fetch) — no Rust HTTP stack needed.
+      // Tauri handles this natively in Rust and returns the same
+      // Electron shape consumed by UpdateNotification.
       // Returns the same shape the renderer's UpdateNotification consumed
       // under Electron: { hasUpdate, currentVersion, latestRelease }.
       check: () => getInvoke()<unknown>('update_check'),
