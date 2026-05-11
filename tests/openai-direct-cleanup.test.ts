@@ -31,6 +31,33 @@ async function main() {
     false,
     'OpenAI Direct preset must not be visible',
   )
+  const debugPreset = {
+    id: 'debug-only-test',
+    name: 'Debug Only Test',
+    icon: '*',
+    color: '#999999',
+    debug: true,
+  }
+  AGENT_PRESETS.push(debugPreset)
+  try {
+    ;((globalThis as { window?: { batAppAPI?: unknown } }).window ??= {}).batAppAPI = {
+      debug: { isDebugMode: false },
+    }
+    assert.equal(
+      getVisiblePresets().some(preset => preset.id === debugPreset.id),
+      false,
+      'debug-only presets should stay hidden when batAppAPI debug mode is false',
+    )
+    ;((globalThis as { window?: { batAppAPI?: { debug?: { isDebugMode?: boolean } } } }).window!.batAppAPI!.debug!).isDebugMode = true
+    assert.equal(
+      getVisiblePresets().some(preset => preset.id === debugPreset.id),
+      true,
+      'debug-only presets should use window.batAppAPI.debug.isDebugMode',
+    )
+  } finally {
+    AGENT_PRESETS.pop()
+    delete (globalThis as { window?: { batAppAPI?: unknown } }).window?.batAppAPI
+  }
 
   await settingsStore.load()
   assert.equal(
