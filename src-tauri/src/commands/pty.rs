@@ -22,7 +22,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Debug, Serialize)]
@@ -143,6 +145,7 @@ pub fn select_shell<F: Fn(&str) -> bool>(
 const TARGET_OS: &str = "unix";
 #[cfg(target_os = "windows")]
 const TARGET_OS: &str = "windows";
+const OUTPUT_FLUSH_MS: u64 = 8;
 
 fn hash_history_key(id: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -269,6 +272,49 @@ fn build_command(opts: &CreatePtyOptions, app_data_dir: Option<&Path>) -> Comman
     cmd
 }
 
+fn emit_pty_output(app: &AppHandle, id: &str, data: String) {
+    let _ = app.emit(
+        "pty:output",
+        PtyOutputEvent {
+            id: id.to_string(),
+            data,
+        },
+    );
+}
+
+fn spawn_output_coalescer(app: AppHandle, id: String) -> Sender<String> {
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        while let Ok(first) = rx.recv() {
+            emit_pty_output(&app, &id, first);
+
+            let mut pending = String::new();
+            let deadline = Instant::now() + Duration::from_millis(OUTPUT_FLUSH_MS);
+            loop {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                match rx.recv_timeout(deadline - now) {
+                    Ok(chunk) => pending.push_str(&chunk),
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        if !pending.is_empty() {
+                            emit_pty_output(&app, &id, pending);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            if !pending.is_empty() {
+                emit_pty_output(&app, &id, pending);
+            }
+        }
+    });
+    tx
+}
+
 fn start_pty_session(
     app: &AppHandle,
     map_handle: Arc<Mutex<HashMap<String, PtySession>>>,
@@ -314,11 +360,11 @@ fn start_pty_session(
         message: e.to_string(),
     })?;
 
-    // Reader thread: pump bytes from PTY → pty:output events. Lossy UTF-8
-    // because xterm.js consumes strings and PTYs can split codepoints
-    // across reads; renderer can stitch via terminal state.
+    // Reader thread: pump bytes from PTY → coalesced pty:output events.
+    // Lossy UTF-8 because xterm.js consumes strings and PTYs can split
+    // codepoints across reads; renderer can stitch via terminal state.
     let id_for_reader = options.id.clone();
-    let app_for_reader = app.clone();
+    let output_tx = spawn_output_coalescer(app.clone(), id_for_reader.clone());
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -326,13 +372,9 @@ fn start_pty_session(
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let _ = app_for_reader.emit(
-                        "pty:output",
-                        PtyOutputEvent {
-                            id: id_for_reader.clone(),
-                            data: chunk,
-                        },
-                    );
+                    if output_tx.send(chunk).is_err() {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
