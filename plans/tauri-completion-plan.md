@@ -154,6 +154,7 @@
 - 2026-05-11：把 Tauri project MCP approval helpers 搬到 Rust native。`claude.checkMcpJsonStatus` 會讀 `.mcp.json`、user/project/local settings approval；`claude.enableAllProjectMcp` 會保留既有 settings key 並寫入 `enableAllProjectMcpServers=true`，Claude panel 不再為純檔案 MCP 檢查喚醒 sidecar。
 - 2026-05-11：把 Tauri `claude.listSessions` 搬到 Rust native。Claude resume selector 直接讀 `~/.claude/projects/<encoded-cwd>/*.jsonl`，Codex resume selector 直接掃 `~/.codex/sessions/**/*.jsonl` 的 `session_meta` 與 prompt preview；打開歷史清單不再為純檔案掃描喚醒 Node sidecar。
 - 2026-05-11：把 Tauri `claude.authStatus` 搬到 Rust native。Rust 會用既有 Claude CLI resolver 直接執行 `claude auth status` 並解析 JSON，timeout/failure 回 `null`；啟動後 auth refresh 與 account import/login verification 不再為單純 auth status 查詢喚醒 Node sidecar。
+- 2026-05-11：把 Tauri Claude `claude.getSupportedModels` 搬到 Rust native builtin list。Codex sessions 仍走 Rust Codex runtime model list；Claude panel 開 model picker 不再為固定 builtin models 啟動 sidecar 或載入 Claude SDK。
 
 ## 目前判斷
 

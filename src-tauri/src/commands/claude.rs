@@ -486,6 +486,53 @@ fn list_sessions_native(cwd: &str, agent_kind: Option<&str>) -> Vec<SessionListE
     list_claude_sessions_in_projects(cwd, &home.join(".claude").join("projects"))
 }
 
+fn claude_builtin_models_native() -> Value {
+    json!([
+        {
+            "value": "claude-opus-4-7:auto-compact-200k",
+            "displayName": "Opus 4.7 · 200K Auto-Compact",
+            "description": "claude-opus-4-7 · compact at 200K tokens",
+            "source": "builtin"
+        },
+        {
+            "value": "claude-opus-4-7:auto-compact-300k",
+            "displayName": "Opus 4.7 · 300K Auto-Compact",
+            "description": "claude-opus-4-7 · compact at 300K tokens",
+            "source": "builtin"
+        },
+        {
+            "value": "claude-opus-4-7:auto-compact-400k",
+            "displayName": "Opus 4.7 · 400K Auto-Compact",
+            "description": "claude-opus-4-7 · compact at 400K tokens",
+            "source": "builtin"
+        },
+        {
+            "value": "claude-opus-4-7:1m",
+            "displayName": "Opus 4.7 · 1M",
+            "description": "claude-opus-4-7 · no early auto-compact",
+            "source": "builtin"
+        },
+        {
+            "value": "claude-opus-4-6",
+            "displayName": "Opus 4.6 (1M)",
+            "description": "claude-opus-4-6 · 1M context",
+            "source": "builtin"
+        },
+        {
+            "value": "claude-sonnet-4-6",
+            "displayName": "Sonnet 4.6 (1M)",
+            "description": "claude-sonnet-4-6 · 1M context",
+            "source": "builtin"
+        },
+        {
+            "value": "claude-haiku-4-5-20251001",
+            "displayName": "Haiku 4.5",
+            "description": "claude-haiku-4-5 · fast & lightweight",
+            "source": "builtin"
+        }
+    ])
+}
+
 fn parse_frontmatter_field(content: &str, field: &str) -> Option<String> {
     let rest = content.strip_prefix("---")?;
     let end = rest.find("\n---")?;
@@ -1273,21 +1320,15 @@ pub async fn claude_list_sessions(
 
 #[tauri::command]
 pub async fn claude_get_supported_models(
-    app: AppHandle,
-    state: State<'_, SidecarState>,
+    _app: AppHandle,
+    _state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
     if codex_state.is_owned(&session_id) {
         return Ok(codex_state.supported_models());
     }
-    call_blocking(
-        app,
-        state,
-        "claude.getSupportedModels",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    Ok(claude_builtin_models_native())
 }
 
 #[tauri::command]
@@ -2233,6 +2274,24 @@ mod tests {
         assert_eq!(sessions[0].message_count, 0);
 
         fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn claude_builtin_models_include_sources_and_current_defaults() {
+        let models = claude_builtin_models_native();
+        let values = models
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|model| model["value"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(values.contains(&"claude-opus-4-7:auto-compact-200k"));
+        assert!(values.contains(&"claude-sonnet-4-6"));
+        assert!(models
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["source"] == "builtin"));
     }
 
     #[test]
