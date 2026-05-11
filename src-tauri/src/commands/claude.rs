@@ -704,6 +704,36 @@ fn run_git_in_dir(
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn run_git_status_in_dir(cwd: &Path, args: &[&str], timeout: Duration) -> bool {
+    if !cwd.is_dir() {
+        return false;
+    }
+    let mut child = match Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => return false,
+        }
+    }
+}
+
 fn worktree_status_from_notification_snapshot(
     session: &notification_cmd::AgentNotificationSession,
 ) -> Option<Value> {
@@ -741,6 +771,39 @@ fn worktree_status_from_notification_snapshot(
         "worktreePath": worktree_path,
         "sourceBranch": source_branch,
     }))
+}
+
+fn cleanup_worktree_from_notification_snapshot(
+    session: &notification_cmd::AgentNotificationSession,
+    delete_branch: bool,
+) -> bool {
+    let Some(worktree_path) = session.worktree_path.as_deref() else {
+        return false;
+    };
+    let Some(git_root) = worktree_git_root_from_path(worktree_path) else {
+        return false;
+    };
+    if Path::new(worktree_path).is_dir() {
+        let removed_by_git = run_git_status_in_dir(
+            &git_root,
+            &["worktree", "remove", worktree_path, "--force"],
+            DEFAULT_TIMEOUT,
+        );
+        if !removed_by_git {
+            let _ = fs::remove_dir_all(worktree_path);
+            let _ = run_git_status_in_dir(&git_root, &["worktree", "prune"], DEFAULT_TIMEOUT);
+        }
+    }
+    if delete_branch {
+        if let Some(branch) = session
+            .worktree_branch
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let _ = run_git_status_in_dir(&git_root, &["branch", "-D", branch], DEFAULT_TIMEOUT);
+        }
+    }
+    true
 }
 
 fn supported_commands_native(cwd: &Path) -> Vec<SlashCommandEntry> {
@@ -1799,6 +1862,41 @@ pub async fn claude_cleanup_worktree(
     session_id: String,
     delete_branch: bool,
 ) -> Result<Value, BridgeError> {
+    if let Some(session) = notification_cmd::get_agent_session_snapshot(&app, &session_id) {
+        if session.worktree_path.is_some() {
+            let native_session = session.clone();
+            let cleaned = tauri::async_runtime::spawn_blocking(move || {
+                cleanup_worktree_from_notification_snapshot(&native_session, delete_branch)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("claude.cleanupWorktree native worker failed: {err}"),
+            })?;
+            if cleaned {
+                notification_cmd::clear_agent_session_worktree(&app, &session_id);
+                if let Some(updated) =
+                    notification_cmd::get_agent_session_snapshot(&app, &session_id)
+                {
+                    publish_runtime_event(
+                        &app,
+                        "claude:status",
+                        json!({
+                            "sessionId": session_id.as_str(),
+                            "meta": session_meta_from_notification_snapshot(&updated),
+                        }),
+                        "tauri-native",
+                    );
+                }
+                publish_runtime_event(
+                    &app,
+                    "claude:worktree-info",
+                    json!({ "sessionId": session_id.as_str(), "payload": Value::Null }),
+                    "tauri-native",
+                );
+                return Ok(json!(true));
+            }
+        }
+    }
     let result = call_blocking(
         app.clone(),
         state,
@@ -2721,6 +2819,7 @@ mod tests {
         };
 
         assert_eq!(worktree_status_from_notification_snapshot(&session), None);
+        assert!(!cleanup_worktree_from_notification_snapshot(&session, true));
     }
 
     #[test]
