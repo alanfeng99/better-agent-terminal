@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::mpsc;
@@ -23,7 +23,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
-use tungstenite::{accept, Message};
+use tungstenite::handshake::derive_accept_key;
+use tungstenite::protocol::{Role, WebSocket};
+use tungstenite::Message;
 
 const DEFAULT_REMOTE_PORT: u16 = 9876;
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -492,7 +494,8 @@ fn handle_client(
     let connection =
         ServerConnection::new(config).map_err(|err| format!("remote TLS failed: {err}"))?;
     let tls = StreamOwned::new(connection, stream);
-    let mut ws = accept(tls).map_err(|err| format!("remote websocket accept failed: {err}"))?;
+    let mut ws = accept_websocket_tls(tls)
+        .map_err(|err| format!("remote websocket accept failed: {err}"))?;
     ws.get_mut()
         .sock
         .set_read_timeout(Some(Duration::from_millis(200)))
@@ -666,6 +669,97 @@ fn remote_debug_log(app: &AppHandle, message: impl AsRef<str>) {
     }
 }
 
+fn accept_websocket_tls(
+    mut tls: StreamOwned<ServerConnection, TcpStream>,
+) -> Result<WebSocket<StreamOwned<ServerConnection, TcpStream>>, String> {
+    let mut request = Vec::with_capacity(1024);
+    let mut buf = [0_u8; 1024];
+    while request.len() < 16 * 1024 {
+        let n = tls
+            .read(&mut buf)
+            .map_err(|err| format!("websocket request read failed: {err}"))?;
+        if n == 0 {
+            return Err("websocket request closed before headers".to_string());
+        }
+        request.extend_from_slice(&buf[..n]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    if !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        return Err("websocket request headers too large".to_string());
+    }
+
+    let accept_key = websocket_accept_key_from_request(&request)?;
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {accept_key}\r\n\
+         \r\n"
+    );
+    tls.write_all(response.as_bytes())
+        .map_err(|err| format!("websocket response write failed: {err}"))?;
+    tls.flush()
+        .map_err(|err| format!("websocket response flush failed: {err}"))?;
+
+    Ok(WebSocket::from_raw_socket(tls, Role::Server, None))
+}
+
+fn websocket_accept_key_from_request(request: &[u8]) -> Result<String, String> {
+    let header_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "websocket request missing header terminator".to_string())?;
+    let raw = std::str::from_utf8(&request[..header_end])
+        .map_err(|err| format!("websocket request headers are not utf-8: {err}"))?;
+    let mut lines = raw.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    if !request_line.starts_with("GET ") {
+        return Err("websocket request must use GET".to_string());
+    }
+
+    let mut upgrade_ok = false;
+    let mut connection_ok = false;
+    let mut version_ok = false;
+    let mut key = None;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim();
+        match name.as_str() {
+            "upgrade" => upgrade_ok = value.eq_ignore_ascii_case("websocket"),
+            "connection" => {
+                connection_ok = value
+                    .split(',')
+                    .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+            }
+            "sec-websocket-version" => version_ok = value == "13",
+            "sec-websocket-key" => key = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    if !upgrade_ok {
+        return Err("websocket request missing Upgrade: websocket".to_string());
+    }
+    if !connection_ok {
+        return Err("websocket request missing Connection: Upgrade".to_string());
+    }
+    if !version_ok {
+        return Err("websocket request missing Sec-WebSocket-Version: 13".to_string());
+    }
+    let key = key.ok_or_else(|| "websocket request missing Sec-WebSocket-Key".to_string())?;
+    let key_bytes = B64
+        .decode(&key)
+        .map_err(|_| "websocket request has invalid Sec-WebSocket-Key".to_string())?;
+    if key_bytes.len() != 16 {
+        return Err("websocket request Sec-WebSocket-Key must decode to 16 bytes".to_string());
+    }
+    Ok(derive_accept_key(key.as_bytes()))
+}
+
 fn invoke_sidecar_for_remote(
     app: &AppHandle,
     sidecar: &SidecarState,
@@ -770,6 +864,39 @@ mod tests {
         assert!(cert.cert_der.len() > 100);
         assert!(cert.key_der.len() > 100);
         assert_eq!(fingerprint_sha256(&cert.cert_der).len(), 95);
+    }
+
+    #[test]
+    fn websocket_accept_key_parses_node_ws_upgrade_request() {
+        let request = b"GET / HTTP/1.1\r\n\
+            Host: 100.68.234.13:9876\r\n\
+            Upgrade: websocket\r\n\
+            Connection: Upgrade\r\n\
+            Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+            Sec-WebSocket-Version: 13\r\n\
+            \r\n";
+        assert_eq!(
+            websocket_accept_key_from_request(request).as_deref(),
+            Ok("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+        );
+    }
+
+    #[test]
+    fn websocket_accept_key_rejects_plain_http_request() {
+        let request = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert!(websocket_accept_key_from_request(request).is_err());
+    }
+
+    #[test]
+    fn websocket_accept_key_rejects_invalid_key() {
+        let request = b"GET / HTTP/1.1\r\n\
+            Host: localhost\r\n\
+            Upgrade: websocket\r\n\
+            Connection: Upgrade\r\n\
+            Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==\r\n\
+            Sec-WebSocket-Version: 13\r\n\
+            \r\n";
+        assert!(websocket_accept_key_from_request(request).is_err());
     }
 
     #[test]
