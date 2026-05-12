@@ -1,10 +1,9 @@
 // profile:* — Tauri profile index persistence.
 //
 // Electron stores profile metadata in <userData>/profiles/index.json and keeps
-// remote tokens in a separate safeStorage envelope. Tauri stores new remote
-// tokens in the OS keyring when available, while retaining the old envelope as
-// a migration/fallback path. Keeping tokens out of index.json preserves the
-// renderer-facing profile shape without exposing secrets in profile metadata.
+// remote tokens in a separate secret envelope. Tauri keeps tokens out of
+// index.json and uses the old keyring item only as a migration fallback; this
+// avoids repeated macOS Keychain prompts during normal profile reads/writes.
 
 use crate::electron_safe_storage::decrypt_electron_safe_storage_data;
 use crate::{app_data, window_registry};
@@ -16,8 +15,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(not(test))]
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, WebviewWindow};
 
@@ -239,6 +237,7 @@ fn read_token_store_info(dir: &Path) -> TokenStoreRead {
     }
 }
 
+#[cfg(test)]
 fn read_token_store(dir: &Path) -> RemoteTokenStore {
     read_token_store_info(dir).store
 }
@@ -251,6 +250,30 @@ fn read_electron_safe_storage_token_store(dir: &Path, data: &str) -> Option<Remo
 
 #[cfg(not(test))]
 static PROFILE_SAFE_STORE_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+static REMOTE_TOKEN_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn remote_token_cache() -> &'static Mutex<HashMap<String, String>> {
+    REMOTE_TOKEN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_remote_token(profile_id: &str, token: &str) {
+    if let Ok(mut cache) = remote_token_cache().lock() {
+        cache.insert(profile_id.to_string(), token.to_string());
+    }
+}
+
+fn cached_remote_token(profile_id: &str) -> Option<String> {
+    remote_token_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(profile_id).cloned())
+}
+
+fn forget_cached_remote_token(profile_id: &str) {
+    if let Ok(mut cache) = remote_token_cache().lock() {
+        cache.remove(profile_id);
+    }
+}
 
 #[cfg(not(test))]
 fn ensure_profile_safe_store() -> Result<(), String> {
@@ -271,24 +294,20 @@ fn remote_token_entry(profile_id: &str) -> Result<KeyringEntry, String> {
 }
 
 fn load_remote_token_from_safe_store(profile_id: &str) -> Option<String> {
-    remote_token_entry(profile_id)
+    if let Some(token) = cached_remote_token(profile_id) {
+        return Some(token);
+    }
+    let token = remote_token_entry(profile_id)
         .ok()?
         .get_password()
         .ok()
-        .filter(|token| !token.is_empty())
-}
-
-fn save_remote_token_to_safe_store(profile_id: &str, token: &str) -> bool {
-    remote_token_entry(profile_id)
-        .and_then(|entry| {
-            entry
-                .set_password(token)
-                .map_err(|err| format!("could not save keyring entry: {err:?}"))
-        })
-        .is_ok()
+        .filter(|token| !token.is_empty())?;
+    cache_remote_token(profile_id, &token);
+    Some(token)
 }
 
 fn delete_remote_token_from_safe_store(profile_id: &str) {
+    forget_cached_remote_token(profile_id);
     if let Ok(entry) = remote_token_entry(profile_id) {
         let _ = entry.delete_credential();
     }
@@ -317,12 +336,27 @@ fn write_token_store(dir: &Path, store: &RemoteTokenStore) -> std::io::Result<()
 }
 
 fn hydrate_remote_tokens(dir: &Path, mut index: ProfileIndex) -> ProfileIndex {
-    let store = read_token_store(dir);
+    let mut token_store = read_token_store_info(dir);
+    let mut store_changed = false;
     for profile in &mut index.profiles {
         if profile.kind == "remote" && profile.remote_token.is_none() {
-            profile.remote_token = load_remote_token_from_safe_store(&profile.id)
-                .or_else(|| store.tokens.get(&profile.id).cloned());
+            if let Some(token) = token_store.store.tokens.get(&profile.id).cloned() {
+                cache_remote_token(&profile.id, &token);
+                profile.remote_token = Some(token);
+            } else if let Some(token) = load_remote_token_from_safe_store(&profile.id) {
+                if !token_store.encrypted_unreadable {
+                    token_store
+                        .store
+                        .tokens
+                        .insert(profile.id.clone(), token.clone());
+                    store_changed = true;
+                }
+                profile.remote_token = Some(token);
+            }
         }
+    }
+    if store_changed {
+        let _ = write_token_store(dir, &token_store.store);
     }
     index
 }
@@ -343,9 +377,8 @@ fn strip_and_persist_remote_tokens(
     for profile in &mut index.profiles {
         if profile.kind == "remote" {
             if let Some(token) = profile.remote_token.take() {
-                if save_remote_token_to_safe_store(&profile.id, &token) {
-                    store_changed |= store.tokens.remove(&profile.id).is_some();
-                } else {
+                cache_remote_token(&profile.id, &token);
+                if store.tokens.get(&profile.id) != Some(&token) {
                     store.tokens.insert(profile.id.clone(), token);
                     store_changed = true;
                 }
@@ -353,7 +386,7 @@ fn strip_and_persist_remote_tokens(
         } else {
             profile.remote_token = None;
             store_changed |= store.tokens.remove(&profile.id).is_some();
-            delete_remote_token_from_safe_store(&profile.id);
+            forget_cached_remote_token(&profile.id);
         }
     }
     let before_retain = store.tokens.len();
