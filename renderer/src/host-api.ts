@@ -567,6 +567,7 @@ function createTauriHost(): BatAppAPI {
       getWindowIndex: () => getInvoke()<number>('app_get_window_index'),
       getLaunchProfile: () => getInvoke()<string | null>('app_get_launch_profile'),
       getWindowProfile: () => getInvoke()<string | null>('app_get_window_profile'),
+      setTitle: (title: string) => getInvoke()<void>('app_set_title', { title }),
       newWindow: () => getInvoke()<string>('app_new_window'),
       focusNextWindow: () => getInvoke()<boolean>('app_focus_next_window'),
       openNewInstance: (profileId: string) =>
@@ -645,7 +646,13 @@ function createTauriHost(): BatAppAPI {
             getInvoke()<unknown>('claude_start_session', { sessionId, options })
         }
         if (key === 'sendMessage') {
-          return async (sessionId: string, prompt: string, images?: string[], autoCompactWindow?: number | null) => {
+          return async (
+            sessionId: string,
+            prompt: string,
+            images?: string[],
+            autoCompactWindow?: number | null,
+            clientMessage?: { id?: string; displayContent?: string; suppressUserEcho?: boolean },
+          ) => {
             const startedAt = performance.now()
             tauriDebugLog('[tauri:claude.sendMessage] start', {
               sessionId,
@@ -655,7 +662,13 @@ function createTauriHost(): BatAppAPI {
             })
             try {
               const result = await getInvoke()<unknown>('claude_send_message', {
-                sessionId, prompt, images, autoCompactWindow,
+                sessionId,
+                prompt,
+                images,
+                autoCompactWindow,
+                clientMessageId: clientMessage?.id,
+                displayPrompt: clientMessage?.displayContent,
+                suppressUserEcho: clientMessage?.suppressUserEcho,
               })
               tauriDebugLog('[tauri:claude.sendMessage] end', {
                 sessionId,

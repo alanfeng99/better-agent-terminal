@@ -31,6 +31,67 @@ import { buildCanUseTool } from './claude-permission.mjs'
 import { LiveQuery } from '../lib/live-query.mjs'
 import { isCodexSession, sendCodexMessage } from './codex.mjs'
 
+let userEchoSeq = 0
+
+function batDebugEnabled() {
+  return process.env.BAT_DEBUG === '1' || process.env.BAT_DEBUG === 'true'
+}
+
+function userDisplayContent(params, prompt, images) {
+  if (typeof params?.displayPrompt === 'string') return params.displayPrompt
+  const imageCount = Array.isArray(images) ? images.length : 0
+  const imageNote = imageCount > 0
+    ? `\n[${imageCount} image${imageCount > 1 ? 's' : ''} attached]`
+    : ''
+  return `${prompt || ''}${imageNote}`.replace(/^\n/, '')
+}
+
+function emitUserEcho(params, sessionId, prompt, images) {
+  if (params?.suppressUserEcho === true) return
+  const content = userDisplayContent(params, prompt, images)
+  const now = Date.now()
+  sendEvent('claude:message', {
+    sessionId,
+    message: {
+      id: typeof params?.clientMessageId === 'string' && params.clientMessageId
+        ? params.clientMessageId
+        : `user-${now}-${++userEchoSeq}`,
+      sessionId,
+      role: 'user',
+      content: content || ' ',
+      timestamp: now,
+    },
+  })
+}
+
+function resultErrorMessage(msg) {
+  for (const value of [msg?.message, msg?.error, msg?.result]) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (value && typeof value === 'object') {
+      for (const key of ['message', 'error', 'detail', 'reason']) {
+        if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim()
+      }
+    }
+  }
+  if (Array.isArray(msg?.errors)) {
+    const parts = msg.errors
+      .map((entry) => {
+        if (typeof entry === 'string') return entry.trim()
+        if (entry && typeof entry === 'object') {
+          for (const key of ['message', 'error', 'detail', 'reason']) {
+            if (typeof entry[key] === 'string' && entry[key].trim()) return entry[key].trim()
+          }
+        }
+        return ''
+      })
+      .filter(Boolean)
+    if (parts.length > 0) return parts.join('; ')
+  }
+  const subtype = typeof msg?.subtype === 'string' && msg.subtype ? msg.subtype : 'unknown'
+  const stopReason = typeof msg?.stop_reason === 'string' && msg.stop_reason ? ` stop_reason=${msg.stop_reason}` : ''
+  return `Claude query ended without success: subtype=${subtype}${stopReason}`
+}
+
 // processMessage: dispatch a single SDKMessage to the renderer-shaped
 // event(s). Pure-ish — only mutates session state (sdkSessionId, model,
 // permissionMode, lastUsage) and emits via sendEvent.
@@ -154,7 +215,11 @@ function processMessage(s, sessionId, msg) {
       sendEvent('claude:result', { sessionId, result: msg })
       sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: msg.result, sdkSessionId: msg.session_id } })
     } else {
-      sendEvent('claude:error', { sessionId, error: msg.message || 'query error' })
+      const errMsg = resultErrorMessage(msg)
+      if (batDebugEnabled()) {
+        logWarn(`claude.result(${shortSessionId(sessionId)}): non-success subtype=${msg?.subtype || 'unknown'} keys=${Object.keys(msg || {}).join(',')}`)
+      }
+      sendEvent('claude:error', { sessionId, error: errMsg })
       sendEvent('claude:turn-end', { sessionId, payload: { reason: 'error' } })
     }
   }
@@ -267,9 +332,12 @@ async function performSendMessage(params) {
     return sendCodexMessage(params)
   }
   const prompt = typeof params?.prompt === 'string' ? params.prompt : ''
+  const images = Array.isArray(params?.images) ? params.images : null
   const s = ensureSession(sessionId)
   const sid = shortSessionId(sessionId)
   if (s.isResting) s.isResting = false
+
+  emitUserEcho(params, sessionId, prompt, images)
 
   const sdk = await loadAnthropicSdk()
   if (!sdk || typeof sdk.query !== 'function') {
@@ -279,7 +347,7 @@ async function performSendMessage(params) {
     return { ok: true, stub: true }
   }
 
-  const userMessage = buildUserMessage(prompt, Array.isArray(params?.images) ? params.images : null)
+  const userMessage = buildUserMessage(prompt, images)
   let live
   try {
     live = await ensureLiveQuery(s, sessionId, sdk, prompt)
@@ -308,7 +376,7 @@ async function performSendMessage(params) {
       logInfo(`claude.sendMessage(${sid}): completed ok elapsedMs=${elapsedMs}`)
       return { ok: true }
     }
-    const errMsg = result?.message || 'query error'
+    const errMsg = resultErrorMessage(result)
     logWarn(`claude.sendMessage(${sid}): completed error elapsedMs=${elapsedMs} error=${errMsg}`)
     return { ok: false, error: errMsg }
   } catch (err) {

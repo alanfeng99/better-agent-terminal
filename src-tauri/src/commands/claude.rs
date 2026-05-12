@@ -534,12 +534,29 @@ fn first_codex_input_text(value: &Value) -> Option<String> {
         })
 }
 
-fn read_codex_session_summary(path: &Path) -> Option<(String, String)> {
+fn normalize_codex_cwd_for_match(value: &str) -> String {
+    let mut normalized = value.trim().replace('\\', "/");
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+    while normalized.len() > 1
+        && normalized.ends_with('/')
+        && !(normalized.len() == 3
+            && normalized.as_bytes().get(1) == Some(&b':')
+            && normalized.as_bytes().get(2) == Some(&b'/'))
+    {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn read_codex_session_summary(path: &Path) -> Option<(String, String, String)> {
     let Ok(file) = fs::File::open(path) else {
         return None;
     };
     let reader = BufReader::new(file);
     let mut thread_id = String::new();
+    let mut cwd = String::new();
     let mut preview = String::new();
     for line in reader.lines().map_while(Result::ok) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
@@ -551,19 +568,28 @@ fn read_codex_session_summary(path: &Path) -> Option<(String, String)> {
                 thread_id = id.to_string();
             }
         }
+        if cwd.is_empty() && value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(session_cwd) = value["payload"]["cwd"]
+                .as_str()
+                .filter(|session_cwd| !session_cwd.is_empty())
+            {
+                cwd = normalize_codex_cwd_for_match(session_cwd);
+            }
+        }
         if preview.is_empty() {
             if let Some(text) = first_codex_input_text(&value) {
                 preview = text;
             }
         }
-        if !thread_id.is_empty() && !preview.is_empty() {
+        if !thread_id.is_empty() && !cwd.is_empty() && !preview.is_empty() {
             break;
         }
     }
-    Some((thread_id, preview))
+    Some((thread_id, cwd, preview))
 }
 
-fn list_codex_sessions_in_root(root: &Path) -> Vec<SessionListEntry> {
+fn list_codex_sessions_in_root(root: &Path, cwd: &str) -> Vec<SessionListEntry> {
+    let target_cwd = normalize_codex_cwd_for_match(cwd);
     let mut files = Vec::new();
     walk_jsonl_files(root, &mut files);
     let mut results = Vec::new();
@@ -579,8 +605,11 @@ fn list_codex_sessions_in_root(root: &Path) -> Vec<SessionListEntry> {
         if fallback_id.is_empty() {
             continue;
         }
-        let (mut sdk_session_id, preview) =
-            read_codex_session_summary(&path).unwrap_or_else(|| (String::new(), String::new()));
+        let (mut sdk_session_id, session_cwd, preview) = read_codex_session_summary(&path)
+            .unwrap_or_else(|| (String::new(), String::new(), String::new()));
+        if !target_cwd.is_empty() && session_cwd != target_cwd {
+            continue;
+        }
         if sdk_session_id.is_empty() {
             sdk_session_id = fallback_id;
         }
@@ -612,7 +641,10 @@ fn list_sessions_native(cwd: &str, agent_kind: Option<&str>) -> Vec<SessionListE
         return Vec::new();
     };
     if agent_kind == Some("codex") {
-        return list_codex_sessions_in_root(&home.join(".codex").join("sessions"));
+        if cwd.is_empty() {
+            return Vec::new();
+        }
+        return list_codex_sessions_in_root(&home.join(".codex").join("sessions"), cwd);
     }
     list_claude_sessions_in_projects(cwd, &home.join(".claude").join("projects"))
 }
@@ -1542,6 +1574,9 @@ pub async fn claude_send_message(
     prompt: String,
     images: Option<Vec<String>>,
     auto_compact_window: Option<i64>,
+    client_message_id: Option<String>,
+    display_prompt: Option<String>,
+    suppress_user_echo: Option<bool>,
 ) -> Result<Value, BridgeError> {
     notification_cmd::set_agent_session_resting(&app, &session_id, false);
     if let Some(result) = remote_invoke_for_window(
@@ -1554,6 +1589,9 @@ pub async fn claude_send_message(
             json!(prompt.clone()),
             json!(images.clone()),
             json!(auto_compact_window),
+            json!(client_message_id.clone()),
+            json!(display_prompt.clone()),
+            json!(suppress_user_echo),
         ],
         SESSION_TIMEOUT,
     )
@@ -1586,6 +1624,9 @@ pub async fn claude_send_message(
                 "prompt": prompt,
                 "images": images.unwrap_or_default(),
                 "autoCompactWindow": auto_compact_window,
+                "clientMessageId": client_message_id,
+                "displayPrompt": display_prompt,
+                "suppressUserEcho": suppress_user_echo.unwrap_or(false),
             }),
             SESSION_TIMEOUT,
         )
@@ -2975,17 +3016,27 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
         fs::write(
             nested.join("rollout.jsonl"),
-            r#"{"type":"session_meta","payload":{"id":"thread-1"}}
+            r#"{"type":"session_meta","payload":{"id":"thread-1","cwd":"/repo/app"}}
 {"type":"event_msg","payload":{"input":"ping\nsecond line"}}
 "#,
         )
         .unwrap();
+        fs::write(
+            nested.join("other.jsonl"),
+            r#"{"type":"session_meta","payload":{"id":"thread-2","cwd":"/repo/other"}}
+{"type":"event_msg","payload":{"input":"other cwd"}}
+"#,
+        )
+        .unwrap();
 
-        let sessions = list_codex_sessions_in_root(&base);
+        let sessions = list_codex_sessions_in_root(&base, "/repo/app/");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].sdk_session_id, "thread-1");
         assert_eq!(sessions[0].preview, "ping");
         assert_eq!(sessions[0].message_count, 0);
+
+        let missing = list_codex_sessions_in_root(&base, "/repo/missing");
+        assert!(missing.is_empty());
 
         fs::remove_dir_all(base).ok();
     }

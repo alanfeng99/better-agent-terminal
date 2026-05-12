@@ -29,6 +29,7 @@ use tungstenite::Message;
 
 const DEFAULT_REMOTE_PORT: u16 = 9876;
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(15);
+const SESSION_INVOKE_TIMEOUT: Duration = Duration::from_secs(300);
 const CERT_PRIME_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_FILE: &str = "server-token.enc.json";
 const LEGACY_TOKEN_FILE: &str = "server-token.json";
@@ -625,29 +626,46 @@ fn handle_client(
             continue;
         }
         if frame_type == "invoke" {
-            let channel = frame.get("channel").and_then(Value::as_str).unwrap_or("");
+            let channel = frame
+                .get("channel")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             remote_debug_log(&app, format!("invoke start peer={peer} channel={channel}"));
-            let result =
-                invoke_sidecar_for_remote(&app, &sidecar, client_protocol, channel, &frame);
-            match result {
-                Ok(value) => {
-                    remote_debug_log(&app, format!("invoke ok peer={peer} channel={channel}"));
-                    send_frame(
-                        &mut ws,
-                        json!({ "type": "invoke-result", "id": id, "result": value }),
-                    )?
-                }
-                Err(err) => {
-                    remote_debug_log(
-                        &app,
-                        format!("invoke error peer={peer} channel={channel} error={err}"),
-                    );
-                    send_frame(
-                        &mut ws,
-                        json!({ "type": "invoke-error", "id": id, "error": err }),
-                    )?
-                }
-            }
+            let invoke_app = app.clone();
+            let invoke_sidecar = sidecar.clone();
+            let invoke_peer = peer.clone();
+            let invoke_frame = frame.clone();
+            let invoke_tx = out_tx.clone();
+            thread::spawn(move || {
+                let result = invoke_sidecar_for_remote(
+                    &invoke_app,
+                    &invoke_sidecar,
+                    client_protocol,
+                    &channel,
+                    &invoke_frame,
+                );
+                let response = match result {
+                    Ok(value) => {
+                        remote_debug_log(
+                            &invoke_app,
+                            format!("invoke ok peer={invoke_peer} channel={channel}"),
+                        );
+                        json!({ "type": "invoke-result", "id": id, "result": value })
+                    }
+                    Err(err) => {
+                        remote_debug_log(
+                            &invoke_app,
+                            format!(
+                                "invoke error peer={invoke_peer} channel={channel} error={err}"
+                            ),
+                        );
+                        json!({ "type": "invoke-error", "id": id, "error": err })
+                    }
+                };
+                let _ = invoke_tx.send(response);
+            });
+            continue;
         }
     }
     if let Ok(mut guard) = clients.lock() {
@@ -804,9 +822,20 @@ fn invoke_sidecar_for_remote(
     let method = channel_to_sidecar_method(channel);
     let cfg = resolve_spawn_config(app).map_err(|err| err.message)?;
     let sink = app_handle_emit_sink(app.clone());
+    let timeout = remote_invoke_timeout(channel);
     sidecar
-        .call_with_emit(&cfg, Some(sink), &method, params, INVOKE_TIMEOUT)
+        .call_with_emit(&cfg, Some(sink), &method, params, timeout)
         .map_err(|err| err.message)
+}
+
+fn remote_invoke_timeout(channel: &str) -> Duration {
+    match channel {
+        "claude:start-session"
+        | "claude:resume-session"
+        | "claude:send-message"
+        | "claude:fork-session" => SESSION_INVOKE_TIMEOUT,
+        _ => INVOKE_TIMEOUT,
+    }
 }
 
 fn channel_to_sidecar_method(channel: &str) -> String {

@@ -95,6 +95,13 @@ interface SessionSummary {
   summary?: string
 }
 
+type ResumeSessionResult = {
+  ok?: boolean
+  stale?: boolean
+  sdkSessionId?: string
+  requestedSdkSessionId?: string
+}
+
 export interface ClaudeAgentPanelProps {
   sessionId: string
   cwd: string
@@ -1086,15 +1093,22 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           workspaceStore.setTerminalPendingPrompt(sessionId, '')
           host.debug.log(`${tag} onHistory AUTO-SENDING pending prompt: "${prompt}" images=${images?.length ?? 0}`)
           // Set history + user message together so it doesn't get overwritten
+          const userMsgId = `user-fork-${Date.now()}`
           setMessages([...historyItems, {
-            id: `user-fork-${Date.now()}`,
+            id: userMsgId,
             sessionId,
             role: 'user' as const,
             content: prompt,
             timestamp: Date.now(),
           }])
           setIsStreaming(true)
-          host.claude.sendMessage(sessionId, prompt, images, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+          host.claude.sendMessage(
+            sessionId,
+            prompt,
+            images,
+            getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow),
+            { id: userMsgId, displayContent: prompt },
+          )
         } else {
           dlog2(`${tag} onHistory setting messages (history only, no pending prompt)`)
           setMessages(historyItems)
@@ -1165,6 +1179,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         if (cancelled) return
         if (existingState) {
           historyLoadedRef.current = true
+          setIsResumingHistory(false)
           setMessages((existingState.messages || []) as MessageItem[])
           setIsStreaming(!!existingState.isStreaming)
           setStreamingText(existingState.streamingText || '')
@@ -1177,9 +1192,21 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         if (savedSdkSessionId) {
           dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
           historyLoadedRef.current = true
+          setIsResumingHistory(true)
           host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, effectiveModel || savedModel, apiVersion,
             useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset,
             undefined, undefined, permissionMode, effectiveEffort as EffortLevel)
+            .then((result: unknown) => {
+              const resumeResult = result as ResumeSessionResult | null
+              if (!cancelled && resumeResult?.stale) {
+                dlog(`${stag} stale resume sdkSessionId=${savedSdkSessionId.slice(0, 8)}; clearing saved sdkSessionId`)
+                workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
+                setHasSdkSession(false)
+              }
+            })
+            .catch(() => {
+              if (!cancelled) setIsResumingHistory(false)
+            })
         } else {
           dlog(`${stag} FRESH startSession`)
           host.claude.startSession(sessionId, {
@@ -1467,7 +1494,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     historyLoadedRef.current = true
     const apiVersion = isV2Session ? 'v2' as const : 'v1' as const
     const resumeModel = currentModel || settingsStore.getSettings().defaultClaudeModel || undefined
-    await host.claude.resumeSession(
+    const result = await host.claude.resumeSession(
       sessionId,
       sdkSessionId,
       cwd,
@@ -1481,7 +1508,12 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       undefined,
       permissionMode,
       effortLevel as EffortLevel,
-    )
+    ) as ResumeSessionResult | null
+    if (result?.stale) {
+      workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
+      setHasSdkSession(false)
+      return
+    }
     workspaceStore.setTerminalSdkSessionId(sessionId, sdkSessionId)
   }, [sessionId, cwd, isV2Session, terminal?.agentPreset, currentModel, permissionMode, effortLevel])
 
@@ -1872,8 +1904,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           query ? '' : `How would you like to work with your snippets?`,
         ].filter(Boolean).join('\n')
         // Show clean user message
+        const userMsgId = `user-${Date.now()}`
         setMessages(prev => [...prev, {
-          id: `user-${Date.now()}`,
+          id: userMsgId,
           sessionId,
           role: 'user' as const,
           content: trimmed,
@@ -1883,7 +1916,13 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         setIsInterrupted(false)
         setStreamingText('')
         setStreamingThinking('')
-        await host.claude.sendMessage(sessionId, contextPrompt, undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+        await host.claude.sendMessage(
+          sessionId,
+          contextPrompt,
+          undefined,
+          getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow),
+          { id: userMsgId, displayContent: trimmed },
+        )
       } catch {
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
@@ -1955,7 +1994,13 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
     const __sendT1 = performance.now()
     try {
-      await host.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined, getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow))
+      await host.claude.sendMessage(
+        sessionId,
+        promptToSend,
+        imageDataUrls.length > 0 ? imageDataUrls : undefined,
+        getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow),
+        { id: userMsgId, displayContent },
+      )
     } finally {
       const __sendT2 = performance.now()
       const sync = __sendT1 - __sendT0
@@ -3485,7 +3530,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             </button>
           </div>
         )}
-        {isResumingHistory && allMessages.length === 0 && (
+        {isResumingHistory && (
           <div className="claude-resume-skeleton">
             <span className="claude-resume-skeleton-spinner" />
             <span>{t('claude.resumingHistory')}</span>

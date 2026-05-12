@@ -4,8 +4,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { accessSync, constants as fsConstants } from 'node:fs'
 import { platform } from 'node:os'
-import { dirname, join } from 'node:path'
-import { execFile } from 'node:child_process'
+import { delimiter, dirname, join } from 'node:path'
+import { execFile, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { registerHandler } from '../lib/protocol.mjs'
@@ -39,6 +39,36 @@ function candidateSidecarRoots(fromFile) {
   return roots
 }
 
+function isUsableClaudeCli(candidate) {
+  try {
+    accessSync(candidate, fsConstants.X_OK)
+  } catch {
+    return false
+  }
+  // macOS can invalidate nested signed Mach-O files while copying Tauri
+  // resources. The executable bit survives, but launch exits with SIGKILL.
+  // Probe once before caching a path so the SDK never receives a dead CLI.
+  try {
+    execFileSync(candidate, ['--version'], {
+      stdio: 'ignore',
+      timeout: 5_000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function findOnPath(exeName) {
+  const pathEnv = process.env.PATH || ''
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue
+    const candidate = join(dir, exeName)
+    if (isUsableClaudeCli(candidate)) return candidate
+  }
+  return null
+}
+
 export function resolveClaudeCliBinary() {
   if (process.env.BAT_SIDECAR_CLAUDE_BIN) return process.env.BAT_SIDECAR_CLAUDE_BIN
   if (_claudeCliPathCache !== undefined) return _claudeCliPathCache
@@ -67,16 +97,31 @@ export function resolveClaudeCliBinary() {
     for (const sidecarRoot of candidateSidecarRoots(here)) {
       for (const triple of tripleDirs) {
         const candidate = join(sidecarRoot, 'node_modules', '@anthropic-ai', triple, exeName)
-        try {
-          accessSync(candidate, fsConstants.X_OK)
+        if (isUsableClaudeCli(candidate)) {
           _claudeCliPathCache = candidate
           return candidate
-        } catch { /* not present, try next */ }
+        }
       }
     }
   }
-  _claudeCliPathCache = null
-  return null
+  // Development fallback: Tauri dev runs the sidecar from target/debug
+  // resources, while the pristine package copy lives in the repo checkout.
+  // If the resource copy is unusable, prefer the repo copy before PATH.
+  const cwd = process.cwd()
+  for (const root of [
+    join(cwd, 'node-sidecar', 'dist-node_modules'),
+    join(cwd, 'node-sidecar', 'node_modules'),
+  ]) {
+    for (const triple of tripleDirs) {
+      const candidate = join(root, '@anthropic-ai', triple, exeName)
+      if (isUsableClaudeCli(candidate)) {
+        _claudeCliPathCache = candidate
+        return candidate
+      }
+    }
+  }
+  _claudeCliPathCache = findOnPath(exeName)
+  return _claudeCliPathCache
 }
 
 // Spawn the resolved claude CLI with the given args. Falls back to

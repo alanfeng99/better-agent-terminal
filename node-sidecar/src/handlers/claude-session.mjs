@@ -129,7 +129,6 @@ registerHandler('claude.resumeSession', async (params) => {
   const s = ensureSession(sessionId)
   s.active = true
   s.options = params?.options ?? null
-  s.sdkSessionId = sdkSessionIdToResume
   s.permissionMode = 'bypassPermissions'
   if (s.options && typeof s.options === 'object') {
     if (typeof s.options.cwd === 'string') {
@@ -146,7 +145,12 @@ registerHandler('claude.resumeSession', async (params) => {
   const historyCwd = (s.options && typeof s.options === 'object' && typeof s.options.cwd === 'string')
     ? s.options.cwd
     : process.cwd()
-  await loadSessionHistory(sessionId, sdkSessionIdToResume, historyCwd)
+  const history = await loadSessionHistory(sessionId, sdkSessionIdToResume, historyCwd, { allowGlobalFallback: false })
+  if (!history.found) {
+    logWarn(`claude.resumeSession: stale sdkSessionId=${sdkSessionIdToResume} for cwd=${historyCwd}; starting fresh session`)
+    return { ok: true, sessionId, stale: true, requestedSdkSessionId: sdkSessionIdToResume }
+  }
+  s.sdkSessionId = sdkSessionIdToResume
   return { ok: true, sessionId, sdkSessionId: sdkSessionIdToResume }
 })
 

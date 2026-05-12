@@ -382,6 +382,20 @@ async function readSessionIdFromLog(file) {
   return null
 }
 
+function normalizeCodexCwdForMatch(value) {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw) return ''
+  let normalized = raw.replace(/\\/g, '/').replace(/\/+/g, '/')
+  while (
+    normalized.length > 1
+    && normalized.endsWith('/')
+    && !/^[A-Za-z]:\/$/.test(normalized)
+  ) {
+    normalized = normalized.slice(0, -1)
+  }
+  return normalized
+}
+
 async function readSessionLines(threadId) {
   const file = await findSessionLog(threadId)
   if (!file) return []
@@ -391,21 +405,28 @@ async function readSessionLines(threadId) {
   }).filter(Boolean)
 }
 
-export async function listCodexSessions() {
+export async function listCodexSessions(cwd = '', root = codexSessionsRoot()) {
+  const targetCwd = normalizeCodexCwdForMatch(cwd)
   const results = []
-  for await (const file of walkJsonlFiles(codexSessionsRoot())) {
+  for await (const file of walkJsonlFiles(root)) {
     try {
       const st = await stat(file)
       const fallbackId = file.replace(/\.jsonl$/, '').split(/[\\/]/).pop() || ''
       const content = await readFile(file, 'utf-8').catch(() => '')
       let id = ''
+      let sessionCwd = ''
       let preview = ''
       for (const line of content.split('\n')) {
         if (!line.trim()) continue
         try {
           const entry = JSON.parse(line)
-          if (!id && entry?.type === 'session_meta' && typeof entry?.payload?.id === 'string') {
-            id = entry.payload.id
+          if (entry?.type === 'session_meta') {
+            if (!id && typeof entry?.payload?.id === 'string') {
+              id = entry.payload.id
+            }
+            if (!sessionCwd && typeof entry?.payload?.cwd === 'string') {
+              sessionCwd = normalizeCodexCwdForMatch(entry.payload.cwd)
+            }
           }
           const input = entry?.payload?.input || entry?.payload?.message || entry?.payload?.op?.content?.find?.(c => c.type === 'input_text')?.text
           if (typeof input === 'string' && input.trim()) {
@@ -414,6 +435,7 @@ export async function listCodexSessions() {
         } catch { /* ignore */ }
         if (id && preview) break
       }
+      if (targetCwd && sessionCwd !== targetCwd) continue
       if (!id) id = fallbackId
       results.push({ sdkSessionId: id, timestamp: st.mtimeMs, preview: preview || `(${id.slice(0, 8)}...)`, messageCount: 0 })
     } catch { /* ignore */ }
@@ -426,7 +448,7 @@ async function codexThreadExists(threadId) {
 }
 
 async function loadHistory(sessionId, threadId) {
-  send('claude:resume-loading', sessionId, 'payload', true)
+  send('claude:resume-loading', sessionId, 'loading', true)
   try {
     const lines = await readSessionLines(threadId)
     const items = []
@@ -442,9 +464,9 @@ async function loadHistory(sessionId, threadId) {
     }
     const s = sessions.get(sessionId)
     if (s) s.state.messages = items.slice(-300)
-    send('claude:history', sessionId, 'payload', items)
+    send('claude:history', sessionId, 'items', items)
   } finally {
-    send('claude:resume-loading', sessionId, 'payload', false)
+    send('claude:resume-loading', sessionId, 'loading', false)
   }
 }
 
@@ -563,12 +585,12 @@ export async function resumeCodexSession(params) {
     }
     sdkThreadIds.delete(sessionId)
     logWarn(`[codex:${sessionId.slice(0, 8)}] resume skipped: missing rollout for thread ${threadId}`)
-    send('claude:resume-loading', sessionId, 'payload', false)
+    send('claude:resume-loading', sessionId, 'loading', false)
     send('claude:status', sessionId, 'meta', { ...makeMetadata({ cwd: params?.options?.cwd || null }), sdkSessionId: null })
     return startCodexSession({ sessionId, options: params?.options || {} })
   }
   sdkThreadIds.set(sessionId, threadId)
-  send('claude:resume-loading', sessionId, 'payload', true)
+  send('claude:resume-loading', sessionId, 'loading', true)
   const result = await startCodexSession({ sessionId, options: params?.options || {} })
   if (result?.ok) {
     const s = sessions.get(sessionId)
@@ -580,7 +602,7 @@ export async function resumeCodexSession(params) {
       logWarn(`[codex:${sessionId.slice(0, 8)}] load history failed: ${stringifyCodexError(err)}`)
     })
   } else {
-    send('claude:resume-loading', sessionId, 'payload', false)
+    send('claude:resume-loading', sessionId, 'loading', false)
   }
   return result
 }

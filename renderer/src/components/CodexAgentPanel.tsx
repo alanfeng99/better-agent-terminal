@@ -1164,6 +1164,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (cancelled) return
         if (existingState) {
           historyLoadedRef.current = true
+          setIsResumingHistory(false)
           setMessages((existingState.messages || []) as MessageItem[])
           setIsStreaming(!!existingState.isStreaming)
           setStreamingText(existingState.streamingText || '')
@@ -1179,9 +1180,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (savedSdkSessionId) {
           dlog(`${stag} AUTO-RESUME sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
           historyLoadedRef.current = true
+          setIsResumingHistory(true)
           host.claude.resumeSession(sessionId, savedSdkSessionId, cwd, effectiveModel || savedModel, apiVersion,
             useWorktree ? true : undefined, terminal?.worktreePath, terminal?.worktreeBranch, terminal?.agentPreset,
             codexSandboxMode, codexApprovalPolicy, permissionMode, effectiveEffort as EffortLevel)
+            .catch(() => {
+              if (!cancelled) setIsResumingHistory(false)
+            })
         } else {
           dlog(`${stag} FRESH startSession`)
           host.claude.startSession(sessionId, {
@@ -3391,7 +3396,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             </button>
           </div>
         )}
-        {isResumingHistory && allMessages.length === 0 && (
+        {isResumingHistory && (
           <div className="claude-resume-skeleton">
             <span className="claude-resume-skeleton-spinner" />
             <span>{t('claude.resumingHistory')}</span>

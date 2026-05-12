@@ -12,7 +12,8 @@
 //
 // Protocol compatibility:
 // - legacy-v1 Electron clients send IPC-shaped positional args
-//   (`claude:send-message`, sessionId, prompt, images, autoCompactWindow).
+//   (`claude:send-message`, sessionId, prompt, images, autoCompactWindow,
+//   clientMessageId?, displayPrompt?, suppressUserEcho?).
 // - current sidecar handlers take one named-params object
 //   (`{ sessionId, prompt, images, autoCompactWindow }`).
 //
@@ -36,7 +37,15 @@ const LEGACY_V1_PARAM_KEYS = new Map([
   ['settings:get-shell-path', ['shellType']],
   ['image:read-as-data-url', ['filePath']],
 
-  ['claude:send-message', ['sessionId', 'prompt', 'images', 'autoCompactWindow']],
+  ['claude:send-message', [
+    'sessionId',
+    'prompt',
+    'images',
+    'autoCompactWindow',
+    'clientMessageId',
+    'displayPrompt',
+    'suppressUserEcho',
+  ]],
   ['claude:stop-session', ['sessionId']],
   ['claude:abort-session', ['sessionId']],
   ['claude:set-auto-continue', ['sessionId', 'opts']],

@@ -23,6 +23,15 @@ const serverPath = resolve(here, '..', 'src', 'server.mjs')
 async function inProcess() {
   const mod = await import('../src/server.mjs')
   const { dispatch, handlers, registerHandler } = mod
+  function writeClaudeHistory(projectsDir, cwd, sdkSessionId, entries = null) {
+    const encoded = String(cwd || process.cwd()).replace(/[^a-zA-Z0-9]/g, '-')
+    const dir = join(projectsDir, encoded)
+    mkdirSync(dir, { recursive: true })
+    const rows = entries || [
+      { type: 'user', uuid: `${sdkSessionId}-u`, timestamp: '2026-05-10T00:00:00.000Z', message: { role: 'user', content: 'setup' } },
+    ]
+    writeFileSync(join(dir, `${sdkSessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+  }
 
   // ping echoes params and returns pid + ok flag.
   const pingReply = await dispatch({ jsonrpc: '2.0', id: 1, method: 'ping', params: { hi: 'there' } })
@@ -204,6 +213,26 @@ async function inProcess() {
   assert.throws(() => registerHandler('ping', () => 1), /already registered/)
   assert.ok(handlers.has('ping'))
 
+  // Codex history events must use the same payload keys as Claude
+  // history events. Remote legacy clients receive args via those keys
+  // (`items` / `loading`), while the renderer fallback also accepts the
+  // older `{payload}` shape. Do not regress remote profile restore.
+  {
+    const codexSource = readFileSync(resolve(here, '..', 'src', 'handlers', 'codex.mjs'), 'utf-8')
+    assert.ok(
+      codexSource.includes("send('claude:history', sessionId, 'items', items)"),
+      'Codex history must emit {items} for legacy remote clients',
+    )
+    assert.ok(
+      codexSource.includes("send('claude:resume-loading', sessionId, 'loading', true)"),
+      'Codex resume-loading must emit {loading} for legacy remote clients',
+    )
+    assert.ok(
+      !codexSource.includes("send('claude:history', sessionId, 'payload'"),
+      'Codex history must not emit payload-only history events',
+    )
+  }
+
   // Session lifecycle stubs validate sessionId and return ok.
   const start = await dispatch({ jsonrpc: '2.0', id: 100, method: 'claude.startSession', params: { sessionId: 's-1', options: { cwd: '/x' } } })
   assert.equal(start.result.ok, true)
@@ -315,6 +344,32 @@ async function inProcess() {
     assert.deepEqual(nonExistent, [])
   } finally {
     rmSync(fakeHome, { recursive: true, force: true })
+  }
+
+  // Codex session listing is cwd-scoped. Codex stores sessions under a
+  // date tree, so the only reliable filter is session_meta.payload.cwd.
+  {
+    const { listCodexSessions } = await import('../src/handlers/codex.mjs')
+    const codexRoot = mkdtempSync(join(tmpdir(), 'sidecar-codex-sessions-'))
+    const nested = join(codexRoot, '2026', '05', '12')
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(nested, 'rollout-a.jsonl'), [
+      JSON.stringify({ type: 'session_meta', payload: { id: 'codex-a', cwd: '/repo/app' } }),
+      JSON.stringify({ type: 'event_msg', payload: { input: 'ping\nsecond line' } }),
+    ].join('\n') + '\n')
+    writeFileSync(join(nested, 'rollout-b.jsonl'), [
+      JSON.stringify({ type: 'session_meta', payload: { id: 'codex-b', cwd: '/repo/other' } }),
+      JSON.stringify({ type: 'event_msg', payload: { input: 'other cwd' } }),
+    ].join('\n') + '\n')
+    try {
+      const sessions = await listCodexSessions('/repo/app/', codexRoot)
+      assert.equal(sessions.length, 1)
+      assert.equal(sessions[0].sdkSessionId, 'codex-a')
+      assert.equal(sessions[0].preview, 'ping')
+      assert.deepEqual(await listCodexSessions('/repo/missing', codexRoot), [])
+    } finally {
+      rmSync(codexRoot, { recursive: true, force: true })
+    }
   }
 
   // readAccountIndex — point BAT_SIDECAR_DATA_DIR at a temp dir, drop a
@@ -1127,12 +1182,15 @@ async function inProcess() {
     const sendReply = await dispatch({ jsonrpc: '2.0', id: 221, method: 'claude.sendMessage',
       params: { sessionId: 'send-1', prompt: 'hi' } })
     assert.equal(sendReply.result.ok, true)
-    // Event sequence: status, message, result, turn-end (in order).
+    // Event sequence: local/remote user echo, status, assistant message,
+    // result, turn-end (in order).
     const events = captured.filter(c => c.name && c.name.startsWith('claude:'))
     const seq = events.map(e => e.name)
-    assert.deepEqual(seq, ['claude:status', 'claude:message', 'claude:result', 'claude:turn-end'])
+    assert.deepEqual(seq, ['claude:message', 'claude:status', 'claude:message', 'claude:result', 'claude:turn-end'])
+    assert.equal(events[0].payload.message.role, 'user')
+    assert.equal(events[0].payload.message.content, 'hi')
     // status payload.meta.sdkSessionId
-    assert.equal(events[0].payload.meta.sdkSessionId, 'sdk-sess-abc')
+    assert.equal(events[1].payload.meta.sdkSessionId, 'sdk-sess-abc')
     // status meta must carry the full SessionMetadata shape, not a
     // sparse subset — the renderer's ClaudeAgentPanel reads
     // `inputTokens.toLocaleString()` etc. without optional chaining.
@@ -1147,7 +1205,7 @@ async function inProcess() {
       'cacheReadTokens', 'cacheCreationTokens',
       'callCacheRead', 'callCacheWrite', 'lastQueryCalls',
     ]) {
-      assert.ok(key in events[0].payload.meta,
+      assert.ok(key in events[1].payload.meta,
         `claude:status meta missing field: ${key}`)
     }
     for (const numKey of [
@@ -1156,14 +1214,14 @@ async function inProcess() {
       'cacheReadTokens', 'cacheCreationTokens',
       'callCacheRead', 'callCacheWrite', 'lastQueryCalls',
     ]) {
-      assert.equal(typeof events[0].payload.meta[numKey], 'number',
+      assert.equal(typeof events[1].payload.meta[numKey], 'number',
         `claude:status meta.${numKey} must be a number`)
     }
     // message payload.message.content shape preserved
-    assert.equal(events[1].payload.message.message.content[0].text, 'hello back')
+    assert.equal(events[2].payload.message.message.content[0].text, 'hello back')
     // turn-end carries reason + sdkSessionId
-    assert.equal(events[3].payload.payload.reason, 'completed')
-    assert.equal(events[3].payload.payload.sdkSessionId, 'sdk-sess-abc')
+    assert.equal(events[4].payload.payload.reason, 'completed')
+    assert.equal(events[4].payload.payload.sdkSessionId, 'sdk-sess-abc')
 
     // Second sendMessage must pass `resume: 'sdk-sess-abc'` to the SDK
     // (proving multi-turn context preservation).
@@ -1185,6 +1243,42 @@ async function inProcess() {
   } finally {
     __setSdkOverrideForTests(undefined)
     restoreSendEvent()
+  }
+
+  // Non-success SDK results should surface the useful nested error text,
+  // not only "query error" / subtype noise.
+  const errorCaptured = []
+  const restoreErrorSend = mod.__setSendEventForTests((name, payload) => errorCaptured.push({ name, payload }))
+  const fakeSdkForResultError = {
+    query() {
+      return (async function*() {
+        yield { type: 'system', subtype: 'init', session_id: 'sdk-missing-history', cwd: '/x' }
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          session_id: 'sdk-missing-history',
+          errors: [{ message: 'No conversation found with session ID: sdk-missing-history' }],
+          stop_reason: 'error',
+          total_cost_usd: 0,
+          num_turns: 1,
+        }
+      })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkForResultError)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 2231, method: 'claude.startSession',
+      params: { sessionId: 'send-error-1', options: { cwd: '/x' } } })
+    const sendReply = await dispatch({ jsonrpc: '2.0', id: 2232, method: 'claude.sendMessage',
+      params: { sessionId: 'send-error-1', prompt: 'hi' } })
+    assert.equal(sendReply.result.ok, false)
+    assert.match(sendReply.result.error, /No conversation found/)
+    const errorEvent = errorCaptured.find(e => e.name === 'claude:error')
+    assert.ok(errorEvent, 'non-success result must emit claude:error')
+    assert.match(errorEvent.payload.error, /No conversation found/)
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreErrorSend()
   }
 
   // Consecutive sends reuse the same LiveQuery when the SDK keeps the
@@ -1423,6 +1517,8 @@ async function inProcess() {
   // each handler tears down the query reference.
   const lcCalls = { close: 0 }
   const restoreLcSend = mod.__setSendEventForTests(() => {})
+  const lcProjectsDir = mkdtempSync(join(tmpdir(), 'sidecar-lifecycle-history-'))
+  mod.__setProjectsDirOverrideForTests(lcProjectsDir)
   function makeSdkLifecycle() {
     return {
       query({ prompt }) {
@@ -1470,6 +1566,7 @@ async function inProcess() {
     await dispatch({ jsonrpc: '2.0', id: 249, method: 'claude.startSession', params: { sessionId: 'lc-resume', options: { cwd: '/lc' } } })
     await dispatch({ jsonrpc: '2.0', id: 250, method: 'claude.sendMessage', params: { sessionId: 'lc-resume', prompt: 'hi' } })
     const resumeCloseBefore = lcCalls.close
+    writeClaudeHistory(lcProjectsDir, '/lc', 'sdk-lc-resumed')
     await dispatch({ jsonrpc: '2.0', id: 251, method: 'claude.resumeSession',
       params: { sessionId: 'lc-resume', sdkSessionId: 'sdk-lc-resumed', options: { cwd: '/lc' } } })
     assert.ok(lcCalls.close > resumeCloseBefore, 'resumeSession must close prior currentQuery')
@@ -1477,6 +1574,8 @@ async function inProcess() {
     assert.equal(mod.sessions.get('lc-resume').currentQuery, undefined)
   } finally {
     __setSdkOverrideForTests(undefined)
+    mod.__setProjectsDirOverrideForTests(null)
+    rmSync(lcProjectsDir, { recursive: true, force: true })
     restoreLcSend()
   }
 
@@ -1757,9 +1856,10 @@ async function inProcess() {
     assert.equal(resumeQueryCaptured.length, 1)
     assert.equal(resumeQueryCaptured[0].options.resume, 'sdk-historic-xyz')
 
-    // If the persisted terminal cwd no longer matches Claude's project dir
-    // (worktree reloads and old sessions can do this), resume should still
-    // find the JSONL by sdkSessionId instead of showing an empty history.
+    // If the persisted terminal cwd no longer matches Claude's project dir,
+    // do not globally borrow a transcript from a different cwd. The UI may
+    // otherwise display history that Claude Code cannot resume from the
+    // active cwd, and the next send fails with "No conversation found".
     const fallbackProjectDir = join(resumeProjectsDir, 'C--fallback-project')
     mkdirSync(fallbackProjectDir, { recursive: true })
     writeFileSync(join(fallbackProjectDir, 'sdk-global-xyz.jsonl'), [
@@ -1771,9 +1871,12 @@ async function inProcess() {
       params: { sessionId: 'resume-global', sdkSessionId: 'sdk-global-xyz',
         options: { cwd: '/wrong/cwd' } } })
     assert.equal(globalResumeReply.result.ok, true)
+    assert.equal(globalResumeReply.result.stale, true)
+    assert.equal(globalResumeReply.result.requestedSdkSessionId, 'sdk-global-xyz')
     const globalHistoryEvent = resumeCaptured.find(e => e.name === 'claude:history')
-    assert.ok(globalHistoryEvent, 'resumeSession must emit fallback claude:history')
-    assert.deepEqual(globalHistoryEvent.payload.items.map(i => `${i.role}:${i.content}`), ['user:global ping', 'assistant:global pong'])
+    assert.ok(globalHistoryEvent, 'resumeSession must emit empty claude:history for stale resume')
+    assert.deepEqual(globalHistoryEvent.payload.items, [])
+    assert.equal(mod.sessions.get('resume-global').sdkSessionId, null)
 
     // Resume must reject missing sdkSessionId or sessionId.
     const noSdkReply = await dispatch({ jsonrpc: '2.0', id: 297, method: 'claude.resumeSession',
@@ -1784,6 +1887,7 @@ async function inProcess() {
     assert.match(noSidReply.error?.message || '', /missing sessionId/)
 
     // Override default permissionMode via options.
+    writeClaudeHistory(resumeProjectsDir, '/r', 'sdk-2')
     await dispatch({ jsonrpc: '2.0', id: 299, method: 'claude.resumeSession',
       params: { sessionId: 'resume-2', sdkSessionId: 'sdk-2',
         options: { cwd: '/r', permissionMode: 'plan' } } })
@@ -1899,6 +2003,8 @@ async function inProcess() {
   // + abortController, and that the handler returns { newSdkSessionId }.
   const forkCaptured = []
   const restoreForkSend = mod.__setSendEventForTests(() => {})
+  const forkProjectsDir = mkdtempSync(join(tmpdir(), 'sidecar-fork-history-'))
+  mod.__setProjectsDirOverrideForTests(forkProjectsDir)
   const fakeSdkFork = {
     query({ prompt, options }) {
       forkCaptured.push({ prompt, options })
@@ -1913,6 +2019,7 @@ async function inProcess() {
   try {
     // Bring up a session with a current sdkSessionId via resumeSession so
     // the fork has something to copy from.
+    writeClaudeHistory(forkProjectsDir, '/fork-cwd', 'sdk-original-abc')
     await dispatch({ jsonrpc: '2.0', id: 400, method: 'claude.resumeSession',
       params: { sessionId: 'fork-1', sdkSessionId: 'sdk-original-abc',
         options: { cwd: '/fork-cwd' } } })
@@ -1947,6 +2054,8 @@ async function inProcess() {
     assert.equal(unknownReply.result, null)
   } finally {
     __setSdkOverrideForTests(undefined)
+    mod.__setProjectsDirOverrideForTests(null)
+    rmSync(forkProjectsDir, { recursive: true, force: true })
     restoreForkSend()
   }
 
@@ -1963,6 +2072,8 @@ async function inProcess() {
   // Fork that never yields a session_id → null. Drive a fake SDK whose
   // generator yields only a `result` with no preceding `system:init`.
   const restoreForkSend2 = mod.__setSendEventForTests(() => {})
+  const forkNoInitProjectsDir = mkdtempSync(join(tmpdir(), 'sidecar-fork-no-init-history-'))
+  mod.__setProjectsDirOverrideForTests(forkNoInitProjectsDir)
   const fakeSdkForkNoInit = {
     query() {
       return (async function*() {
@@ -1972,6 +2083,7 @@ async function inProcess() {
   }
   __setSdkOverrideForTests(fakeSdkForkNoInit)
   try {
+    writeClaudeHistory(forkNoInitProjectsDir, '/x', 'sdk-no-init')
     await dispatch({ jsonrpc: '2.0', id: 406, method: 'claude.resumeSession',
       params: { sessionId: 'fork-no-init', sdkSessionId: 'sdk-no-init',
         options: { cwd: '/x' } } })
@@ -1981,6 +2093,8 @@ async function inProcess() {
       'no system:init means no new session_id captured → null')
   } finally {
     __setSdkOverrideForTests(undefined)
+    mod.__setProjectsDirOverrideForTests(null)
+    rmSync(forkNoInitProjectsDir, { recursive: true, force: true })
     restoreForkSend2()
   }
 
@@ -1993,6 +2107,8 @@ async function inProcess() {
   // entry, drops noise messages, and tags items with parentToolUseId.
   const fetchCaptured = []
   const restoreFetchSend = mod.__setSendEventForTests(() => {})
+  const fetchProjectsDir = mkdtempSync(join(tmpdir(), 'sidecar-fetch-history-'))
+  mod.__setProjectsDirOverrideForTests(fetchProjectsDir)
   const fakeSdkFetch = {
     getSubagentMessages(sdkSid, agentId, opts) {
       fetchCaptured.push({ sdkSid, agentId, opts })
@@ -2036,6 +2152,7 @@ async function inProcess() {
   }
   __setSdkOverrideForTests(fakeSdkFetch)
   try {
+    writeClaudeHistory(fetchProjectsDir, '/sa-cwd', 'sdk-parent-xyz')
     await dispatch({ jsonrpc: '2.0', id: 410, method: 'claude.resumeSession',
       params: { sessionId: 'sa-1', sdkSessionId: 'sdk-parent-xyz',
         options: { cwd: '/sa-cwd' } } })
@@ -2123,6 +2240,7 @@ async function inProcess() {
       getSubagentMessages: () => Promise.reject(new Error('disk read failed')),
     }
     __setSdkOverrideForTests(throwingSdk)
+    writeClaudeHistory(fetchProjectsDir, '/x', 'sdk-t')
     await dispatch({ jsonrpc: '2.0', id: 418, method: 'claude.resumeSession',
       params: { sessionId: 'sa-throw', sdkSessionId: 'sdk-t', options: { cwd: '/x' } } })
     const throwReply = await dispatch({ jsonrpc: '2.0', id: 419, method: 'claude.fetchSubagentMessages',
@@ -2136,6 +2254,8 @@ async function inProcess() {
     assert.deepEqual(noHelperReply.result, [], 'missing helper → []')
   } finally {
     __setSdkOverrideForTests(undefined)
+    mod.__setProjectsDirOverrideForTests(null)
+    rmSync(fetchProjectsDir, { recursive: true, force: true })
     restoreFetchSend2()
   }
 
@@ -2149,6 +2269,8 @@ async function inProcess() {
   const restoreRestSend = mod.__setSendEventForTests((method, payload) => {
     restEvents.push({ method, payload })
   })
+  const restProjectsDir = mkdtempSync(join(tmpdir(), 'sidecar-rest-history-'))
+  mod.__setProjectsDirOverrideForTests(restProjectsDir)
   try {
     // Bring up a session via resumeSession (gives it an sdkSessionId).
     const fakeSdkRest = {
@@ -2157,6 +2279,7 @@ async function inProcess() {
       },
     }
     __setSdkOverrideForTests(fakeSdkRest)
+    writeClaudeHistory(restProjectsDir, '/r', 'sdk-rest-x')
     await dispatch({ jsonrpc: '2.0', id: 430, method: 'claude.resumeSession',
       params: { sessionId: 'rest-1', sdkSessionId: 'sdk-rest-x',
         options: { cwd: '/r' } } })
@@ -2240,6 +2363,8 @@ async function inProcess() {
     assert.equal(unknownIsResting.result, false)
   } finally {
     __setSdkOverrideForTests(undefined)
+    mod.__setProjectsDirOverrideForTests(null)
+    rmSync(restProjectsDir, { recursive: true, force: true })
     restoreRestSend()
   }
 
@@ -3086,7 +3211,8 @@ async function inProcess() {
     assert.equal(stubReply.result.ok, true)
     assert.equal(stubReply.result.stub, true)
     const stubEvents = captured2.filter(c => c.name?.startsWith('claude:')).map(c => c.name)
-    assert.deepEqual(stubEvents, ['claude:message', 'claude:turn-end'])
+    assert.deepEqual(stubEvents, ['claude:message', 'claude:message', 'claude:turn-end'])
+    assert.equal(captured2.find(c => c.name === 'claude:message')?.payload.message.role, 'user')
   } finally {
     __setSdkOverrideForTests(undefined)
     restore2()
@@ -3396,6 +3522,18 @@ async function inProcess() {
     assert.deepEqual(
       bridge.legacyV1ArgsToParams('claude:send-message', ['legacy-s1', 'hello', ['img'], 4000]),
       { sessionId: 'legacy-s1', prompt: 'hello', images: ['img'], autoCompactWindow: 4000 },
+    )
+    assert.deepEqual(
+      bridge.legacyV1ArgsToParams('claude:send-message', ['legacy-s1', 'hello', [], null, 'user-1', 'hello', true]),
+      {
+        sessionId: 'legacy-s1',
+        prompt: 'hello',
+        images: [],
+        autoCompactWindow: null,
+        clientMessageId: 'user-1',
+        displayPrompt: 'hello',
+        suppressUserEcho: true,
+      },
     )
     const legacyStart = await invokeRemoteHandler('claude:start-session', ['legacy-start', { cwd: tmpdir() }])
     assert.equal(legacyStart.ok, true)

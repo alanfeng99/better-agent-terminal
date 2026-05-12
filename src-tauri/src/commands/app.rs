@@ -270,6 +270,11 @@ pub fn app_get_window_profile(app: AppHandle, window: WebviewWindow) -> Option<S
 }
 
 #[tauri::command]
+pub fn app_set_title(window: WebviewWindow, title: String) -> Result<(), String> {
+    window.set_title(&title).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub fn app_new_window(app: AppHandle, window: WebviewWindow) -> String {
     let current = window_registry::get_entry(&app, window.label());
     let entry = window_registry::create_empty_entry_for_profile(&app, &current.profile_id);

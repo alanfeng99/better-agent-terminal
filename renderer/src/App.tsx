@@ -185,7 +185,9 @@ export default function App() {
     const titleParts = [profilePart]
     if (authInfo?.email) titleParts.push(`(${authInfo.email} / ${authInfo.subscriptionType || 'unknown'})`)
     titleParts.push('Better Agent Terminal')
-    document.title = titleParts.join(' | ')
+    const title = titleParts.join(' | ')
+    document.title = title
+    host.app.setTitle(title).catch(() => {})
   }, [activeProfileName, windowIndex, activeProfileIsRemote, authInfo])
 
   // Lazy mount: only render a workspace's terminals once it has been activated

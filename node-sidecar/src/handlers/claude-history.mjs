@@ -24,7 +24,8 @@ function historyProjectDirCandidates(cwd) {
   return dirs
 }
 
-async function readHistoryFile(sdkSessionId, cwd) {
+async function readHistoryFile(sdkSessionId, cwd, opts = {}) {
+  const allowFallback = opts.allowGlobalFallback !== false
   for (const dir of historyProjectDirCandidates(cwd)) {
     try {
       return await readFile(join(dir, `${sdkSessionId}.jsonl`), 'utf-8')
@@ -32,6 +33,7 @@ async function readHistoryFile(sdkSessionId, cwd) {
       // Try the next project-dir casing candidate.
     }
   }
+  if (!allowFallback) return null
   const fallback = await findHistoryFileBySessionId(sdkSessionId)
   if (fallback) {
     logWarn(`claude.readHistoryFile: cwd lookup missed ${sdkSessionId}; using ${fallback}`)
@@ -166,15 +168,17 @@ function historyItemsFromJsonl(raw, sessionId) {
   return items
 }
 
-export async function loadSessionHistory(sessionId, sdkSessionId, cwd) {
+export async function loadSessionHistory(sessionId, sdkSessionId, cwd, opts = {}) {
   sendEvent('claude:resume-loading', { sessionId, loading: true })
   try {
-    const raw = await readHistoryFile(sdkSessionId, cwd)
-    const items = raw ? historyItemsFromJsonl(raw, sessionId) : []
+    const raw = await readHistoryFile(sdkSessionId, cwd, opts)
+    const items = raw !== null ? historyItemsFromJsonl(raw, sessionId) : []
     sendEvent('claude:history', { sessionId, items })
+    return { ok: true, found: raw !== null, itemCount: items.length }
   } catch (err) {
     logWarn(`claude.loadSessionHistory: ${err instanceof Error ? err.message : String(err)}`)
     sendEvent('claude:history', { sessionId, items: [] })
+    return { ok: false, found: false, error: err instanceof Error ? err.message : String(err) }
   } finally {
     sendEvent('claude:resume-loading', { sessionId, loading: false })
   }

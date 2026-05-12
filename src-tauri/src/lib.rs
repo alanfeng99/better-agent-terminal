@@ -117,6 +117,7 @@ pub fn run() {
             app_cmd::app_get_window_index,
             app_cmd::app_get_launch_profile,
             app_cmd::app_get_window_profile,
+            app_cmd::app_set_title,
             app_cmd::app_new_window,
             app_cmd::app_focus_next_window,
             app_cmd::app_open_new_instance,

@@ -61,7 +61,15 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
         "image:read-as-data-url" => Some(&["filePath"]),
-        "claude:send-message" => Some(&["sessionId", "prompt", "images", "autoCompactWindow"]),
+        "claude:send-message" => Some(&[
+            "sessionId",
+            "prompt",
+            "images",
+            "autoCompactWindow",
+            "clientMessageId",
+            "displayPrompt",
+            "suppressUserEcho",
+        ]),
         "claude:stop-session"
         | "claude:abort-session"
         | "claude:get-auto-continue"
@@ -299,6 +307,29 @@ mod tests {
                 "autoCompactWindow": 4000,
             })
         );
+        assert_eq!(
+            legacy_v1_args_to_params(
+                "claude:send-message",
+                &[
+                    json!("s1"),
+                    json!("hi"),
+                    json!([]),
+                    Value::Null,
+                    json!("user-1"),
+                    json!("hi"),
+                    json!(true),
+                ]
+            ),
+            json!({
+                "sessionId": "s1",
+                "prompt": "hi",
+                "images": [],
+                "autoCompactWindow": null,
+                "clientMessageId": "user-1",
+                "displayPrompt": "hi",
+                "suppressUserEcho": true,
+            })
+        );
     }
 
     #[test]
@@ -342,6 +373,20 @@ mod tests {
                 &json!({ "sessionId": "s1", "message": { "role": "assistant" } }),
             ),
             vec![json!("s1"), json!({ "role": "assistant" })]
+        );
+        assert_eq!(
+            event_params_to_legacy_v1_args(
+                "claude:history",
+                &json!({ "sessionId": "s1", "items": [{ "role": "user" }] }),
+            ),
+            vec![json!("s1"), json!([{ "role": "user" }])]
+        );
+        assert_eq!(
+            event_params_to_legacy_v1_args(
+                "claude:resume-loading",
+                &json!({ "sessionId": "s1", "loading": false }),
+            ),
+            vec![json!("s1"), json!(false)]
         );
         assert_eq!(
             event_params_to_legacy_v1_args("workspace:reload", &json!("{\"workspaces\":[]}")),

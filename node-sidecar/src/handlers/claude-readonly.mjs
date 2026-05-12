@@ -143,7 +143,7 @@ async function readSessionPreview(filePath) {
 registerHandler('claude.getCliPath', async () => findClaudeCliPath() ?? '')
 registerHandler('claude.listSessions', async (params) => {
   const cwd = typeof params?.cwd === 'string' ? params.cwd : ''
-  if (params?.agentKind === 'codex') return listCodexSessions()
+  if (params?.agentKind === 'codex') return cwd ? listCodexSessions(cwd) : []
   if (!cwd) return []
   return listSessionsFallback(cwd)
 })
