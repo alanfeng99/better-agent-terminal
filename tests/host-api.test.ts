@@ -31,34 +31,12 @@ async function run() {
   {
     const mod = await loadFreshAdapter()
     assert.equal(mod.getHostKind(), 'unknown')
-    assert.equal(mod.isElectron(), false)
     assert.equal(mod.isTauri(), false)
     assert.throws(() => (mod.host as { settings: { load: () => unknown } }).settings.load(),
-      /no host runtime detected/)
+      /no Tauri host runtime detected/)
   }
 
-  // 2) Electron detection + delegation
-  {
-    const calls: string[] = []
-    const batAppAPI = {
-      settings: {
-        load: () => { calls.push('load'); return Promise.resolve('{}') },
-      },
-      shell: {
-        openExternal: (url: string) => { calls.push(`open:${url}`); return Promise.resolve() },
-      },
-    }
-    setWindow({ batAppAPI })
-    const mod = await loadFreshAdapter()
-    assert.equal(mod.getHostKind(), 'electron')
-    assert.equal(mod.isElectron(), true)
-    assert.equal(mod.isTauri(), false)
-    await mod.host.settings.load()
-    await mod.host.shell.openExternal('https://example.com')
-    assert.deepEqual(calls, ['load', 'open:https://example.com'])
-  }
-
-  // 3) Tauri detection routes ported namespaces through invoke
+  // 2) Tauri detection routes ported namespaces through invoke
   {
     const invokeCalls: { cmd: string; args?: Record<string, unknown> }[] = []
     const invoke: TauriInvoke = async <T>(cmd: string, args?: Record<string, unknown>) => {
@@ -240,7 +218,6 @@ async function run() {
     setWindow({ __TAURI_INTERNALS__: { invoke } })
     const mod = await loadFreshAdapter()
     assert.equal(mod.getHostKind(), 'tauri')
-    assert.equal(mod.isElectron(), false)
     assert.equal(mod.isTauri(), true)
     assert.ok(
       ['win32', 'darwin', 'linux'].includes(mod.host.platform),
@@ -881,7 +858,7 @@ async function run() {
       /tauri invoke not available/)
   }
 
-  // 6) Tauri debug mode is synchronously derived for renderer guards.
+  // 5) Tauri debug mode is synchronously derived for renderer guards.
   {
     const invoke: TauriInvoke = async () => undefined as unknown as never
     setWindow({ __TAURI_INTERNALS__: { invoke }, location: { search: '?debug=1' } })
@@ -889,7 +866,7 @@ async function run() {
     assert.equal(mod.host.debug.isDebugMode, true)
   }
 
-  // 7) Tauri wins when both markers exist because installTauriShim() itself
+  // 6) Tauri wins when both markers exist because installTauriShim() itself
   //    attaches window.batAppAPI inside the Tauri runtime.
   {
     setWindow({ batAppAPI: { ping: () => 'pong' }, __TAURI_INTERNALS__: { invoke: () => Promise.resolve(null) } })
@@ -898,7 +875,7 @@ async function run() {
     assert.equal(mod.isTauri(), true)
   }
 
-  // 8) installTauriShim() lets unmigrated callsites no-op gracefully.
+  // 7) installTauriShim() lets unmigrated callsites no-op gracefully.
   //    - Ported APIs (settings.load) still go through invoke
   //    - Sync APIs return sensible defaults (workspace.getDetachedId -> null,
   //      platform -> detected)
@@ -942,7 +919,7 @@ async function run() {
     assert.deepEqual(invokeCalls, ['settings_load'])
   }
 
-  // 9) installTauriShim() is a no-op when not running under Tauri.
+  // 8) installTauriShim() is a no-op when not running under Tauri.
   {
     setWindow({ batAppAPI: { foo: 1 } })
     const mod = await loadFreshAdapter()

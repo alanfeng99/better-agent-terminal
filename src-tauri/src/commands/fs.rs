@@ -1,7 +1,7 @@
 // fs:read-file — first port of the filesystem surface.
 //
-// Mirrors the Electron contract from electron/preload.ts: takes an
-// arbitrary path string and returns one of three shapes:
+// Mirrors the renderer host contract: takes an arbitrary path string and
+// returns one of three shapes:
 //   { content }  — utf-8 file contents (for files <= 512 KiB)
 //   { error }    — sensitive path or read failure
 //   { error, size } — file exceeds the 512 KiB limit
@@ -34,7 +34,6 @@ const IGNORED_DIR_NAMES: &[&str] = &[
     "node_modules",
     ".next",
     "dist",
-    "dist-electron",
     "dist-tauri",
     ".cache",
     "__pycache__",

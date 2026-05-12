@@ -1,7 +1,7 @@
 // pty:* — first cut of the cross-platform PTY surface for the Tauri shell.
 //
-// We mirror the Electron preload contract from src/types/index.ts and
-// electron/preload.ts so the renderer doesn't have to branch on host:
+// We mirror the renderer host contract from src/types/index.ts so the
+// renderer doesn't have to branch on host:
 //   pty.create({ id, cwd, type, shell?, customEnv?, … })
 //   pty.write(id, data)
 //   pty.resize(id, cols, rows)

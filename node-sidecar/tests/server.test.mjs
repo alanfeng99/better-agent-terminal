@@ -3268,42 +3268,11 @@ async function inProcess() {
     }
   }
 
-  // remote-protocol allowlists — must stay in lockstep with
-  // electron/remote/protocol.ts. Read both files, parse out the Set
-  // literals, diff. Any channel/event added to one side without the
-  // other will fail authorization at runtime when the WebSocket server
-  // lands, so we lock parity here.
+  // remote-protocol allowlists — now owned by the sidecar/Rust Tauri runtime.
+  // Keep a sanity check here so authorization cannot accidentally collapse to
+  // an empty set.
   {
     const protocol = await import('../src/lib/remote-protocol.mjs')
-    const electronSrcPath = resolve(here, '..', '..', 'electron', 'remote', 'protocol.ts')
-    const electronSrc = await readFile(electronSrcPath, 'utf-8')
-
-    function parseSet(varName) {
-      // Match `export const <name> = new Set([ ... ])` and pull strings
-      // out of the array literal. Tolerates JS comments inside the
-      // array so we can keep the // PTY / // Claude section labels.
-      const re = new RegExp(`export const ${varName}\\s*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`)
-      const m = electronSrc.match(re)
-      if (!m) throw new Error(`could not locate ${varName} in electron/remote/protocol.ts`)
-      const body = m[1].replace(/\/\/[^\n]*\n/g, '\n')
-      const items = []
-      for (const sm of body.matchAll(/'([^']+)'/g)) items.push(sm[1])
-      return new Set(items)
-    }
-
-    const electronChannels = parseSet('PROXIED_CHANNELS')
-    const electronEvents = parseSet('PROXIED_EVENTS')
-
-    function diffSets(label, a, b) {
-      const onlyA = [...a].filter(x => !b.has(x))
-      const onlyB = [...b].filter(x => !a.has(x))
-      assert.deepEqual(onlyA, [], `${label}: in electron but not sidecar — ${onlyA.join(', ')}`)
-      assert.deepEqual(onlyB, [], `${label}: in sidecar but not electron — ${onlyB.join(', ')}`)
-    }
-
-    diffSets('PROXIED_CHANNELS', electronChannels, protocol.PROXIED_CHANNELS)
-    diffSets('PROXIED_EVENTS', electronEvents, protocol.PROXIED_EVENTS)
-    // Sanity: the sets are non-trivial.
     assert.ok(protocol.PROXIED_CHANNELS.size > 50, `expected >50 channels, got ${protocol.PROXIED_CHANNELS.size}`)
     assert.ok(protocol.PROXIED_EVENTS.size > 15, `expected >15 events, got ${protocol.PROXIED_EVENTS.size}`)
     assert.equal(protocol.negotiateRemoteProtocol([]), protocol.REMOTE_PROTOCOL_LEGACY_V1)

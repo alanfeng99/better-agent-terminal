@@ -3,39 +3,26 @@
   "version": "2.1.3",
   "description": "Windows terminal aggregator with multi-workspace support and Claude Code integration",
   "author": "TonyQ CO., LTD.",
-  "main": "dist-electron/main.js",
   "packageManager": "pnpm@10.33.2",
-  "bin": {
-    "bat-server": "bin/bat-server.js"
-  },
   "scripts": {
-    "dev": "cross-env BAT_DEBUG=1 vite",
-    "dev-runtime": "cross-env BAT_DEBUG=1 BAT_RUNTIME=1 vite",
-    "verify-runtime": "pnpm run compile && cross-env BAT_DEBUG=1 BAT_RUNTIME=verify electron .",
+    "dev": "pnpm run tauri:dev:local",
     "compile": "vite build",
-    "start": "electron .",
+    "start": "pnpm run tauri:dev",
     "start:server": "node bin/bat-server.js",
-    "build": "vite build && electron-builder",
-    "build:dir": "vite build && electron-builder --dir",
+    "build": "pnpm run tauri:build",
     "build:release": "node scripts/build-version.js",
     "update:release-version": "node scripts/build-version.js --skip-build",
     "verify:packaged-claude-binaries": "node scripts/verify-packaged-claude-binaries.js",
     "verify:release-asset-sizes": "node scripts/verify-release-asset-sizes.js",
     "verify:tauri-resources": "node scripts/check-tauri-resources.mjs --strict-missing --max-files=7000 --max-mb=400",
     "verify:tauri-preview-readiness": "node scripts/check-tauri-preview-readiness.mjs",
-    "verify:tauri-pre-ci": "pnpm exec tsc --noEmit --pretty false && pnpm run compile && pnpm run prepare:tauri-bundle:ci && pnpm run test:tauri-rust && pnpm run test:sidecar && pnpm run test:node-resolver && pnpm run test:host-api && pnpm run test:host-direct-calls && pnpm run test:host-claude-coverage && pnpm run test:codex && pnpm run test:openai-cleanup && pnpm run test:renderer-logging && pnpm run test:tauri-bundle-prune && pnpm run test:tauri-resources && pnpm run test:tauri-capabilities && pnpm run test:tauri-version-sync && pnpm run test:tauri-windows-installer && pnpm run test:tauri-sidecar-minimal-modules && pnpm run test:build-version-script && pnpm run test:tauri-preview-readiness && pnpm run verify:tauri-resources && pnpm run verify:tauri-preview-readiness",
-    "verify:tauri-release-ci": "pnpm exec tsc --noEmit --pretty false && pnpm run prepare:tauri-bundle:ci && pnpm run test:tauri-rust && pnpm run test:sidecar && pnpm run test:node-resolver && pnpm run test:host-api && pnpm run test:host-direct-calls && pnpm run test:host-claude-coverage && pnpm run test:codex && pnpm run test:openai-cleanup && pnpm run test:renderer-logging && pnpm run test:tauri-bundle-prune && pnpm run test:tauri-resources && pnpm run test:tauri-capabilities && pnpm run test:tauri-version-sync && pnpm run test:tauri-windows-installer && pnpm run test:tauri-sidecar-minimal-modules && pnpm run test:build-version-script && pnpm run test:tauri-preview-readiness && pnpm run verify:tauri-resources && pnpm run verify:tauri-preview-readiness",
+    "verify:tauri-pre-ci": "pnpm exec tsc --noEmit --pretty false && pnpm run compile && pnpm run prepare:tauri-bundle:ci && pnpm run test:tauri-rust && pnpm run test:sidecar && pnpm run test:host-api && pnpm run test:host-direct-calls && pnpm run test:host-claude-coverage && pnpm run test:codex && pnpm run test:openai-cleanup && pnpm run test:renderer-logging && pnpm run test:tauri-bundle-prune && pnpm run test:tauri-resources && pnpm run test:tauri-capabilities && pnpm run test:tauri-version-sync && pnpm run test:tauri-windows-installer && pnpm run test:tauri-sidecar-minimal-modules && pnpm run test:build-version-script && pnpm run test:tauri-preview-readiness && pnpm run verify:tauri-resources && pnpm run verify:tauri-preview-readiness",
+    "verify:tauri-release-ci": "pnpm exec tsc --noEmit --pretty false && pnpm run prepare:tauri-bundle:ci && pnpm run test:tauri-rust && pnpm run test:sidecar && pnpm run test:host-api && pnpm run test:host-direct-calls && pnpm run test:host-claude-coverage && pnpm run test:codex && pnpm run test:openai-cleanup && pnpm run test:renderer-logging && pnpm run test:tauri-bundle-prune && pnpm run test:tauri-resources && pnpm run test:tauri-capabilities && pnpm run test:tauri-version-sync && pnpm run test:tauri-windows-installer && pnpm run test:tauri-sidecar-minimal-modules && pnpm run test:build-version-script && pnpm run test:tauri-preview-readiness && pnpm run verify:tauri-resources && pnpm run verify:tauri-preview-readiness",
     "verify:tauri-preview": "pnpm run verify:tauri-pre-ci && pnpm run test:tauri-launch",
-    "postinstall": "node -e \"if(process.platform==='darwin'){const p=require('path').join('node_modules/electron/dist/Electron.app/Contents/Info.plist');try{require('child_process').execSync('plutil -replace CFBundleName -string BetterAgentTerminal '+p+' && plutil -replace CFBundleDisplayName -string BetterAgentTerminal '+p)}catch(e){}}\" && echo 'postinstall done'",
     "test:console": "node tests/console-test.js",
-    "diagnose:ctrl-o": "electron tests/diagnose-ctrl-o.js",
-    "diagnose:ctrl-o:quick": "electron tests/diagnose-ctrl-o.js --quick",
-    "diagnose:ctrl-o:verbose": "electron tests/diagnose-ctrl-o.js --verbose",
-    "test:node-resolver": "tsx tests/node-resolver.test.ts",
-    "test:codex-resume": "tsx tests/codex-resume-fallback.test.ts",
     "test:codex-panel": "tsx tests/codex-panel-regression.test.ts",
     "test:codex-auto-continue": "tsx tests/codex-auto-continue.test.ts",
-    "test:codex": "pnpm run test:codex-resume && pnpm run test:codex-panel && pnpm run test:codex-auto-continue",
+    "test:codex": "pnpm run test:codex-panel && pnpm run test:codex-auto-continue",
     "test:openai-cleanup": "tsx tests/openai-direct-cleanup.test.ts",
     "test:renderer-logging": "tsx tests/renderer-logging.test.ts",
     "test:host-direct-calls": "tsx tests/host-direct-calls.test.ts",
@@ -67,7 +54,8 @@
     "tauri:build:ci:prepared": "tauri build",
     "tauri:build": "pnpm run prepare:tauri-bundle && tauri build",
     "tauri:build:debug:ci": "pnpm run prepare:tauri-bundle:ci && tauri build --debug",
-    "tauri:build:debug": "pnpm run prepare:tauri-bundle && tauri build --debug"
+    "tauri:build:debug": "pnpm run prepare:tauri-bundle && tauri build --debug",
+    "dev:renderer": "cross-env BAT_DEBUG=1 vite"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.128",
@@ -110,8 +98,6 @@
     "concurrently": "^8.2.0",
     "cross-env": "^10.1.0",
     "dompurify": "^3.3.3",
-    "electron": "^41.2.1",
-    "electron-builder": "^26.8.2",
     "esbuild": "^0.28.0",
     "highlight.js": "^11.11.1",
     "i18next": "^25.8.18",
@@ -126,9 +112,7 @@
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.3.0",
-    "vite": "^8.0.0",
-    "vite-plugin-electron": "^0.29.1",
-    "vite-plugin-electron-renderer": "^0.14.6"
+    "vite": "^8.0.0"
   },
   "overrides": {
     "minimatch@3": "3.1.5",
@@ -153,109 +137,11 @@
       "@vscode/ripgrep",
       "@lydell/node-pty",
       "better-sqlite3",
-      "electron",
-      "electron-winstaller",
       "esbuild",
       "sharp"
     ]
   },
-  "build": {
-    "appId": "org.tonyq.better-agent-terminal",
-    "productName": "BetterAgentTerminal",
-    "executableName": "BetterAgentTerminal",
-    "directories": {
-      "output": "release"
-    },
-    "win": {
-      "target": [
-        "nsis",
-        "zip"
-      ],
-      "icon": "assets/icon.ico",
-      "extraFiles": [
-        {
-          "from": "bin/bat-server.cmd",
-          "to": "bat-server.cmd"
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "shortcutName": "BetterAgentTerminal",
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
-    },
-    "mac": {
-      "target": [
-        "dmg"
-      ],
-      "icon": "assets/icon-512.png",
-      "category": "public.app-category.developer-tools",
-      "identity": "TonyQ CO., LTD. (8JVDJGLLYR)",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": true,
-      "extendInfo": {
-        "NSDocumentsFolderUsageDescription": "BetterAgentTerminal needs access to your Documents folder to open terminals and manage files in your projects.",
-        "NSDesktopFolderUsageDescription": "BetterAgentTerminal needs access to your Desktop folder to open terminals and manage files in your projects.",
-        "NSDownloadsFolderUsageDescription": "BetterAgentTerminal needs access to your Downloads folder to open terminals and manage files in your projects."
-      },
-      "extraResources": [
-        {
-          "from": "bin/bat-server.sh",
-          "to": "bat-server"
-        }
-      ]
-    },
-    "dmg": {
-      "artifactName": "${productName}-${version}-${arch}.dmg"
-    },
-    "linux": {
-      "target": "AppImage",
-      "icon": "assets/icon-512.png",
-      "extraResources": [
-        {
-          "from": "bin/bat-server.sh",
-          "to": "bat-server"
-        }
-      ]
-    },
-    "forceCodeSigning": false,
-    "npmRebuild": false,
-    "afterPack": "scripts/after-pack.js",
-    "files": [
-      "dist/**/*",
-      "dist-electron/**/*",
-      "node_modules/**/*",
-      "bin/bat-server.js",
-      "!node_modules/better-sqlite3/deps/**",
-      "!node_modules/better-sqlite3/src/**",
-      "!node_modules/better-sqlite3/build/Release/obj/**",
-      "!node_modules/@anthropic-ai/claude-agent-sdk-*/**",
-      "!node_modules/@anthropic-ai/claude-agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
-      "!node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-*/**",
-      "!node_modules/@anthropic-ai/*-musl/**",
-      "assets/icon.ico",
-      "assets/icon.png",
-      "assets/icon-512.png"
-    ],
-    "asarUnpack": [
-      "bin/**",
-      "node_modules/@anthropic-ai/claude-code/bin/**",
-      "node_modules/@anthropic-ai/claude-code-*/**",
-      "node_modules/@anthropic-ai/*/vendor/**/*",
-      "node_modules/@anthropic-ai/**/*.wasm",
-      "node_modules/@openai/codex-darwin-*/**",
-      "node_modules/@openai/codex-linux-*/**",
-      "node_modules/@openai/codex-win32-*/**",
-      "node_modules/@lydell/node-pty*/**",
-      "node_modules/@vscode/ripgrep/bin/**",
-      "node_modules/@img/**/*"
-    ]
+  "bin": {
+    "bat-server": "bin/bat-server.js"
   }
 }

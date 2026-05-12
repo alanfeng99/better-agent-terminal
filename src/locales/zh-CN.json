@@ -366,7 +366,7 @@
     "author": "作者",
     "authorName": "TonyQ",
     "github": "GitHub",
-    "builtWith": "使用 Electron、React 和 xterm.js 构建"
+    "builtWith": "使用 Tauri、React 和 xterm.js 构建"
   },
   "update": {
     "newVersionAvailable": "有新版本可用！",

@@ -1,14 +1,12 @@
-// Remote protocol allowlists, ported verbatim from
-// electron/remote/protocol.ts so the upcoming sidecar WebSocket server
-// (Phase 3) shares the same channel/event contract with Electron.
+// Remote protocol allowlists for the Tauri host/sidecar remote bridge.
+// legacy-v1 remains supported for older clients; v2 is the current protocol.
 //
 // PROXIED_CHANNELS: invoke-style host APIs that a remote client may call.
 //                   Anything not in this set is rejected before dispatch.
 // PROXIED_EVENTS:   host→client push events. Only frames whose channel is
 //                   in this set are broadcast to authenticated clients.
 //
-// Keep these lists in lockstep with electron/remote/protocol.ts. The
-// sidecar test asserts parity by reading the Electron source and diffing.
+// Keep these lists aligned with the renderer-facing host API contract.
 
 export const REMOTE_PROTOCOL_LEGACY_V1 = 'bat-remote/legacy-v1'
 export const REMOTE_PROTOCOL_V2 = 'bat-remote/v2'
@@ -82,11 +80,8 @@ export const PROXIED_EVENTS = new Set([
   'system:resume',
 ])
 
-// Channel-handler registry, ported from electron/remote/handler-registry.ts.
-// The future WebSocket server will consume registerRemoteHandler() to wire
-// concrete invoke handlers; for now the registry is empty and only the
-// protocol module exists so the upcoming server slice has a stable surface
-// to build against.
+// Channel-handler registry consumed by the remote WebSocket bridge to wire
+// concrete invoke handlers behind the negotiated protocol.
 
 const remoteHandlers = new Map()
 

@@ -6,12 +6,12 @@
 
 ![Version](https://img.shields.io/badge/version-2.2.27-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20|%20macOS%20|%20Linux-lightgrey.svg)
-![Electron](https://img.shields.io/badge/electron-41.2.1-47848F.svg)
+![Tauri](https://img.shields.io/badge/tauri-2.x-24C8DB.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **A cross-platform terminal aggregator with multi-workspace support and built-in AI agent integration**
 
-Manage multiple project terminals in one window, with built-in Claude Code and Codex agent panels, file browser, git viewer, snippet manager, and remote access — all in a single Electron app.
+Manage multiple project terminals in one window, with built-in Claude Code and Codex agent panels, file browser, git viewer, snippet manager, and remote access — all in a single Tauri app.
 
 [Download Latest Release](https://github.com/tony1223/better-agent-terminal/releases/latest)
 
@@ -315,29 +315,12 @@ pnpm run build    # Build .dmg
 
 ```
 better-agent-terminal/
-├── electron/                          # Main process (Node.js)
-│   ├── main.ts                        # App entry, IPC handlers, window management
-│   ├── preload.ts                     # Context bridge (window.electronAPI)
-│   ├── pty-manager.ts                 # PTY process lifecycle, multi-window broadcast
-│   ├── claude-agent-manager.ts        # Claude Agent SDK session management
-│   ├── codex-agent-manager.ts         # Codex CLI / Codex SDK session management
-│   ├── codex-agent/                   # Codex helpers (log path cache, etc.)
-│   ├── openai-agent/                  # OpenAI/Codex API key fallback helpers
-│   ├── worktree-manager.ts            # Git worktree lifecycle (create, remove, rehydrate)
-│   ├── account-manager.ts             # Multi-account switching infrastructure
-│   ├── window-registry.ts             # Multi-window management
-│   ├── logger.ts                      # Disk-based logger (enable with BAT_DEBUG=1)
-│   ├── snippet-db.ts                  # SQLite snippet storage
-│   ├── profile-manager.ts             # Profile CRUD and persistence
-│   ├── node-resolver.ts               # Node.js dependency resolution
-│   ├── update-checker.ts              # GitHub release update check
-│   └── remote/
-│       ├── protocol.ts                # Proxied channel/event definitions
-│       ├── handler-registry.ts        # Unified IPC + remote handler registry
-│       ├── broadcast-hub.ts           # Event broadcasting to remote clients
-│       ├── remote-server.ts           # WebSocket server (host mode)
-│       ├── remote-client.ts           # WebSocket client (connect mode)
-│       └── tunnel-manager.ts          # IP detection, Tailscale, QR code info
+├── src-tauri/                         # Tauri host runtime (Rust)
+│   ├── src/                           # Commands, PTY, profiles, remote server, sidecar bridge
+│   ├── capabilities/                  # Tauri IPC capability declarations
+│   ├── windows/                       # Windows installer hooks
+│   └── tauri.conf.json                # Tauri app and bundle configuration
+├── node-sidecar/                      # Agent SDK sidecar used by the Tauri host
 ├── src/                               # Renderer process (React)
 │   ├── App.tsx                        # Root component, layout, profile orchestration
 │   ├── components/
@@ -378,7 +361,7 @@ better-agent-terminal/
 │   │   ├── index.ts                   # Core types (Workspace, AppSettings, Statusline, etc.)
 │   │   ├── claude-agent.ts            # Claude message, tool call, and thinking types
 │   │   ├── agent-presets.ts           # Agent preset definitions
-│   │   └── electron.d.ts             # window.electronAPI type declarations
+│   │   └── host-api.d.ts             # Tauri host shim type declarations
 │   └── styles/
 │       ├── main.css
 │       ├── claude-agent.css
@@ -394,9 +377,9 @@ better-agent-terminal/
 ### Tech Stack
 - **Frontend:** React 18 + TypeScript + i18next (EN / zh-TW / zh-CN)
 - **Terminal:** xterm.js + node-pty
-- **Framework:** Electron 41
+- **Framework:** Tauri 2
 - **AI:** `@anthropic-ai/claude-agent-sdk` + bundled `@anthropic-ai/claude-code` binary (Claude); `@openai/codex-sdk` (Codex Agent)
-- **Build:** Vite + electron-builder
+- **Build:** Vite + Tauri
 - **Storage:** better-sqlite3 (snippets, session data)
 - **Remote:** ws (WebSocket) + qrcode
 - **Syntax Highlighting:** highlight.js
@@ -466,85 +449,7 @@ After installation, sign in with the same account on all devices and they will b
 
 ### Headless Mode (`bat-server`)
 
-You can also run the same WebSocket server **without launching the GUI** — useful for VPS, containers, or background services. The headless entry uses BAT's bundled Node runtime, so no separate `node.exe` install is required.
-
-#### Windows (installed via NSIS)
-
-The installer drops `bat-server.cmd` next to `BetterAgentTerminal.exe` (typically `%LOCALAPPDATA%\Programs\BetterAgentTerminal\`):
-
-```cmd
-"%LOCALAPPDATA%\Programs\BetterAgentTerminal\bat-server.cmd" --bind=all --port=9876
-```
-
-Add the install directory to `PATH` to call it as just `bat-server`. Stdout prints the connection URL, token, and certificate fingerprint on startup.
-
-#### macOS (installed via DMG)
-
-The app bundle ships a `bat-server` shell wrapper inside `Contents/Resources/`:
-
-```bash
-/Applications/BetterAgentTerminal.app/Contents/Resources/bat-server --bind=tailscale --port=9876
-```
-
-For convenience, symlink it onto your `PATH`:
-
-```bash
-sudo ln -sf /Applications/BetterAgentTerminal.app/Contents/Resources/bat-server /usr/local/bin/bat-server
-bat-server --bind=all --port=9876
-```
-
-If the shell wrapper isn't executable (rare, depends on the installer), invoke it via `bash`:
-
-```bash
-bash /Applications/BetterAgentTerminal.app/Contents/Resources/bat-server --bind=all
-```
-
-#### Linux (AppImage)
-
-AppImages mount themselves read-only at runtime, so the simplest path is to extract once and call the wrapper inside:
-
-```bash
-chmod +x BetterAgentTerminal-*.AppImage
-./BetterAgentTerminal-*.AppImage --appimage-extract
-./squashfs-root/resources/bat-server --bind=all --port=9876
-```
-
-You can move `squashfs-root/` anywhere stable (e.g. `/opt/better-agent-terminal/`) and symlink the wrapper onto your `PATH`:
-
-```bash
-sudo mv squashfs-root /opt/better-agent-terminal
-sudo ln -sf /opt/better-agent-terminal/resources/bat-server /usr/local/bin/bat-server
-```
-
-#### From source (any platform)
-
-Clone the repo and run the bundled npm script — handy for development or when you don't want to install the GUI build:
-
-```bash
-git clone https://github.com/tony1223/better-agent-terminal.git
-cd better-agent-terminal
-corepack enable
-pnpm install
-pnpm run compile
-pnpm run start:server -- --bind=all --port=9876
-```
-
-#### Options
-
-```
---port=N            TCP port to listen on (default: 9876)
---bind=IFACE        localhost | tailscale | all (default: localhost)
---data-dir=PATH     persistent state directory (default: same as the GUI)
---token=HEX         pin a known token (default: persisted or random)
---debug             write debug.log inside data-dir
--h, --help          show this help
-```
-
-Environment variable equivalents: `BAT_PORT`, `BAT_BIND`, `BAT_DATA_DIR`, `BAT_TOKEN`, `BAT_DEBUG`.
-
-> **Note:** Headless mode runs without the OS keychain, so persisted tokens are stored in plaintext under `--data-dir`. Treat that directory like any other secret.
-
----
+The `bat-server` entry is reserved for the upcoming Tauri/Rust headless remote server. It currently exits with a clear "not implemented yet" message; use the GUI Remote Access settings until the Rust CLI is wired up.
 
 ## Configuration
 

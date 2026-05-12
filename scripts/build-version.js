@@ -90,7 +90,7 @@ function updateProjectVersion(version, root = repoRoot) {
 
 // Run build
 function runBuild() {
-  // In CI, only compile (electron-builder runs separately)
+  // In CI, only compile; packaging runs through Tauri separately.
   const command = process.env.CI ? 'pnpm run compile' : 'pnpm run build';
   console.log(`Running ${command}...\n`);
   execSync(command, {

@@ -1,1 +1,0 @@
-verify: pnpm run compile && pnpm exec cross-env BAT_DEBUG=1 BAT_RUNTIME=verify${BAT_WORKTREE_ID:+-$BAT_WORKTREE_ID} electron .

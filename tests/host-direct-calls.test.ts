@@ -8,7 +8,7 @@ const ROOTS = [
   'src/stores',
 ]
 
-const DIRECT_HOST_PATTERN = /\bwindow\.(?:batAppAPI|electronAPI)\b/
+const DIRECT_HOST_PATTERN = /\bwindow\.batAppAPI\b/
 
 async function collectFiles(path: string): Promise<string[]> {
   const info = await stat(path)
@@ -31,7 +31,7 @@ async function main() {
   assert.deepEqual(
     offenders,
     [],
-    `Renderer UI/store files must call host.* instead of window.batAppAPI/window.electronAPI directly:\n${offenders.join('\n')}`,
+    `Renderer UI/store files must call host.* instead of window.batAppAPI directly:\n${offenders.join('\n')}`,
   )
   console.log('host direct calls: passed')
 }

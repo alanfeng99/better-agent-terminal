@@ -1,61 +1,44 @@
 // Host API adapter.
 //
 // Renderer code should import { host } from this module instead of reading
-// window.batAppAPI directly. The adapter delegates straight to
-// window.batAppAPI under Electron and routes ported namespaces through
-// tauri-invoke commands under Tauri. Anything that isn't ported yet
+// window.batAppAPI directly. The adapter routes ported namespaces through
+// Tauri invoke commands. Anything that isn't ported yet
 // throws a clear "not yet implemented" error so missing coverage fails
 // loudly instead of silently no-oping.
 //
-// Runtime selection happens via getHostKind() — Electron is detected by the
-// presence of window.batAppAPI, Tauri by window.__TAURI_INTERNALS__ (the
-// stable detection hook for tauri 2.x; we also accept the legacy __TAURI__
-// global so older shells keep working). Neither implies the other; we never
-// fall back silently.
+// Runtime selection happens via getHostKind() using Tauri's injected
+// window.__TAURI_INTERNALS__ hook; we also accept the legacy __TAURI__ global
+// so older shells keep working. We never fall back silently.
 
 import { dispatchTauriNativeDrop } from './utils/tauri-native-drop'
 
-// Pull the surface type from the global declaration (src/types/electron.d.ts)
-// rather than importing it directly from electron/preload, so we don't drag
-// the renderer tsconfig into a project reference rebuild every time the
-// preload changes.
-type BatAppAPI = Window['batAppAPI']
+type BatAppAPI = any
 
-export type HostKind = 'electron' | 'tauri' | 'unknown'
+export type HostKind = 'tauri' | 'unknown'
 
 interface TauriInternals { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown }
 
 export function getHostKind(): HostKind {
   if (typeof globalThis === 'undefined') return 'unknown'
   const g = globalThis as unknown as { window?: unknown }
-  const win = g.window as (TauriInternals & { batAppAPI?: unknown }) | undefined
+  const win = g.window as TauriInternals | undefined
   if (!win) return 'unknown'
   if (win.__TAURI_INTERNALS__ !== undefined || win.__TAURI__ !== undefined) return 'tauri'
-  if (win.batAppAPI) return 'electron'
   return 'unknown'
 }
 
-export const isElectron = (): boolean => getHostKind() === 'electron'
 export const isTauri = (): boolean => getHostKind() === 'tauri'
 
-// The Tauri impl never changes shape so we lazily memoise it; the Electron
-// API is resolved on every access so renderer reloads (or test scenarios
-// that swap `window`) pick up the fresh reference without a manual reset.
 let tauriImpl: BatAppAPI | null = null
 let tauriMetricLoggerInstalled = false
 
 function resolveHost(): BatAppAPI {
   const kind = getHostKind()
-  if (kind === 'electron') {
-    const api = (globalThis as unknown as { window?: { batAppAPI?: BatAppAPI } }).window?.batAppAPI
-    if (!api) throw new Error('host-api: electron runtime detected but window.batAppAPI is missing')
-    return api
-  }
   if (kind === 'tauri') {
     if (!tauriImpl) tauriImpl = createTauriHost()
     return tauriImpl
   }
-  throw new Error('host-api: no host runtime detected (neither Electron nor Tauri)')
+  throw new Error('host-api: no Tauri host runtime detected')
 }
 
 // Single proxy so callers can keep a stable reference. Property reads forward
@@ -174,8 +157,7 @@ function installTauriDropPathCache(api: BatAppAPI): void {
 }
 
 // We import @tauri-apps/api lazily so nothing in this module pulls Tauri's
-// runtime when we're under Electron — the tree-shaker can keep it out of the
-// renderer bundle entirely if isTauri() is never true at build time.
+// runtime until the Tauri host is available.
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
 function getInvoke(): Invoke {
   // Resolved synchronously through the Tauri-injected window global. We do
@@ -217,7 +199,7 @@ function readTauriDebugMode(): boolean {
 }
 
 // Tauri's event bus is async (`listen()` returns Promise<UnlistenFn>) but
-// the Electron preload contract is `onX(cb): () => void`. We adapt by
+// the renderer host contract is `onX(cb): () => void`. We adapt by
 // resolving listen() synchronously through the Tauri-injected globals,
 // which expose a `listen` helper alongside `invoke`. Returning an
 // unsubscribe function that awaits the underlying promise is enough — any
@@ -238,7 +220,7 @@ function getListen(): ListenFn {
   }
   // Lazy import: the `@tauri-apps/api/event` module reads
   // window.__TAURI_INTERNALS__ on call, so this only runs under Tauri.
-  // We wrap it in a thunk so the import isn't pulled into Electron bundles
+  // We wrap it in a thunk so the import stays lazy
   // that never call host.pty.onOutput / onExit.
   return ((event: string, handler: (e: ListenEvent<unknown>) => void) =>
     import('@tauri-apps/api/event').then(m => m.listen(event, handler))
@@ -372,7 +354,7 @@ function createTauriHost(): BatAppAPI {
       writeText: (text: string) => getInvoke()<boolean>('clipboard_write_text', { text }),
       saveImage: () => getInvoke()<string | null>('clipboard_save_image'),
       writeImage: (filePath: string) => getInvoke()<boolean>('clipboard_write_image', { filePath }),
-      // Electron emits app:copy-shortcut from before-input-event. Tauri has
+      // The host emits app:copy-shortcut from a global copy shortcut. Tauri has
       // no equivalent hook here, so emulate the same renderer callback from
       // a capture-phase keydown listener.
       onCopyShortcut: (callback: () => void) => {
@@ -424,7 +406,7 @@ function createTauriHost(): BatAppAPI {
           { dirPath, query },
         ),
       // Path-link resolution and file watching are native Rust routes.
-      // They keep the Electron-facing path/result/event contract intact.
+      // They keep the renderer-facing path/result/event contract intact.
       resolvePathLinks: (cwd: string, rawPaths: string[]) =>
         getInvoke()<
           { rawPath: string; path: string; exists: boolean; line?: number; column?: number }[]
@@ -437,14 +419,14 @@ function createTauriHost(): BatAppAPI {
     update: {
       getVersion: () => getInvoke()<string>('update_get_version'),
       // Tauri handles this natively in Rust and returns the same
-      // Electron shape consumed by UpdateNotification.
+      // shape consumed by UpdateNotification.
       // Returns the same shape the renderer's UpdateNotification consumed
-      // under Electron: { hasUpdate, currentVersion, latestRelease }.
+      // as { hasUpdate, currentVersion, latestRelease }.
       check: () => getInvoke()<unknown>('update_check'),
     },
     debug: {
       // Renderer logs forward to Rust and are persisted under
-      // <app-data>/logs/debug.log, matching Electron's debuggability.
+      // <app-data>/logs/debug.log, matching the previous debuggability.
       log: (...args: unknown[]) => getInvoke()<void>('debug_log', { args }),
       openLogsFolder: () => getInvoke()<boolean>('debug_open_logs_folder'),
       // The renderer reads this synchronously during render.
@@ -481,7 +463,7 @@ function createTauriHost(): BatAppAPI {
     },
     profile: {
       // Tauri persists profile metadata and local profile snapshots using the
-      // Electron profile JSON layout. Multi-window profile open/restore lives
+      // profile JSON layout. Multi-window profile open/restore lives
       // under app.openNewInstance / app.restoreActiveProfiles below.
       list: () => getInvoke()<unknown>('profile_list'),
       listLocal: () => getInvoke()<unknown>('profile_list_local'),
@@ -506,7 +488,7 @@ function createTauriHost(): BatAppAPI {
     },
     snippet: {
       // JSON-backed env snippet store. Mirrors
-      // electron/snippet-db.ts. Tauri auto-camelCases struct field
+      // the snippet store. Tauri auto-camelCases struct field
       // names, so e.g. CreateSnippetInput.workspace_id surfaces as
       // workspaceId in the invoke payload.
       getAll: () => getInvoke()<unknown[]>('snippet_get_all'),
@@ -540,7 +522,7 @@ function createTauriHost(): BatAppAPI {
         listenAdapter<NotificationEntry[]>('notification:update', cb),
     },
     system: {
-      // Tauri does not expose Electron's powerMonitor resume event here.
+      // Tauri does not expose a power-monitor resume event here.
       // Approximate it from renderer lifecycle signals so remote/account
       // status refreshes after the app comes back from sleep or network
       // reconnect. This stays behind the existing system.onResume contract.
@@ -599,7 +581,7 @@ function createTauriHost(): BatAppAPI {
     github: {
       // gh CLI shell-out — see src-tauri/src/commands/github.rs.
       // Read commands return either parsed JSON (Value passes through
-      // as `unknown`) or `{error: msg}` matching the Electron shape.
+      // as `unknown`) or `{error: msg}` matching the renderer shape.
       checkCli: () =>
         getInvoke()<{ installed: boolean; authenticated: boolean }>('github_check_cli'),
       listPRs: (cwd: string) => getInvoke()<unknown>('github_pr_list', { cwd }),
@@ -622,7 +604,7 @@ function createTauriHost(): BatAppAPI {
     git: {
       // Read-only git wrappers — see src-tauri/src/commands/git.rs.
       // The Rust side returns safe defaults (None / empty Vec / empty String)
-      // when git fails or the cwd isn't a repo, mirroring the Electron handlers.
+      // when git fails or the cwd isn't a repo, mirroring the host handlers.
       getGithubUrl: (folderPath: string) =>
         getInvoke()<string | null>('git_get_github_url', { folderPath }),
       getBranch: (cwd: string) =>
@@ -645,7 +627,7 @@ function createTauriHost(): BatAppAPI {
         getInvoke()<{ status: string; file: string }[]>('git_get_status', { cwd }),
     },
     claude: new Proxy({}, {
-      // The Claude surface is large (30+ methods on the Electron preload).
+      // The Claude surface is large (30+ host methods).
       // Phase 2 ports authStatus/accountList plus the four session
       // lifecycle calls and six event-stream listeners that the renderer
       // attaches at startup. Everything else still throws a per-method
@@ -723,7 +705,7 @@ function createTauriHost(): BatAppAPI {
         // Agent/Task subagent run so the renderer can show the inner
         // message stream. Returns [] when the SDK helper is unavailable
         // or the agent transcript can't be located — same contract as
-        // Electron, which lets the panel fall back to a single-line
+        // the host, which lets the panel fall back to a single-line
         // summary instead of throwing.
         if (key === 'fetchSubagentMessages') {
           return (sessionId: string, agentToolUseId: string) =>
@@ -942,7 +924,7 @@ function createTauriHost(): BatAppAPI {
           const evName = eventListeners[key]
           return (cb: (sessionId: string, payload: unknown) => void) =>
             listenAdapter<{ sessionId: string; [k: string]: unknown }>(evName, p => {
-              // The Electron preload contract is `(sessionId, payload)`.
+              // The renderer event contract is `(sessionId, payload)`.
               // Sidecar payloads encode sessionId in the wrapper object;
               // the second arg is whatever sub-key the event uses
               // (message / toolCall / result / payload / data / error).
@@ -964,7 +946,7 @@ function createTauriHost(): BatAppAPI {
     }),
     openai: new Proxy({}, {
       // OpenAI Direct runtime is retired. Keep the renderer-facing methods
-      // for Electron preload compatibility, but only API-key storage still
+      // for renderer compatibility, but only API-key storage still
       // routes to the sidecar as a Codex auth fallback.
       get(_t, prop) {
         const key = String(prop)
@@ -989,7 +971,7 @@ function createTauriHost(): BatAppAPI {
       },
     }),
     worktree: new Proxy({}, {
-      // worktree.* — agent-tied. Sidecar handlers mirror the Electron
+      // worktree.* — agent-tied. Sidecar handlers mirror the host
       // WorktreeManager while keeping the renderer-facing shape stable.
       get(_t, prop) {
         const key = String(prop)

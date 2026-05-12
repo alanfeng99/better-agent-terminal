@@ -4,10 +4,9 @@ import './i18n'
 import App from './App'
 import { getHostKind, host, installTauriShim } from './host-api'
 
-// Under Tauri the Electron preload doesn't run, so window.batAppAPI is
-// missing. The shim installs a permissive stub keyed off the host adapter
-// so unmigrated callsites don't crash render — features still log a
-// "not yet implemented" warning the first time they're hit.
+// Install a permissive Tauri host shim before React mounts. It is keyed off the
+// host adapter so unmigrated callsites do not crash render. Missing features
+// still log a "not yet implemented" warning the first time they are hit.
 installTauriShim()
 import './styles/base.css'
 import './styles/layout.css'

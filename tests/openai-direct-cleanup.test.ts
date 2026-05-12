@@ -98,31 +98,10 @@ async function main() {
   assert.equal(state.terminals[0]?.agentPreset, 'codex-agent')
   assert.equal(state.terminals[0]?.title, 'Codex Agent')
 
-  const mainSource = await readFile('electron/main.ts', 'utf8')
-  const handlerSource = await readFile('electron/server-core/register-handlers.ts', 'utf8')
   const readmeSource = await readFile('README.md', 'utf8')
-  assert.equal(
-    mainSource.includes('OpenAIAgentManager'),
-    false,
-    'Electron main must not initialize the retired OpenAI Direct manager',
-  )
-  assert.equal(
-    handlerSource.includes('getOpenAIManager'),
-    false,
-    'Electron handlers must not route sessions to OpenAI Direct manager',
-  )
-  assert.equal(
-    handlerSource.includes("agentKind === 'codex'") && handlerSource.includes('getCodexManager()?.listSessions(cwd)'),
-    true,
-    'Electron claude:list-sessions must route Codex session listing to Codex manager',
-  )
-  assert.equal(
-    handlerSource.includes("sessionManagerMap.set(sessionId, 'openai')"),
-    false,
-    'legacy openai-agent sessions must not be assigned OpenAI Direct ownership',
-  )
 
   for (const removedFile of [
+    'electron',
     'electron/openai-agent-manager.ts',
     'electron/openai-agent/models.ts',
     'electron/openai-agent/persistence.ts',

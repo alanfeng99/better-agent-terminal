@@ -385,7 +385,7 @@
     "author": "Author",
     "authorName": "TonyQ",
     "github": "GitHub",
-    "builtWith": "Built with Electron, React, and xterm.js"
+    "builtWith": "Built with Tauri, React, and xterm.js"
   },
 
   "update": {

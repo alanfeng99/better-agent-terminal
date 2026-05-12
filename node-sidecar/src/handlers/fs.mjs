@@ -19,7 +19,7 @@ import { registerHandler } from '../lib/protocol.mjs'
 import { isSensitivePath } from '../lib/path-guard.mjs'
 
 const READDIR_IGNORED = new Set([
-  '.git', 'node_modules', '.next', 'dist', 'dist-electron',
+  '.git', 'node_modules', '.next', 'dist', 'dist-tauri',
   '.cache', '__pycache__', '.DS_Store',
 ])
 
@@ -205,11 +205,11 @@ registerHandler('fs.resolvePathLinks', async (params) => {
 
 // fs.search — recursive filename substring match. Pure Node walker
 // (no ripgrep dep). Used by FileTree / Agent panel file pickers.
-// Hard caps: depth ≤ 8, results ≤ 100. IGNORED dirs match Electron.
+// Hard caps: depth <= 8, results <= 100.
 // Path-guard runs at every level so a sensitive subtree is silently
 // pruned. Result is sorted dirs-first then alphabetical by name.
 const SEARCH_IGNORED = new Set([
-  '.git', 'node_modules', '.next', 'dist', 'dist-electron',
+  '.git', 'node_modules', '.next', 'dist', 'dist-tauri',
   '.cache', '__pycache__', '.DS_Store', 'release',
 ])
 const SEARCH_MAX_DEPTH = 8
