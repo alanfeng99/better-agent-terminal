@@ -453,17 +453,17 @@ async function inProcess() {
 
   // AGENT_PRESET_IDS in the sidecar must stay in sync with the
   // renderer-side AGENT_PRESETS constant. If this assertion fires,
-  // someone added a preset to src/types/agent-presets.ts without
+  // someone added a preset to renderer/src/types/agent-presets.ts without
   // updating node-sidecar/src/server.mjs.
   const { AGENT_PRESET_IDS } = mod
   const presetsModule = await readFile(
-    new URL('../../src/types/agent-presets.ts', import.meta.url), 'utf-8',
+    new URL('../../renderer/src/types/agent-presets.ts', import.meta.url), 'utf-8',
   )
   const idsFromTs = [...presetsModule.matchAll(/^\s*id:\s*'([^']+)'/gm)].map(m => m[1])
   assert.deepEqual(
     [...AGENT_PRESET_IDS].sort(),
     [...idsFromTs].sort(),
-    `sidecar AGENT_PRESET_IDS drifted from src/types/agent-presets.ts (sidecar=${AGENT_PRESET_IDS}, ts=${idsFromTs})`,
+    `sidecar AGENT_PRESET_IDS drifted from renderer/src/types/agent-presets.ts (sidecar=${AGENT_PRESET_IDS}, ts=${idsFromTs})`,
   )
 
   // Round-trip the agent.listPresets handler so we know it actually
@@ -474,11 +474,11 @@ async function inProcess() {
   assert.ok(presetsReply.result.includes('claude-cli'))
 
   // CLAUDE_BUILTIN_MODELS in the sidecar must mirror the renderer-side
-  // src/utils/claude-model-presets.ts constant. Re-read the TS file and
+  // renderer/src/utils/claude-model-presets.ts constant. Re-read the TS file and
   // diff the `value:` literals so a renderer-only addition fails here.
   const { CLAUDE_BUILTIN_MODELS } = mod
   const presetsFile = await readFile(
-    new URL('../../src/utils/claude-model-presets.ts', import.meta.url), 'utf-8',
+    new URL('../../renderer/src/utils/claude-model-presets.ts', import.meta.url), 'utf-8',
   )
   // Pull only entries inside the CLAUDE_BUILTIN_MODELS array literal.
   const arrayMatch = presetsFile.match(/CLAUDE_BUILTIN_MODELS:[^=]*=\s*\[([\s\S]*?)\n\]/m)
@@ -498,7 +498,7 @@ async function inProcess() {
   assert.deepEqual(
     [...sidecarValues].sort(),
     [...tsValues].sort(),
-    `sidecar CLAUDE_BUILTIN_MODELS drifted from src/utils/claude-model-presets.ts (sidecar=${sidecarValues}, ts=${tsValues})`,
+    `sidecar CLAUDE_BUILTIN_MODELS drifted from renderer/src/utils/claude-model-presets.ts (sidecar=${sidecarValues}, ts=${tsValues})`,
   )
 
   // Drift guard for the SDK-result dedup set: sidecar's
@@ -2765,7 +2765,7 @@ async function inProcess() {
   assert.equal(block?.source.data, 'iVBORw0KGgo=')
 
   // Drift guard: sidecar CLAUDE_MODEL_CONTEXT_WINDOWS must agree with
-  // src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
+  // renderer/src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
   // for every base-id key + value, AND must contain entries for all
   // four auto-compact preset ids (values are hand-derived from
   // OPUS_47_PRESET_AUTO_COMPACT and don't exactly mirror that map —

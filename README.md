@@ -315,59 +315,21 @@ pnpm run build    # Build .dmg
 
 ```
 better-agent-terminal/
+├── renderer/                          # Renderer process (React)
+│   └── src/
+│       ├── App.tsx                    # Root component, layout, profile orchestration
+│       ├── components/                # Workspace, terminal, agent, file, git, settings UI
+│       ├── stores/                    # Renderer state stores
+│       ├── locales/                   # EN / zh-TW / zh-CN translations
+│       ├── types/                     # Shared renderer/domain TypeScript types
+│       ├── host-api.ts                # Tauri host adapter used by renderer code
+│       └── styles/                    # Component-specific styles
 ├── src-tauri/                         # Tauri host runtime (Rust)
 │   ├── src/                           # Commands, PTY, profiles, remote server, sidecar bridge
 │   ├── capabilities/                  # Tauri IPC capability declarations
 │   ├── windows/                       # Windows installer hooks
 │   └── tauri.conf.json                # Tauri app and bundle configuration
 ├── node-sidecar/                      # Agent SDK sidecar used by the Tauri host
-├── src/                               # Renderer process (React)
-│   ├── App.tsx                        # Root component, layout, profile orchestration
-│   ├── components/
-│   │   ├── Sidebar.tsx                # Workspace list, groups, drag-drop, context menu
-│   │   ├── WorkspaceView.tsx          # Per-workspace container
-│   │   ├── ClaudeAgentPanel.tsx       # Claude agent chat UI, streaming, cache tracking
-│   │   ├── CodexAgentPanel.tsx        # Codex agent chat UI, plan approval, sandbox/approval controls
-│   │   ├── CollapsedBar.tsx           # Collapsed-thread / hidden-pane indicator bar
-│   │   ├── TerminalPanel.tsx          # xterm.js terminal wrapper
-│   │   ├── ThumbnailBar.tsx           # Scrollable terminal thumbnail strip
-│   │   ├── MainPanel.tsx              # Tab container (Terminal / Files / Git)
-│   │   ├── GitPanel.tsx               # Git log, diff, status viewer
-│   │   ├── GitHubPanel.tsx            # GitHub PR/Issue browser
-│   │   ├── FileTree.tsx               # In-app file browser with markdown preview
-│   │   ├── PathLinker.tsx             # Clickable file paths & URLs, preview modal
-│   │   ├── MarkdownPreviewPanel.tsx   # Markdown preview sidebar with live reload
-│   │   ├── SnippetPanel.tsx           # Snippet manager sidebar
-│   │   ├── SkillsPanel.tsx            # Skills/commands reference panel
-│   │   ├── AgentsPanel.tsx            # Agent configurations panel
-│   │   ├── WorkerPanel.tsx            # Procfile multi-process runner
-│   │   ├── PromptBox.tsx              # Agent message input with image attach
-│   │   ├── SettingsPanel.tsx          # App settings UI
-│   │   ├── ProfilePanel.tsx           # Profile switcher
-│   │   ├── AboutPanel.tsx             # About dialog
-│   │   ├── EnvVarEditor.tsx           # Per-workspace env var editor
-│   │   ├── WorkspaceEnvDialog.tsx     # Workspace env var dialog
-│   │   ├── CloseConfirmDialog.tsx     # Worktree cleanup confirmation
-│   │   ├── ResizeHandle.tsx           # Resizable panel divider
-│   │   └── UpdateNotification.tsx     # Update banner
-│   ├── stores/
-│   │   ├── workspace-store.ts         # Workspace + terminal state (pub/sub)
-│   │   └── settings-store.ts          # App settings persistence
-│   ├── locales/
-│   │   ├── en.json                    # English
-│   │   ├── zh-TW.json                # Traditional Chinese
-│   │   └── zh-CN.json                # Simplified Chinese
-│   ├── types/
-│   │   ├── index.ts                   # Core types (Workspace, AppSettings, Statusline, etc.)
-│   │   ├── claude-agent.ts            # Claude message, tool call, and thinking types
-│   │   ├── agent-presets.ts           # Agent preset definitions
-│   │   └── host-api.d.ts             # Tauri host shim type declarations
-│   └── styles/
-│       ├── main.css
-│       ├── claude-agent.css
-│       ├── path-linker.css
-│       ├── context-menu.css
-│       └── ...                        # Component-specific styles
 ├── assets/                            # App icons and screenshots
 ├── scripts/
 │   └── build-version.js               # Version string generator

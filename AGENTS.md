@@ -15,14 +15,15 @@ Follow the project guidance in `CLAUDE.md`. The most important operational notes
 
 - Run `pnpm exec tsc --noEmit --pretty false` for type checking.
 - Run `pnpm run compile` for the standard build check.
-- Run `pnpm run test:node-resolver` when touching Node resolution or runtime startup.
+- Run `pnpm run test:sidecar` when touching Node sidecar resolution or runtime startup.
+- Run `pnpm run test:tauri-rust` when touching Rust/Tauri runtime code.
 - For local packaging verification without macOS signing/notarization, run:
-  - `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --dir --config.mac.notarize=false --config.mac.identity=null`
+  - `pnpm run tauri:build:debug`
 
 ## Project Rules
 
 - Do not replace the built-in status line implementation.
-- Renderer logs should use `window.electronAPI.debug.log(...)`; Electron/backend logs should use the project logger.
+- Renderer logs should use `window.batAppAPI.debug.log(...)`; Tauri/backend logs should use the project logger/debug helpers.
 - When modifying shared code such as stores, IPC handlers, or shared types, trace consumers before committing.
 
 ## IPC Compatibility

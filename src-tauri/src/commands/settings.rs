@@ -230,7 +230,7 @@ pub fn settings_get_shell_path(shell_type: String) -> String {
 // result regardless of whether cx is installed so the renderer can render
 // a settings row + status badge. The renderer's expected shape (string
 // fields are optional) is locked by the SettingsCxStatus interface in
-// src/types/index.ts; mirror it via #[serde(rename_all = "camelCase")].
+// renderer/src/types/index.ts; mirror it via #[serde(rename_all = "camelCase")].
 
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 struct CxSettings {

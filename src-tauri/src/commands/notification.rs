@@ -23,7 +23,7 @@ use crate::window_registry;
 const MAX_ENTRIES: usize = 50;
 static NEXT_NOTIFICATION_ID: AtomicU64 = AtomicU64::new(0);
 
-// Mirror src/stores/notification-store.ts NotificationEntry. The
+// Mirror renderer/src/stores/notification-store.ts NotificationEntry. The
 // renderer-side interface is the source of truth — bumping fields
 // here means bumping the TypeScript interface too.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]

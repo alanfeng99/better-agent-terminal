@@ -1,5 +1,5 @@
 // agent.* — single read-only method today: which presets the host knows
-// how to start. Mirrored from src/types/agent-presets.ts AGENT_PRESETS —
+// how to start. Mirrored from renderer/src/types/agent-presets.ts AGENT_PRESETS —
 // the renderer's NewTerminalQuickPick uses this to gate which preset
 // cards render. Returning [] would gray out the entire picker. Keep
 // this list in sync with the renderer constant; if you add a preset

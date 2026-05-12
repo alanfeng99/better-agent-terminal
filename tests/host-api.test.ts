@@ -1,4 +1,4 @@
-// Unit tests for src/host-api.ts.
+// Unit tests for renderer/src/host-api.ts.
 //
 // Run with: pnpm exec tsx tests/host-api.test.ts
 // (or via the test:host-api script).
@@ -20,7 +20,7 @@ const setWindow = (shape: WinShape | undefined) => {
 
 // Force a fresh module per scenario so the adapter's cached host gets reset.
 async function loadFreshAdapter() {
-  const url = new URL('../src/host-api.ts', import.meta.url)
+  const url = new URL('../renderer/src/host-api.ts', import.meta.url)
   const cacheBust = `${url.href}?t=${Date.now()}-${Math.random()}`
   return import(cacheBust)
 }

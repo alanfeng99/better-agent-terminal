@@ -3,9 +3,9 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 
 const ROOTS = [
-  'src/App.tsx',
-  'src/components',
-  'src/stores',
+  'renderer/src/App.tsx',
+  'renderer/src/components',
+  'renderer/src/stores',
 ]
 
 const DIRECT_HOST_PATTERN = /\bwindow\.batAppAPI\b/

@@ -2,7 +2,7 @@ import * as assert from 'assert'
 import { readFile } from 'fs/promises'
 
 async function main() {
-  const source = await readFile('src/components/CodexAgentPanel.tsx', 'utf8')
+  const source = await readFile('renderer/src/components/CodexAgentPanel.tsx', 'utf8')
 
   assert.equal(
     source.includes('!isCodexSession && showResumeList'),

@@ -3,7 +3,7 @@
 // This file is intentionally small: the Electron preload still owns most of
 // the host surface during the migration. Each new command lands here behind
 // a strongly typed signature, and the renderer reaches it via the
-// host-api adapter (src/host-api.ts). See plans/tauri-migration-plan.md.
+// host-api adapter (renderer/src/host-api.ts). See plans/tauri-migration-plan.md.
 
 mod account_store;
 mod app_data;

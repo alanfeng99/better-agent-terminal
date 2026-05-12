@@ -18,13 +18,14 @@
 - Standard verification commands:
   - `pnpm exec tsc --noEmit --pretty false`
   - `pnpm run compile`
-  - `pnpm run test:node-resolver`
-  - For local packaging verification without macOS signing/notarization: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --dir --config.mac.notarize=false --config.mac.identity=null`
+  - `pnpm run test:sidecar`
+  - `pnpm run test:tauri-rust`
+  - For local packaging verification without macOS signing/notarization: `pnpm run tauri:build:debug`
 
 ## Logging
 
-- **Frontend (renderer)**: Use `window.electronAPI.debug.log(...)` instead of `console.log()`. This sends logs to the electron main process logger, which writes to disk.
-- **Backend (electron)**: Use `logger.log(...)` / `logger.error(...)` from `./logger`.
+- **Frontend (renderer)**: Use `window.batAppAPI.debug.log(...)` instead of `console.log()`. This sends logs to the Tauri host logger, which writes to disk.
+- **Backend (Tauri/Rust)**: Use the project Rust logging/debug helpers so logs are persisted.
 - Do NOT use `console.log()` for debugging — use the logger so logs are persisted and visible in the log file.
 - **Log file location** (`debug.log` inside the userData directory):
   - macOS: `~/Library/Application Support/better-agent-terminal/debug.log`
@@ -46,7 +47,7 @@
 ## Status Line
 
 - Our status line implementation is superior to external alternatives (e.g., ccstatusline). Do not replace it.
-- 15 configurable items (see `STATUSLINE_ITEMS` in `src/types/index.ts`) with custom colors, zone alignment, and template-based config.
+- 15 configurable items (see `STATUSLINE_ITEMS` in `renderer/src/types/index.ts`) with custom colors, zone alignment, and template-based config.
 - Usage polling: Chrome session key (primary, lenient rate limits) → OAuth fallback (strict rate limits).
 
 ## Release

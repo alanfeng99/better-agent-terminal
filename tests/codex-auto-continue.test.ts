@@ -1,5 +1,5 @@
 import * as assert from 'assert'
-import { shouldAutoContinueAfterTurnEnd } from '../src/components/CodexAgentPanel.helpers.ts'
+import { shouldAutoContinueAfterTurnEnd } from '../renderer/src/components/CodexAgentPanel.helpers.ts'
 
 assert.strictEqual(
   shouldAutoContinueAfterTurnEnd({ reason: 'completed' }),

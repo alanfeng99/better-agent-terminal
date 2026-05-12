@@ -3,9 +3,9 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 
 const ROOTS = [
-  'src/App.tsx',
-  'src/components',
-  'src/stores',
+  'renderer/src/App.tsx',
+  'renderer/src/components',
+  'renderer/src/stores',
 ]
 
 const CLAUDE_CALL_PATTERN = /\bhost\.claude\.([A-Za-z0-9_]+)/g
@@ -46,7 +46,7 @@ async function main() {
     if (methods.size > 0) used.set(relative(process.cwd(), file), methods)
   }
 
-  const hostSource = await readFile('src/host-api.ts', 'utf8')
+  const hostSource = await readFile('renderer/src/host-api.ts', 'utf8')
   const claudeAdapterSource = extractClaudeAdapterBlock(hostSource)
   const routed = new Set([
     ...collectMatches(claudeAdapterSource, DIRECT_KEY_PATTERN),

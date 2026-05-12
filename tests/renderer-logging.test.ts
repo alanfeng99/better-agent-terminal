@@ -11,10 +11,10 @@ async function assertNoRendererConsoleLog(file: string) {
 }
 
 async function main() {
-  await assertNoRendererConsoleLog('src/components/ClaudeAgentPanel.tsx')
-  await assertNoRendererConsoleLog('src/components/CodexAgentPanel.tsx')
+  await assertNoRendererConsoleLog('renderer/src/components/ClaudeAgentPanel.tsx')
+  await assertNoRendererConsoleLog('renderer/src/components/CodexAgentPanel.tsx')
 
-  const codexSource = await readFile('src/components/CodexAgentPanel.tsx', 'utf8')
+  const codexSource = await readFile('renderer/src/components/CodexAgentPanel.tsx', 'utf8')
   assert.equal(
     codexSource.includes('const tag = `[Codex:${sessionId.slice(0, 8)}]`'),
     true,

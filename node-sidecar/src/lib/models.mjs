@@ -1,4 +1,4 @@
-// Mirror of src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODELS.
+// Mirror of renderer/src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODELS.
 // Drift guard: see node-sidecar/tests/server.test.mjs.
 export const CLAUDE_BUILTIN_MODELS = [
   { value: 'claude-opus-4-7:auto-compact-200k', displayName: 'Opus 4.7 · 200K Auto-Compact', description: 'claude-opus-4-7 · compact at 200K tokens' },
@@ -9,7 +9,7 @@ export const CLAUDE_BUILTIN_MODELS = [
   { value: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6 (1M)', description: 'claude-sonnet-4-6 · 1M context' },
   { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'claude-haiku-4-5 · fast & lightweight' },
 ]
-// Mirror of src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
+// Mirror of renderer/src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
 // keys. This is the dedup set for SDK-discovered models — note it
 // includes [1m] variants of base IDs (which the builtin model list
 // itself doesn't carry, but the SDK does emit), so SDK results that
@@ -25,7 +25,7 @@ export const CLAUDE_BUILTIN_DEDUP_KEYS = [
   'claude-haiku-4-5-20251001',
 ]
 
-// Mirror of src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS,
+// Mirror of renderer/src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS,
 // plus the auto-compact preset entries. Drift guard (test suite) re-reads
 // the TS file and sorted-equals the keys against this map. Used by
 // claude.getContextUsage to compute the maxTokens budget.
@@ -54,7 +54,7 @@ export function expectedContextWindowForModel(model) {
   return null
 }
 
-// Mirror of src/utils/claude-model-presets.ts sdkModelForClaudeSelection:
+// Mirror of renderer/src/utils/claude-model-presets.ts sdkModelForClaudeSelection:
 // auto-compact presets all wrap the underlying claude-opus-4-7 base id,
 // so the SDK call uses the base id and the auto-compact window is
 // configured separately via CLAUDE_CODE_AUTO_COMPACT_WINDOW env.

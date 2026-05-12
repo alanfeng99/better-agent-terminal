@@ -1,6 +1,6 @@
 // pty:* — first cut of the cross-platform PTY surface for the Tauri shell.
 //
-// We mirror the renderer host contract from src/types/index.ts so the
+// We mirror the renderer host contract from renderer/src/types/index.ts so the
 // renderer doesn't have to branch on host:
 //   pty.create({ id, cwd, type, shell?, customEnv?, … })
 //   pty.write(id, data)

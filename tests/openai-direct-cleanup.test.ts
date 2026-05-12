@@ -17,9 +17,9 @@ type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T
 }
 
 async function main() {
-  const { AGENT_PRESETS, getVisiblePresets } = await import('../src/types/agent-presets.ts')
-  const { settingsStore } = await import('../src/stores/settings-store.ts')
-  const { workspaceStore } = await import('../src/stores/workspace-store.ts')
+  const { AGENT_PRESETS, getVisiblePresets } = await import('../renderer/src/types/agent-presets.ts')
+  const { settingsStore } = await import('../renderer/src/stores/settings-store.ts')
+  const { workspaceStore } = await import('../renderer/src/stores/workspace-store.ts')
 
   assert.equal(
     AGENT_PRESETS.some(preset => preset.id === 'openai-agent'),

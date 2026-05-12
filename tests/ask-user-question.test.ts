@@ -1,5 +1,5 @@
 import * as assert from 'assert'
-import { normalizePendingAskUser, summarizeAskUserInput } from '../src/components/AskUserQuestion.helpers.ts'
+import { normalizePendingAskUser, summarizeAskUserInput } from '../renderer/src/components/AskUserQuestion.helpers.ts'
 
 const normalized = normalizePendingAskUser({
   toolUseId: 'tool-1',
