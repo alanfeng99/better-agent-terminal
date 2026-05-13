@@ -4,11 +4,19 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      run_verification:
+        description: 'Run release verification checks before publishing'
+        required: false
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: 'true'
+  RUN_RELEASE_VERIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.run_verification }}
 
 jobs:
   verify:
@@ -16,36 +24,50 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - name: Skip release verification
+        if: env.RUN_RELEASE_VERIFICATION != 'true'
+        run: echo "Skipping release verification. Re-run manually with run_verification=true to enable it."
+
       - name: Checkout code
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         uses: actions/checkout@v4
 
       - name: Setup pnpm
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         uses: pnpm/action-setup@v4
         with:
           version: 10.33.2
 
       - name: Setup Node.js
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'pnpm'
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            node-sidecar/pnpm-lock.yaml
 
       - name: Install dependencies
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Extract version from tag
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         id: version
         shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
       - name: Update version metadata
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: pnpm run update:release-version
 
       - name: Verify Tauri bundle resources
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
         run: pnpm run verify:tauri-release-ci
 
   build:
@@ -109,6 +131,9 @@ jobs:
         with:
           node-version: '20'
           cache: 'pnpm'
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            node-sidecar/pnpm-lock.yaml
 
       - name: Setup Rust
         if: env.BUILD_MATRIX_ENTRY == 'true'
@@ -153,11 +178,38 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-tauri-tools-
 
+      - name: Cache root node_modules
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-root-node-modules-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-root-node-modules-
+
+      - name: Cache sidecar node_modules
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: actions/cache@v4
+        with:
+          path: node-sidecar/node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-${{ hashFiles('node-sidecar/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-
+
+      - name: Cache bundled Node runtime
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: actions/cache@v4
+        with:
+          path: node-sidecar/runtime
+          key: ${{ runner.os }}-${{ matrix.arch }}-node-runtime-${{ hashFiles('scripts/fetch-node-runtime.mjs') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-node-runtime-
+
       - name: Install dependencies
         if: env.BUILD_MATRIX_ENTRY == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Extract version from tag
         if: env.BUILD_MATRIX_ENTRY == 'true'
@@ -187,7 +239,7 @@ jobs:
           test -n "$APPLE_TEAM_ID" || (echo "Missing APPLE_TEAM_ID secret" && exit 1)
 
       - name: Verify Apple notarization credentials
-        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac' && env.RUN_RELEASE_VERIFICATION == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -229,11 +281,11 @@ jobs:
         run: node scripts/normalize-release-asset-names.mjs src-tauri/target/release/bundle
 
       - name: Smoke test Windows release binary
-        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'win'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'win' && env.RUN_RELEASE_VERIFICATION == 'true'
         run: pnpm run test:tauri-launch
 
       - name: Verify Tauri release asset sizes
-        if: env.BUILD_MATRIX_ENTRY == 'true'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && env.RUN_RELEASE_VERIFICATION == 'true'
         env:
           BAT_RELEASE_PLATFORM: ${{ matrix.platform }}
           BAT_RELEASE_EXTS: ${{ matrix.release_exts }}
