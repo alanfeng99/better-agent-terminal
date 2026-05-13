@@ -107,7 +107,7 @@ const setupGlobalListener = () => {
 interface TerminalThumbnailProps {
   terminal: TerminalInstance
   isActive: boolean
-  onClick: () => void
+  onClick?: () => void
 }
 
 const dlog = (...args: unknown[]) => host.debug.log(...args)

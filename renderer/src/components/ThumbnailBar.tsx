@@ -228,6 +228,11 @@ export function ThumbnailBar({
     pointerDragRef.current = null
     setDraggedId(null)
     setDropTargetId(null)
+    if (drag.dragging) {
+      window.setTimeout(() => {
+        suppressClickRef.current = false
+      }, 0)
+    }
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch { /* pointer capture may already be gone */ }
@@ -418,6 +423,7 @@ export function ThumbnailBar({
               e.preventDefault()
               e.stopPropagation()
             }}
+            onClick={() => onFocus(terminal.id)}
             className={`thumbnail-drag-wrapper${onReorder ? ' sortable' : ''}${
               dropTargetId === terminal.id && draggedId !== terminal.id
                 ? ` drop-${dropPosition}`
@@ -428,7 +434,6 @@ export function ThumbnailBar({
             <TerminalThumbnail
               terminal={terminal}
               isActive={terminal.id === focusedTerminalId}
-              onClick={() => onFocus(terminal.id)}
             />
           </div>
         ))}
