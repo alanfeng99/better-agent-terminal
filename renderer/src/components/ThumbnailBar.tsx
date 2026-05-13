@@ -330,7 +330,7 @@ export function ThumbnailBar({
                           className="thumbnail-add-menu-item"
                           onClick={() => { onAddAgent?.(preset.id); setShowAddMenu(false) }}
                         >
-                          <span className="thumbnail-add-menu-icon" style={{ color: preset.color }}>{preset.icon}</span>
+                          <span className="thumbnail-add-menu-icon" style={{ color: '#22c55e' }}>🌳</span>
                           {worktreeMenuName(preset.name)}
                           {preset.suggested && <span className="thumbnail-add-menu-suggested">suggested</span>}
                         </div>

@@ -66,18 +66,19 @@ function buildItems(isGitRepo: boolean, supportedPresetIds: string[] | null): It
       icon: '🌳',
       color: '#22c55e',
       choice: { kind: 'worktree' },
-      searchText: 'terminal worktree',
+      searchText: 'tree terminal worktree',
       section: 'Worktree',
     })
   }
   for (const p of [...groups.worktreeAgents, ...groups.worktreeCli]) {
+    const name = worktreeMenuName(p.name)
     items.push({
       key: p.id,
-      name: worktreeMenuName(p.name),
-      icon: p.icon,
-      color: p.color,
+      name,
+      icon: '🌳',
+      color: '#22c55e',
       choice: { kind: 'agent', presetId: p.id as AgentPresetId },
-      searchText: `${p.name} ${p.id}`.toLowerCase(),
+      searchText: `${name} ${p.name} ${p.id}`.toLowerCase(),
       section: 'Worktree',
     })
   }
