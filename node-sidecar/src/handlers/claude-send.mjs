@@ -37,6 +37,84 @@ function batDebugEnabled() {
   return process.env.BAT_DEBUG === '1' || process.env.BAT_DEBUG === 'true'
 }
 
+function shortSessionId(sessionId) {
+  return typeof sessionId === 'string' ? sessionId.slice(0, 8) : 'unknown'
+}
+
+function preview(value, max = 160) {
+  if (typeof value !== 'string') return ''
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized
+}
+
+function contentLength(content) {
+  if (typeof content === 'string') return content.length
+  if (Array.isArray(content)) {
+    return content.reduce((sum, block) => {
+      if (typeof block?.text === 'string') return sum + block.text.length
+      if (typeof block?.content === 'string') return sum + block.content.length
+      if (Array.isArray(block?.content)) return sum + contentLength(block.content)
+      return sum
+    }, 0)
+  }
+  return 0
+}
+
+function summarizeToolInput(input) {
+  if (!input || typeof input !== 'object') return { inputType: typeof input }
+  const summary = { inputKeys: Object.keys(input) }
+  if (typeof input.command === 'string') {
+    summary.commandLen = input.command.length
+    summary.commandPreview = preview(input.command)
+  }
+  if (typeof input.file_path === 'string') summary.filePath = input.file_path
+  if (typeof input.path === 'string') summary.path = input.path
+  return summary
+}
+
+function debugLog(label, sessionId, details = {}) {
+  if (!batDebugEnabled()) return
+  logInfo(`claude.debug(${shortSessionId(sessionId)}): ${label} ${JSON.stringify(details)}`)
+}
+
+function debugSdkFrame(sessionId, msg) {
+  if (!batDebugEnabled()) return
+  const t = msg?.type || 'unknown'
+  const details = { type: t }
+  if (typeof msg?.session_id === 'string') details.sdkSessionId = shortSessionId(msg.session_id)
+  if (typeof msg?.parent_tool_use_id === 'string') details.parentToolUseId = msg.parent_tool_use_id
+  if (t === 'system') {
+    details.subtype = msg?.subtype
+    details.model = msg?.model
+    details.cwd = msg?.cwd
+  } else if (t === 'stream_event') {
+    details.eventType = msg?.event?.type
+    details.textLen = typeof msg?.event?.delta?.text === 'string' ? msg.event.delta.text.length : 0
+    details.thinkingLen = typeof msg?.event?.delta?.thinking === 'string' ? msg.event.delta.thinking.length : 0
+  } else if (t === 'assistant') {
+    const blocks = Array.isArray(msg?.message?.content) ? msg.message.content : []
+    details.blockTypes = blocks.map(b => b?.type).filter(Boolean)
+    details.toolUses = blocks
+      .filter(b => b?.type === 'tool_use')
+      .map(b => ({ id: b.id, name: b.name, ...summarizeToolInput(b.input) }))
+    details.textLen = contentLength(blocks)
+  } else if (t === 'user') {
+    const blocks = Array.isArray(msg?.message?.content) ? msg.message.content : []
+    details.toolResults = blocks
+      .filter(b => b?.type === 'tool_result')
+      .map(b => ({
+        id: b.tool_use_id,
+        isError: b.is_error === true,
+        contentLen: contentLength(b.content),
+      }))
+  } else if (t === 'result') {
+    details.subtype = msg?.subtype
+    details.stopReason = msg?.stop_reason
+    details.resultLen = typeof msg?.result === 'string' ? msg.result.length : 0
+  }
+  logInfo(`claude.debug(${shortSessionId(sessionId)}): sdk-frame ${JSON.stringify(details)}`)
+}
+
 function userDisplayContent(params, prompt, images) {
   if (typeof params?.displayPrompt === 'string') return params.displayPrompt
   const imageCount = Array.isArray(images) ? images.length : 0
@@ -50,6 +128,10 @@ function emitUserEcho(params, sessionId, prompt, images) {
   if (params?.suppressUserEcho === true) return
   const content = userDisplayContent(params, prompt, images)
   const now = Date.now()
+  debugLog('emit-user-echo', sessionId, {
+    clientMessageId: params?.clientMessageId || null,
+    contentLen: content.length,
+  })
   sendEvent('claude:message', {
     sessionId,
     message: {
@@ -109,6 +191,11 @@ function processMessage(s, sessionId, msg) {
     saveSessionConfig(sessionId, s)
     const meta = buildSessionMeta(s)
     if (typeof msg.cwd === 'string' && meta) meta.cwd = msg.cwd
+    debugLog('emit-status', sessionId, {
+      sdkSessionId: shortSessionId(s.sdkSessionId),
+      model: meta?.model || null,
+      cwd: meta?.cwd || null,
+    })
     sendEvent('claude:status', { sessionId, meta })
     return
   }
@@ -123,6 +210,10 @@ function processMessage(s, sessionId, msg) {
           utilization: typeof info.utilization === 'number' ? info.utilization : null,
           isUsingOverage: info.isUsingOverage ?? false,
         },
+      })
+      debugLog('emit-rate-limit', sessionId, {
+        rateLimitType: info.rateLimitType,
+        resetsAt: info.resetsAt,
       })
     }
     return
@@ -148,9 +239,19 @@ function processMessage(s, sessionId, msg) {
     if (ev && ev.type === 'content_block_delta') {
       const d = ev.delta
       if (d?.text) {
+        debugLog('emit-stream', sessionId, {
+          kind: 'text',
+          len: d.text.length,
+          parentToolUseId: msg.parent_tool_use_id ?? null,
+        })
         sendEvent('claude:stream', { sessionId, data: { text: d.text, parentToolUseId: msg.parent_tool_use_id ?? null } })
       }
       if (d?.thinking) {
+        debugLog('emit-stream', sessionId, {
+          kind: 'thinking',
+          len: d.thinking.length,
+          parentToolUseId: msg.parent_tool_use_id ?? null,
+        })
         sendEvent('claude:stream', { sessionId, data: { thinking: d.thinking, parentToolUseId: msg.parent_tool_use_id ?? null } })
       }
     }
@@ -172,10 +273,19 @@ function processMessage(s, sessionId, msg) {
         .trim()
     }
     const outboundMessage = flatThinking ? { ...msg, thinking: flatThinking } : msg
+    debugLog('emit-assistant-message', sessionId, {
+      blockTypes: Array.isArray(blocks) ? blocks.map(b => b?.type).filter(Boolean) : [],
+      textLen: contentLength(blocks),
+    })
     sendEvent('claude:message', { sessionId, message: outboundMessage })
     if (Array.isArray(blocks)) {
       for (const block of blocks) {
         if (block && block.type === 'tool_use' && typeof block.id === 'string') {
+          debugLog('emit-tool-use', sessionId, {
+            id: block.id,
+            toolName: block.name,
+            ...summarizeToolInput(block.input),
+          })
           sendEvent('claude:tool-use', {
             sessionId,
             toolCall: {
@@ -198,6 +308,11 @@ function processMessage(s, sessionId, msg) {
     if (Array.isArray(blocks)) {
       for (const block of blocks) {
         if (block && block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+          debugLog('emit-tool-result', sessionId, {
+            id: block.tool_use_id,
+            status: block.is_error ? 'error' : 'completed',
+            contentLen: contentLength(block.content),
+          })
           sendEvent('claude:tool-result', {
             sessionId,
             result: {
@@ -229,14 +344,26 @@ function processMessage(s, sessionId, msg) {
       }
     }
     if (msg.subtype === 'success') {
+      debugLog('emit-result', sessionId, {
+        subtype: msg.subtype,
+        stopReason: msg.stop_reason || null,
+        resultLen: typeof msg.result === 'string' ? msg.result.length : 0,
+      })
       sendEvent('claude:result', { sessionId, result: msg })
+      debugLog('emit-turn-end', sessionId, { reason: 'completed' })
       sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: msg.result, sdkSessionId: msg.session_id } })
     } else {
       const errMsg = resultErrorMessage(msg)
       if (batDebugEnabled()) {
         logWarn(`claude.result(${shortSessionId(sessionId)}): non-success subtype=${msg?.subtype || 'unknown'} keys=${Object.keys(msg || {}).join(',')}`)
       }
+      debugLog('emit-error', sessionId, {
+        subtype: msg?.subtype || 'unknown',
+        stopReason: msg?.stop_reason || null,
+        error: errMsg,
+      })
       sendEvent('claude:error', { sessionId, error: errMsg })
+      debugLog('emit-turn-end', sessionId, { reason: 'error' })
       sendEvent('claude:turn-end', { sessionId, payload: { reason: 'error' } })
     }
   }
@@ -309,11 +436,23 @@ async function ensureLiveQuery(s, sessionId, sdk, prompt) {
   const queryOptions = await buildQueryOptions(s, sessionId, prompt)
   s.abortController = new AbortController()
   queryOptions.abortController = s.abortController
+  debugLog('live-query-create', sessionId, {
+    cwd: queryOptions.cwd || null,
+    resume: typeof queryOptions.resume === 'string' ? shortSessionId(queryOptions.resume) : null,
+    continue: queryOptions.continue === true,
+    model: queryOptions.model || null,
+    permissionMode: queryOptions.permissionMode || 'default',
+    hasClaudePath: typeof queryOptions.pathToClaudeCodeExecutable === 'string',
+    pluginCount: Array.isArray(queryOptions.plugins) ? queryOptions.plugins.length : 0,
+  })
   const live = new LiveQuery({
     sdk,
     queryOptions,
     onMessage: (msg) => {
-      try { processMessage(s, sessionId, msg) }
+      try {
+        debugSdkFrame(sessionId, msg)
+        processMessage(s, sessionId, msg)
+      }
       catch (err) {
         logWarn(`processMessage threw for ${sessionId}: ${err?.message || err}`)
       }
@@ -324,6 +463,7 @@ async function ensureLiveQuery(s, sessionId, sdk, prompt) {
   })
   s.liveQuery = live
   s.currentQuery = live.generator
+  debugLog('live-query-ready', sessionId, {})
   return live
 }
 
@@ -342,10 +482,6 @@ export function closeLiveQuery(s) {
   }
   s.liveQuery = null
   s.currentQuery = null
-}
-
-function shortSessionId(sessionId) {
-  return typeof sessionId === 'string' ? sessionId.slice(0, 8) : 'unknown'
 }
 
 async function performSendMessage(params) {
@@ -388,6 +524,12 @@ async function performSendMessage(params) {
   const startedAt = Date.now()
   s.streaming = true
   logInfo(`claude.sendMessage(${sid}): start promptLen=${prompt.length} images=${Array.isArray(params?.images) ? params.images.length : 0} liveClosed=${live.isClosed}`)
+  debugLog('push-user-message', sessionId, {
+    promptLen: prompt.length,
+    promptPreview: preview(prompt),
+    images: Array.isArray(params?.images) ? params.images.length : 0,
+    liveClosed: live.isClosed,
+  })
   try {
     const result = await live.push(userMessage)
     // Give SDK builds that end the generator immediately after a result a
@@ -399,6 +541,11 @@ async function performSendMessage(params) {
       s.currentQuery = null
     }
     if (result?.subtype === 'success') {
+      debugLog('push-resolved', sessionId, {
+        elapsedMs,
+        subtype: result.subtype,
+        stopReason: result.stop_reason || null,
+      })
       logInfo(`claude.sendMessage(${sid}): completed ok elapsedMs=${elapsedMs}`)
       return { ok: true }
     }
@@ -435,6 +582,14 @@ registerHandler('claude.sendMessage', async (params) => {
   const sid = shortSessionId(sessionId)
   const prompt = typeof params?.prompt === 'string' ? params.prompt : ''
   const images = Array.isArray(params?.images) ? params.images : null
+  debugLog('receive-send-message', sessionId, {
+    promptLen: prompt.length,
+    promptPreview: preview(prompt),
+    images: images ? images.length : 0,
+    hasClientMessageId: typeof params?.clientMessageId === 'string' && params.clientMessageId.length > 0,
+    suppressUserEcho: params?.suppressUserEcho === true,
+    hasExistingQueue: Boolean(s.sendQueue),
+  })
   if (!isCodexSession(sessionId)) {
     emitUserEcho(params, sessionId, prompt, images)
   }

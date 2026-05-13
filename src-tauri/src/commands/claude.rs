@@ -18,6 +18,7 @@
 use crate::account_store;
 use crate::app_data;
 use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
+use crate::commands::app as app_cmd;
 use crate::commands::notification as notification_cmd;
 use crate::commands::profile as profile_cmd;
 use crate::commands::worktree as worktree_cmd;
@@ -47,6 +48,19 @@ const PREVIEW_CHARS: usize = 120;
 const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 const WORKTREE_DIFF_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+fn bat_debug_enabled() -> bool {
+    matches!(
+        std::env::var("BAT_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+fn claude_debug_log(app: &AppHandle, message: impl AsRef<str>) {
+    if bat_debug_enabled() {
+        app_cmd::log_tauri(app, message.as_ref());
+    }
+}
 
 fn call(
     app: &AppHandle,
@@ -1577,6 +1591,16 @@ pub async fn claude_send_message(
     suppress_user_echo: Option<bool>,
 ) -> Result<Value, BridgeError> {
     notification_cmd::set_agent_session_resting(&app, &session_id, false);
+    claude_debug_log(
+        &app,
+        &format!(
+            "[claude_send_message:{}] requested promptLen={} images={} autoCompactWindow={:?}",
+            session_id.chars().take(8).collect::<String>(),
+            prompt.len(),
+            images.as_ref().map(Vec::len).unwrap_or(0),
+            auto_compact_window
+        ),
+    );
     if let Some(result) = remote_invoke_for_window(
         &app,
         &state,
@@ -1598,6 +1622,13 @@ pub async fn claude_send_message(
         return result;
     }
     if codex_state.is_owned(&session_id) {
+        claude_debug_log(
+            &app,
+            &format!(
+                "[claude_send_message:{}] routing to codex app-server",
+                session_id.chars().take(8).collect::<String>()
+            ),
+        );
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();
@@ -1676,6 +1707,13 @@ pub async fn claude_abort_session(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
+    claude_debug_log(
+        &app,
+        &format!(
+            "[claude_abort_session:{}] requested",
+            session_id.chars().take(8).collect::<String>()
+        ),
+    );
     if let Some(result) = remote_invoke_for_window(
         &app,
         &state,
@@ -1689,6 +1727,13 @@ pub async fn claude_abort_session(
         return result;
     }
     if codex_state.is_owned(&session_id) {
+        claude_debug_log(
+            &app,
+            &format!(
+                "[claude_abort_session:{}] routing to codex app-server",
+                session_id.chars().take(8).collect::<String>()
+            ),
+        );
         let codex = (*codex_state).clone();
         let codex_app = app.clone();
         let codex_session_id = session_id.clone();

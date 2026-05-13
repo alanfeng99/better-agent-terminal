@@ -1615,8 +1615,16 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [isActive, setInputValue])
 
   const handleSend = useCallback(async () => {
+    const sendStart = performance.now()
     const trimmed = inputValueRef.current.trim()
     if (!trimmed && attachedImages.length === 0 && attachedFiles.length === 0) return
+    const tag = `[Codex:${sessionId.slice(0, 8)}]`
+    const debugSend = host.debug.isDebugMode === true
+    if (debugSend) {
+      host.debug.log(
+        `${tag} handleSend start promptLen=${trimmed.length} images=${attachedImages.length} files=${attachedFiles.length} isStreaming=${isStreaming} isInterrupted=${isInterrupted}`
+      )
+    }
 
     // Save to input history
     if (trimmed) {
@@ -1969,13 +1977,31 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       }])
     }
 
-    await host.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined)
+    try {
+      const sendInvokeStarted = performance.now()
+      const result = await host.claude.sendMessage(sessionId, promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined) as { ok?: boolean; error?: string } | undefined
+      if (debugSend) {
+        host.debug.log(
+          `${tag} handleSend sendMessage returned elapsedMs=${Math.round(performance.now() - sendInvokeStarted)} totalMs=${Math.round(performance.now() - sendStart)} result=${JSON.stringify(result)}`
+        )
+      }
+    } catch (err) {
+      if (debugSend) {
+        host.debug.log(
+          `${tag} handleSend sendMessage failed totalMs=${Math.round(performance.now() - sendStart)} error=${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+      throw err
+    }
   }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return
     // abortSession (not stopSession) so the session record + cwd survive —
     // user can keep typing to continue this turn.
+    if (host.debug.isDebugMode === true) {
+      host.debug.log(`[Codex:${sessionId.slice(0, 8)}] handleInterrupt abortSession`)
+    }
     host.claude.abortSession(sessionId)
     setIsInterrupted(true)
     setStreamingText('')
@@ -2192,9 +2218,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       e.keyCode !== 229
     ) {
       e.preventDefault()
+      if (host.debug.isDebugMode === true) {
+        host.debug.log(
+          `[Codex:${sessionId.slice(0, 8)}] Enter submit promptLen=${inputValueRef.current.trim().length} isStreaming=${isStreaming} isInterrupted=${isInterrupted}`
+        )
+      }
       handleSend()
     }
-  }, [handleSend, handlePermissionModeCycle, setInputValue, showSlashMenu, filteredSlashCommands, slashMenuIndex, handleSlashSelect, promptSuggestion])
+  }, [handleSend, handlePermissionModeCycle, setInputValue, showSlashMenu, filteredSlashCommands, slashMenuIndex, handleSlashSelect, promptSuggestion, isStreaming, isInterrupted, sessionId])
 
   const handleModelCycle = useCallback(async () => {
     if (availableModels.length === 0) return

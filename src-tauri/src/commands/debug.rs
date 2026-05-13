@@ -17,6 +17,18 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_opener::OpenerExt;
 
+fn bat_debug_enabled() -> bool {
+    matches!(
+        std::env::var("BAT_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+#[tauri::command]
+pub fn debug_is_debug_mode() -> bool {
+    bat_debug_enabled()
+}
+
 #[tauri::command]
 pub async fn debug_log(app: tauri::AppHandle, args: Vec<Value>) {
     let message = format_args(args);

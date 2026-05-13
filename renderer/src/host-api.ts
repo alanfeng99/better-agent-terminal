@@ -31,6 +31,7 @@ export const isTauri = (): boolean => getHostKind() === 'tauri'
 
 let tauriImpl: BatAppAPI | null = null
 let tauriMetricLoggerInstalled = false
+let tauriProcessDebugMode: boolean | null = null
 
 function resolveHost(): BatAppAPI {
   const kind = getHostKind()
@@ -177,10 +178,21 @@ function tauriDebugLog(...args: unknown[]): void {
   }
 }
 
-function readTauriDebugMode(): boolean {
-  if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true) {
-    return true
+function refreshTauriDebugMode(): void {
+  try {
+    void getInvoke()<boolean>('debug_is_debug_mode')
+      .then(value => { tauriProcessDebugMode = value === true })
+      .catch(() => {})
+  } catch {
+    // Best-effort instrumentation only.
   }
+}
+
+function readTauriDebugMode(): boolean {
+  if (tauriProcessDebugMode === true) return true
+  const env = (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env
+  const envDebug = env?.BAT_DEBUG ?? env?.VITE_BAT_DEBUG
+  if (envDebug === '1' || envDebug === 'true' || envDebug === 'TRUE' || envDebug === true) return true
   const win = (globalThis as unknown as {
     window?: {
       location?: { search?: string }
@@ -188,11 +200,11 @@ function readTauriDebugMode(): boolean {
     }
   }).window ?? null
   const params = new URLSearchParams(win?.location?.search || '')
-  const debugParam = params.get('debug') || params.get('BAT_DEBUG')
-  if (debugParam === '1' || debugParam === 'true') return true
+  const debugParam = params.get('BAT_DEBUG')
+  if (debugParam === '1' || debugParam === 'true' || debugParam === 'TRUE') return true
   try {
-    const stored = win?.localStorage?.getItem('BAT_DEBUG') ?? win?.localStorage?.getItem('bat.debug')
-    return stored === '1' || stored === 'true'
+    const stored = win?.localStorage?.getItem('BAT_DEBUG')
+    return stored === '1' || stored === 'true' || stored === 'TRUE'
   } catch {
     return false
   }
@@ -313,6 +325,7 @@ type NotificationEntry = {
 function createTauriHost(): BatAppAPI {
   // Build a partial implementation: only ported namespaces are real; the rest
   // throw via a Proxy so missing coverage fails loudly.
+  refreshTauriDebugMode()
   const platform = detectPlatform()
   const ported: Record<string, unknown> = {
     platform,

@@ -106,6 +106,7 @@ pub fn run() {
             workspace_cmd::workspace_move_to_window,
             update_cmd::update_get_version,
             update_cmd::update_check,
+            debug_cmd::debug_is_debug_mode,
             debug_cmd::debug_log,
             debug_cmd::debug_open_logs_folder,
             git_cmd::git_get_github_url,

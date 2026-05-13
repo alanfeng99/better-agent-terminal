@@ -5,7 +5,7 @@
 // thread/turn/item notifications back into the existing claude:* event shape
 // consumed by the renderer.
 
-use crate::commands::openai;
+use crate::commands::{app as app_cmd, openai};
 use crate::event_hub::publish_runtime_event;
 use crate::sidecar::BridgeError;
 use base64::Engine as _;
@@ -625,6 +625,31 @@ fn emit(app: &AppHandle, name: &str, session_id: &str, key: &str, value: Value) 
         name,
         event_payload(session_id, key, value),
         "codex-app-server",
+    );
+}
+
+fn short_session_id(session_id: &str) -> String {
+    session_id.chars().take(8).collect()
+}
+
+fn codex_debug_enabled() -> bool {
+    matches!(
+        std::env::var("BAT_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+fn log_codex(app: &AppHandle, session_id: &str, message: impl AsRef<str>) {
+    if !codex_debug_enabled() {
+        return;
+    }
+    app_cmd::log_tauri(
+        app,
+        &format!(
+            "[codex-app-server:{}] {}",
+            short_session_id(session_id),
+            message.as_ref()
+        ),
     );
 }
 
@@ -1371,12 +1396,27 @@ impl CodexAppServerState {
         } else {
             prompt.trim().to_string()
         };
+        log_codex(
+            app,
+            &session_id,
+            format!(
+                "send_message requested promptLen={} images={}",
+                prompt.len(),
+                image_count
+            ),
+        );
         if prompt.is_empty() {
+            log_codex(app, &session_id, "send_message rejected: empty prompt");
             return Ok(json!({ "ok": false, "error": "empty prompt" }));
         }
         let (input, mut temp_image_paths) = match build_turn_input(&prompt, images) {
             Ok(input) => input,
             Err(err) => {
+                log_codex(
+                    app,
+                    &session_id,
+                    format!("send_message build_turn_input failed: {err}"),
+                );
                 self.fail_turn(app, &session_id, err.clone());
                 return Ok(json!({ "ok": false, "error": err }));
             }
@@ -1385,8 +1425,23 @@ impl CodexAppServerState {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             let Some(session) = sessions.get_mut(&session_id) else {
                 cleanup_temp_images(temp_image_paths);
+                log_codex(
+                    app,
+                    &session_id,
+                    "send_message rejected: session not started",
+                );
                 return Err(bridge_error("Codex session not started"));
             };
+            log_codex(
+                app,
+                &session_id,
+                format!(
+                    "send_message session state is_running={} activeTurn={} thread={}",
+                    session.is_running,
+                    session.active_turn_id.as_deref().unwrap_or("none"),
+                    session.thread_id.as_deref().unwrap_or("none")
+                ),
+            );
             cleanup_session_temp_images(session);
             session.temporary_image_paths.append(&mut temp_image_paths);
             session.is_running = true;
@@ -1414,6 +1469,14 @@ impl CodexAppServerState {
             )
         };
         let connection = self.ensure_connection(app).map_err(bridge_error)?;
+        log_codex(
+            app,
+            &session_id,
+            format!(
+                "turn/start request thread={} model={} effort={}",
+                thread_id, model, effort
+            ),
+        );
         let response = match connection.request(
             "turn/start",
             build_turn_start_params(&thread_id, input.clone(), &model, &effort),
@@ -1421,7 +1484,13 @@ impl CodexAppServerState {
         ) {
             Ok(response) => response,
             Err(err) => {
+                log_codex(app, &session_id, format!("turn/start failed: {err}"));
                 if is_thread_not_found_error(&err) {
+                    log_codex(
+                        app,
+                        &session_id,
+                        format!("thread not found; attempting thread/resume thread={thread_id}"),
+                    );
                     match connection.request(
                         "thread/resume",
                         build_thread_resume_params(
@@ -1434,6 +1503,11 @@ impl CodexAppServerState {
                         REQUEST_TIMEOUT,
                     ) {
                         Ok(_) => {
+                            log_codex(
+                                app,
+                                &session_id,
+                                format!("thread/resume ok; retrying turn/start thread={thread_id}"),
+                            );
                             self.inner
                                 .thread_to_session
                                 .lock()
@@ -1446,6 +1520,11 @@ impl CodexAppServerState {
                             ) {
                                 Ok(response) => response,
                                 Err(retry_err) => {
+                                    log_codex(
+                                        app,
+                                        &session_id,
+                                        format!("turn/start retry failed after thread/resume: {retry_err}"),
+                                    );
                                     self.fail_turn(
                                         app,
                                         &session_id,
@@ -1456,6 +1535,11 @@ impl CodexAppServerState {
                             }
                         }
                         Err(resume_err) => {
+                            log_codex(
+                                app,
+                                &session_id,
+                                format!("thread/resume failed: {resume_err}"),
+                            );
                             let message = format!(
                                 "Codex error: thread not found: {thread_id}; resume failed: {resume_err}"
                             );
@@ -1483,11 +1567,23 @@ impl CodexAppServerState {
             {
                 session.active_turn_id = Some(turn_id.to_string());
             }
+            log_codex(
+                app,
+                &session_id,
+                format!("turn/start ok activeTurn={turn_id}"),
+            );
+        } else {
+            log_codex(
+                app,
+                &session_id,
+                "turn/start ok without turn id in response",
+            );
         }
         Ok(json!({ "ok": true }))
     }
 
     fn fail_turn(&self, app: &AppHandle, session_id: &str, message: String) {
+        log_codex(app, session_id, format!("fail_turn: {message}"));
         let meta = {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             sessions.get_mut(session_id).map(|session| {
@@ -1515,11 +1611,23 @@ impl CodexAppServerState {
     }
 
     pub fn abort_session(&self, app: &AppHandle, session_id: String) -> Result<Value, BridgeError> {
+        log_codex(app, &session_id, "abort_session requested");
         let (thread_id, turn_id) = {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             let Some(session) = sessions.get_mut(&session_id) else {
+                log_codex(app, &session_id, "abort_session ignored: session not found");
                 return Ok(json!({ "ok": true }));
             };
+            log_codex(
+                app,
+                &session_id,
+                format!(
+                    "abort_session state is_running={} activeTurn={} thread={}",
+                    session.is_running,
+                    session.active_turn_id.as_deref().unwrap_or("none"),
+                    session.thread_id.as_deref().unwrap_or("none")
+                ),
+            );
             let thread_id = session.thread_id.clone();
             let turn_id = session.active_turn_id.clone();
             session.is_running = false;
@@ -1530,10 +1638,19 @@ impl CodexAppServerState {
         };
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
             let connection = self.ensure_connection(app).map_err(bridge_error)?;
-            let _ = connection.request(
+            match connection.request(
                 "turn/interrupt",
                 json!({ "threadId": thread_id, "turnId": turn_id }),
                 REQUEST_TIMEOUT,
+            ) {
+                Ok(_) => log_codex(app, &session_id, "turn/interrupt ok"),
+                Err(err) => log_codex(app, &session_id, format!("turn/interrupt failed: {err}")),
+            }
+        } else {
+            log_codex(
+                app,
+                &session_id,
+                "abort_session has no active turn to interrupt",
             );
         }
         emit(
@@ -1873,6 +1990,18 @@ fn handle_server_message(
     if let Some(id) = message.get("id").and_then(Value::as_u64) {
         if let Some(tx) = pending.take(id) {
             let result = if let Some(error) = message.get("error") {
+                if codex_debug_enabled() {
+                    app_cmd::log_tauri(
+                        app,
+                        &format!(
+                            "[codex-app-server] response id={id} error={}",
+                            error
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("codex app-server error")
+                        ),
+                    );
+                }
                 Err(error
                     .get("message")
                     .and_then(Value::as_str)
@@ -1895,10 +2024,17 @@ fn handle_server_message(
 
 fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &str, params: Value) {
     let Some(session_id) = state.session_id_for_notification(&params) else {
+        if codex_debug_enabled() {
+            app_cmd::log_tauri(
+                app,
+                &format!("[codex-app-server] notification {method} skipped: no session mapping"),
+            );
+        }
         return;
     };
     match method {
         "thread/started" => {
+            log_codex(app, &session_id, "notification thread/started");
             if let Some(thread_id) = thread_id_from_params(&params).or_else(|| {
                 params
                     .get("thread")
@@ -1931,6 +2067,18 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
             }
         }
         "turn/started" => {
+            log_codex(
+                app,
+                &session_id,
+                format!(
+                    "notification turn/started turn={}",
+                    params
+                        .get("turn")
+                        .and_then(|v| v.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("none")
+                ),
+            );
             let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
             if let Some(session) = sessions.get_mut(&session_id) {
                 session.is_running = true;
@@ -1947,8 +2095,29 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
                     .map(str::to_string);
             }
         }
-        "error" => handle_error_notification(app, state, &session_id, &params),
-        "turn/completed" => handle_turn_completed(app, state, &session_id, &params),
+        "error" => {
+            log_codex(
+                app,
+                &session_id,
+                format!("notification error params={params}"),
+            );
+            handle_error_notification(app, state, &session_id, &params)
+        }
+        "turn/completed" => {
+            log_codex(
+                app,
+                &session_id,
+                format!(
+                    "notification turn/completed status={}",
+                    params
+                        .get("turn")
+                        .and_then(|v| v.get("status"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                ),
+            );
+            handle_turn_completed(app, state, &session_id, &params)
+        }
         "rawResponseItem/completed" => {
             if let Some(item) = params.get("item") {
                 append_completed_reasoning_if_missing(app, state, &session_id, item);
