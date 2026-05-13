@@ -191,7 +191,6 @@ function refreshTauriDebugMode(): void {
 function readTauriDebugMode(): boolean {
   if (tauriProcessDebugMode === true) return true
   const env = (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env
-  if (env?.DEV === true) return true
   const envDebug = env?.BAT_DEBUG ?? env?.VITE_BAT_DEBUG
   if (envDebug === '1' || envDebug === 'true' || envDebug === 'TRUE' || envDebug === true) return true
   const win = (globalThis as unknown as {
@@ -201,10 +200,10 @@ function readTauriDebugMode(): boolean {
     }
   }).window ?? null
   const params = new URLSearchParams(win?.location?.search || '')
-  const debugParam = params.get('BAT_DEBUG') || params.get('debug')
+  const debugParam = params.get('BAT_DEBUG')
   if (debugParam === '1' || debugParam === 'true' || debugParam === 'TRUE') return true
   try {
-    const stored = win?.localStorage?.getItem('BAT_DEBUG') ?? win?.localStorage?.getItem('bat.debug')
+    const stored = win?.localStorage?.getItem('BAT_DEBUG')
     return stored === '1' || stored === 'true' || stored === 'TRUE'
   } catch {
     return false

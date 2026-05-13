@@ -868,7 +868,7 @@ async function run() {
   // 5) Tauri debug mode is synchronously derived for renderer guards.
   {
     const invoke: TauriInvoke = async () => undefined as unknown as never
-    setWindow({ __TAURI_INTERNALS__: { invoke }, location: { search: '?debug=1' } })
+    setWindow({ __TAURI_INTERNALS__: { invoke }, location: { search: '?BAT_DEBUG=1' } })
     const mod = await loadFreshAdapter()
     assert.equal(mod.host.debug.isDebugMode, true)
   }
