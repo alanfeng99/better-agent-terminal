@@ -99,6 +99,10 @@ fn worker_pty_id(panel_id: &str, name: &str) -> String {
     format!("{panel_id}__w__{name}")
 }
 
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn build_worker_launch_command(shell: Option<&str>, command: &str) -> String {
     let is_powershell = shell
         .map(|value| {
@@ -109,8 +113,22 @@ fn build_worker_launch_command(shell: Option<&str>, command: &str) -> String {
     if is_powershell {
         return format!("{command}; exit $LASTEXITCODE\r");
     }
-    let escaped = command.replace('\'', "'\\''");
-    format!("exec bash -c '{escaped}'\r")
+
+    let shell_exec = shell
+        .filter(|value| !value.trim().is_empty())
+        .map(sh_single_quote)
+        .unwrap_or_else(|| "\"${SHELL:-/bin/sh}\"".into());
+    let shell_name = shell
+        .and_then(|value| value.rsplit(['/', '\\']).next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let login_flag = matches!(
+        shell_name.as_str(),
+        "bash" | "zsh" | "fish" | "ksh" | "ksh93" | "mksh"
+    );
+    let flags = if login_flag { "-lc" } else { "-c" };
+
+    format!("exec {shell_exec} {flags} {}\r", sh_single_quote(command))
 }
 
 fn append_lines_to_map(map: &mut HashMap<String, String>, panel_id: &str, lines: &str) {
@@ -332,7 +350,18 @@ mod tests {
     fn launch_command_uses_posix_exec_wrapper() {
         assert_eq!(
             build_worker_launch_command(Some("/bin/bash"), "node 'worker.js'"),
-            "exec bash -c 'node '\\''worker.js'\\'''\r",
+            "exec '/bin/bash' -lc 'node '\\''worker.js'\\'''\r",
+        );
+        assert_eq!(
+            build_worker_launch_command(
+                Some("/bin/zsh"),
+                "docker compose -f $HOME/app/docker-compose.yml up"
+            ),
+            "exec '/bin/zsh' -lc 'docker compose -f $HOME/app/docker-compose.yml up'\r",
+        );
+        assert_eq!(
+            build_worker_launch_command(Some("/bin/sh"), "echo ok"),
+            "exec '/bin/sh' -c 'echo ok'\r",
         );
     }
 

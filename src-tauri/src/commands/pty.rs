@@ -272,10 +272,23 @@ fn configure_per_terminal_history(
     }
 }
 
+fn new_shell_command(shell: &str) -> CommandBuilder {
+    #[cfg(target_family = "unix")]
+    {
+        let mut cmd = CommandBuilder::new_default_prog();
+        cmd.env("SHELL", shell);
+        cmd
+    }
+    #[cfg(not(target_family = "unix"))]
+    {
+        CommandBuilder::new(shell)
+    }
+}
+
 fn build_command(opts: &CreatePtyOptions, app_data_dir: Option<&Path>) -> CommandBuilder {
     let exists = |s: &str| Path::new(s).exists();
     let shell = select_shell(opts.shell.as_deref(), TARGET_OS, &exists);
-    let mut cmd = CommandBuilder::new(&shell);
+    let mut cmd = new_shell_command(&shell);
     let cwd = if Path::new(&opts.cwd).is_dir() {
         PathBuf::from(&opts.cwd)
     } else {
@@ -735,5 +748,26 @@ mod tests {
         assert!(root.join(".zprofile").exists());
         assert!(root.join(".zlogin").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn build_command_uses_login_shell_on_unix() {
+        let opts = CreatePtyOptions {
+            id: "term-login".into(),
+            cwd: ".".into(),
+            r#type: "terminal".into(),
+            shell: Some("/bin/zsh".into()),
+            agent_preset: None,
+            custom_env: None,
+            per_terminal_history: None,
+            history_key: None,
+        };
+        let cmd = build_command(&opts, None);
+        assert!(cmd.is_default_prog());
+        assert_eq!(
+            cmd.get_env("SHELL").and_then(|v| v.to_str()),
+            Some("/bin/zsh")
+        );
     }
 }
