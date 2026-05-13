@@ -134,8 +134,7 @@ function main() {
 
     const codex = findFile(unpackedDir, filePath => {
       const normalized = toPosix(filePath)
-      return normalized.includes(`/node_modules/@openai/${codexPackage}/`) &&
-        normalized.endsWith(`/${codexBinary}`)
+      return normalized.endsWith(`/codex-runtime/${codexBinary}`)
     })
 
     const nonTargetCodexFiles = findFiles(unpackedDir, filePath => {
@@ -178,7 +177,7 @@ function main() {
     throw new Error(
       `Missing packaged Claude binaries for ${platform}-${targetArch}.\n` +
       `Expected Claude Code CLI: node_modules/@anthropic-ai/${claudeCodePackage}/${nativeBinary}\n` +
-      `Expected Codex CLI: node_modules/@openai/${codexPackage}/**/${codexBinary}\n` +
+      `Expected Codex CLI: codex-runtime/${codexBinary}\n` +
       `Searched app.asar.unpacked directories:\n${searched}`
     )
   }

@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os'
 import {
   pruneNodeSidecarModules,
   targetAnthropicAgentSdkPackage,
-  targetOpenAICodexPackage,
 } from '../scripts/prune-node-sidecar-modules.mjs'
 
 async function makeDir(path) {
@@ -36,14 +35,13 @@ try {
     targetAnthropicAgentSdkPackage('darwin', 'arm64'),
     'claude-agent-sdk-darwin-arm64',
   )
-  assert.equal(targetOpenAICodexPackage('darwin', 'arm64'), 'codex-darwin-arm64')
 
   const removed = await pruneNodeSidecarModules({
     root,
     platform: 'darwin',
     arch: 'arm64',
   })
-  assert.equal(removed.length, 4)
+  assert.equal(removed.length, 5)
 
   assert.deepEqual(await list(join(root, '@anthropic-ai')), [
     'claude-agent-sdk',
@@ -52,7 +50,6 @@ try {
   ])
   assert.deepEqual(await list(join(root, '@openai')), [
     'codex',
-    'codex-darwin-arm64',
     'codex-sdk',
   ])
 

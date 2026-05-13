@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${1:-node-sidecar/dist-node_modules}"
+ROOTS=("$@")
+if [[ ${#ROOTS[@]} -eq 0 ]]; then
+  ROOTS=("node-sidecar/dist-node_modules" "codex-runtime")
+fi
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "[sign-macos-resource-binaries] skipped: not running on macOS"
@@ -11,10 +14,12 @@ fi
 : "${APPLE_CERTIFICATE:?APPLE_CERTIFICATE is required}"
 : "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD is required}"
 
-if [[ ! -d "$ROOT" ]]; then
-  echo "[sign-macos-resource-binaries] missing resource root: $ROOT" >&2
-  exit 1
-fi
+for root in "${ROOTS[@]}"; do
+  if [[ ! -d "$root" ]]; then
+    echo "[sign-macos-resource-binaries] missing resource root: $root" >&2
+    exit 1
+  fi
+done
 
 RUNNER_TEMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 CERTIFICATE_PATH="$RUNNER_TEMP/bat-macos-resource-signing.p12"
@@ -62,11 +67,13 @@ if [[ -z "$IDENTITY" ]]; then
 fi
 
 count=0
-while IFS= read -r -d '' file_path; do
-  if file "$file_path" | grep -q 'Mach-O'; then
-    codesign --force --timestamp --options runtime --sign "$IDENTITY" "$file_path"
-    count=$((count + 1))
-  fi
-done < <(find "$ROOT" -type f -perm -111 -print0)
+for root in "${ROOTS[@]}"; do
+  while IFS= read -r -d '' file_path; do
+    if file "$file_path" | grep -q 'Mach-O'; then
+      codesign --force --timestamp --options runtime --sign "$IDENTITY" "$file_path"
+      count=$((count + 1))
+    fi
+  done < <(find "$root" -type f -perm -111 -print0)
+done
 
 echo "[sign-macos-resource-binaries] signed $count Mach-O resource file(s)"

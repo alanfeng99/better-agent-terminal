@@ -14,6 +14,7 @@ const requiredResourceSources = [
   '../node-sidecar/dist/server.mjs',
   '../node-sidecar/package.json',
   '../node-sidecar/dist-node_modules/',
+  '../codex-runtime/',
   '../node-sidecar/runtime/',
 ]
 
@@ -31,24 +32,6 @@ const claudeNativePackages = {
   'darwin-arm64': 'claude-agent-sdk-darwin-arm64',
   'linux-x64': 'claude-agent-sdk-linux-x64',
   'linux-arm64': 'claude-agent-sdk-linux-arm64',
-}
-
-const codexNativePackages = {
-  'win32-x64': 'codex-win32-x64',
-  'win32-arm64': 'codex-win32-arm64',
-  'darwin-x64': 'codex-darwin-x64',
-  'darwin-arm64': 'codex-darwin-arm64',
-  'linux-x64': 'codex-linux-x64',
-  'linux-arm64': 'codex-linux-arm64',
-}
-
-const codexTargetTriples = {
-  'win32-x64': 'x86_64-pc-windows-msvc',
-  'win32-arm64': 'aarch64-pc-windows-msvc',
-  'darwin-x64': 'x86_64-apple-darwin',
-  'darwin-arm64': 'aarch64-apple-darwin',
-  'linux-x64': 'x86_64-unknown-linux-musl',
-  'linux-arm64': 'aarch64-unknown-linux-musl',
 }
 
 function runtimeKey(platform = process.platform, arch = process.arch) {
@@ -131,24 +114,12 @@ export async function collectTauriPreviewReadiness(options = {}) {
   } else {
     add(`sidecar:claude-native:${key}`, false, `unsupported platform/arch for Claude native package: ${key}`)
   }
-  const codexNativePackage = codexNativePackages[key]
-  const codexTriple = codexTargetTriples[key]
-  if (codexNativePackage && codexTriple) {
-    const exeName = platform === 'win32' ? 'codex.exe' : 'codex'
-    const codexBinary = join(
-      nodeModulesPath,
-      '@openai',
-      codexNativePackage,
-      'vendor',
-      codexTriple,
-      'codex',
-      exeName,
-    )
-    const codexBinaryBytes = await fileSize(codexBinary)
-    add(`sidecar:codex-native:${key}`, codexBinaryBytes > 0, `${codexBinary} (${codexBinaryBytes} bytes)`)
-  } else {
-    add(`sidecar:codex-native:${key}`, false, `unsupported platform/arch for Codex native package: ${key}`)
-  }
+  const codexRuntimeRoot = join(root, 'codex-runtime')
+  add('codex-runtime:root', await dirExists(codexRuntimeRoot), codexRuntimeRoot)
+  const codexExeName = platform === 'win32' ? 'codex.exe' : 'codex'
+  const codexBinary = join(codexRuntimeRoot, codexExeName)
+  const codexBinaryBytes = await fileSize(codexBinary)
+  add(`codex-runtime:binary:${key}`, codexBinaryBytes > 0, `${codexBinary} (${codexBinaryBytes} bytes)`)
 
   const runtimeRoot = join(sidecarRoot, 'runtime')
   add('runtime:root', await dirExists(runtimeRoot), runtimeRoot)

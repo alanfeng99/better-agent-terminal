@@ -352,6 +352,7 @@ fn bundled_codex_candidate(base: &Path) -> Option<PathBuf> {
     let platform_pkg = codex_platform_package()?;
     let exe = codex_exe_name();
     let candidates = [
+        base.join("codex-runtime").join(exe),
         base.join("node-sidecar")
             .join("node_modules")
             .join("@openai")

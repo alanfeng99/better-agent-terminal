@@ -23,13 +23,17 @@ let anthropicPackages = []
 let openaiPackages = []
 try {
   anthropicPackages = await readdir(anthropicModules)
-  openaiPackages = await readdir(openaiModules)
 } catch (err) {
   if (err?.code === 'ENOENT') {
     console.log('tauri-sidecar-minimal-modules: skipped (run prepare:tauri-bundle first)')
     process.exit(0)
   }
   throw err
+}
+try {
+  openaiPackages = await readdir(openaiModules)
+} catch (err) {
+  if (err?.code !== 'ENOENT') throw err
 }
 
 assert.ok(
@@ -41,13 +45,17 @@ assert.ok(
   'minimal sidecar node_modules should not contain the JS Claude SDK package',
 )
 assert.ok(
-  openaiPackages.some((name) => /^codex-(win32|darwin|linux)-/.test(name)),
-  'minimal sidecar node_modules must retain the platform Codex native package',
+  !openaiPackages.some((name) => /^codex-(win32|darwin|linux)-/.test(name)),
+  'minimal sidecar node_modules must not contain Codex native packages',
 )
 assert.ok(
   !openaiPackages.includes('codex') && !openaiPackages.includes('codex-sdk'),
   'minimal sidecar node_modules should not contain Codex JS packages',
 )
+
+const codexRuntimeBinary = new URL(`../codex-runtime/${process.platform === 'win32' ? 'codex.exe' : 'codex'}`, import.meta.url)
+const codexRuntimeInfo = await stat(codexRuntimeBinary)
+assert.ok(codexRuntimeInfo.size > 1024 * 1024, 'Codex app-server runtime should be packaged outside sidecar node_modules')
 
 const server = join(root, 'node-sidecar', 'dist', 'server.mjs')
 const serverInfo = await stat(server)

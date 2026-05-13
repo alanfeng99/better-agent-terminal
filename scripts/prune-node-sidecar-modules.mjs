@@ -36,14 +36,6 @@ export function targetAnthropicAgentSdkPackage(platform, arch, libcSuffix = linu
   return `claude-agent-sdk-${normalizedPlatform}-${normalizedArch}`
 }
 
-export function targetOpenAICodexPackage(platform, arch) {
-  return `codex-${normalizePlatform(platform)}-${normalizeArch(arch)}`
-}
-
-function isOpenAICodexPlatformPackage(name) {
-  return /^codex-(darwin|linux|win32)-/.test(name)
-}
-
 async function pruneScopedFamily(scopeRoot, shouldRemove) {
   let entries
   try {
@@ -70,7 +62,6 @@ export async function pruneNodeSidecarModules({
   libcSuffix = linuxLibcSuffix(),
 } = {}) {
   const anthropicTarget = targetAnthropicAgentSdkPackage(platform, arch, libcSuffix)
-  const openaiTarget = targetOpenAICodexPackage(platform, arch)
   const removed = []
 
   removed.push(...await pruneScopedFamily(join(root, '@anthropic-ai'), (name) => (
@@ -78,7 +69,7 @@ export async function pruneNodeSidecarModules({
   )))
 
   removed.push(...await pruneScopedFamily(join(root, '@openai'), (name) => (
-    isOpenAICodexPlatformPackage(name) && name !== openaiTarget
+    /^codex-(darwin|linux|win32)-/.test(name)
   )))
 
   return removed
