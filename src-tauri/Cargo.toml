@@ -57,3 +57,14 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # Default to a packaged release shell. dev/feature flags are controlled via
 # the npm scripts so this Cargo.toml stays declarative.
 default = []
+
+[profile.release]
+# Parallelise our crate's codegen across all runner cores. The default of
+# 16 leaves 32-core Windows / macOS runners underutilised during the final
+# crate compile (deps come from rust-cache, only our crate rebuilds). 256
+# is what `cargo build --timings` recommends for parallel-bound builds.
+# Trade-off: tiny loss of cross-unit optimisation; imperceptible at runtime.
+codegen-units = 256
+# Drop debug symbols from the shipped binary. Smaller .exe / .dmg, no
+# compile-time cost.
+strip = "symbols"
