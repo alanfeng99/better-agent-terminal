@@ -253,12 +253,12 @@
 }
 
 .tl-dot.dot-running {
-  background: var(--claude-accent);
+  background: var(--agent-color, var(--claude-accent));
   animation: dot-pulse 1.5s ease-in-out infinite;
 }
 
 .tl-dot.dot-thinking {
-  background: var(--claude-accent);
+  background: var(--agent-color, var(--claude-accent));
   animation: dot-pulse 1.5s ease-in-out infinite;
 }
 
@@ -507,7 +507,7 @@
   gap: 4px;
   padding: 2px 0;
   font-size: var(--claude-font-size);
-  color: var(--text-secondary);
+  color: var(--agent-color, var(--claude-accent));
   font-style: italic;
 }
 
@@ -545,7 +545,7 @@
 
 .claude-thinking-label {
   font-size: var(--claude-font-size);
-  color: var(--text-secondary);
+  color: var(--agent-color, var(--claude-accent));
   font-style: italic;
 }
 
@@ -1429,7 +1429,7 @@
   font-size: var(--claude-font-size);
   padding: 10px 12px 6px;
   resize: none;
-  min-height: 36px;
+  min-height: 54px;
   max-height: 200px;
   overflow-y: auto;
   outline: none;

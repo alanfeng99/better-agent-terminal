@@ -4081,7 +4081,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 ? 'Type a message to Codex...'
                 : 'Type a message... (Enter to send, Shift+Tab to switch mode)'}
           disabled={false}
-          rows={1}
+          rows={2}
         />
         {(attachedImages.length > 0 || attachedFiles.length > 0) && (
           <div className="claude-attachments">
