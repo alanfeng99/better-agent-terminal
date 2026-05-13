@@ -196,14 +196,42 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-
 
+      - name: Compute Tauri resource cache keys
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        id: tauri-resource-cache-keys
+        run: node scripts/tauri-resource-cache-keys.mjs
+
       - name: Cache bundled Node runtime
         if: env.BUILD_MATRIX_ENTRY == 'true'
+        id: node-runtime-cache
         uses: actions/cache@v4
         with:
           path: node-sidecar/runtime
-          key: ${{ runner.os }}-${{ matrix.arch }}-node-runtime-${{ hashFiles('scripts/fetch-node-runtime.mjs') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-node-runtime-${{ steps.tauri-resource-cache-keys.outputs.node_runtime }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-node-runtime-
+
+      - name: Cache prepared sidecar resources
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        id: sidecar-resource-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            node-sidecar/dist
+            node-sidecar/dist-node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-sidecar-resources-${{ steps.tauri-resource-cache-keys.outputs.sidecar_resources }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-sidecar-resources-
+
+      - name: Cache prepared Codex runtime
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        id: codex-runtime-cache
+        uses: actions/cache@v4
+        with:
+          path: codex-runtime
+          key: ${{ runner.os }}-${{ matrix.arch }}-codex-runtime-${{ steps.tauri-resource-cache-keys.outputs.codex_runtime }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-codex-runtime-
 
       - name: Install dependencies
         if: env.BUILD_MATRIX_ENTRY == 'true'
@@ -250,7 +278,23 @@ jobs:
 
       - name: Prepare Tauri bundle resources
         if: env.BUILD_MATRIX_ENTRY == 'true'
-        run: pnpm run prepare:tauri-bundle:ci
+        shell: bash
+        run: |
+          node scripts/fetch-node-runtime.mjs
+          if [[ "${{ steps.sidecar-resource-cache.outputs.cache-hit }}" == "true" ]]; then
+            echo "Prepared sidecar resources restored from cache."
+          else
+            pnpm --dir node-sidecar install --frozen-lockfile --prefer-offline
+            pnpm run prune:tauri-sidecar
+            pnpm run build:tauri-sidecar
+            pnpm run prepare:tauri-sidecar-node-modules
+          fi
+          if [[ "${{ steps.codex-runtime-cache.outputs.cache-hit }}" == "true" ]]; then
+            echo "Prepared Codex runtime restored from cache."
+          else
+            pnpm run prepare:tauri-codex-runtime
+          fi
+          pnpm run verify:tauri-preview-readiness
 
       - name: Sign macOS resource binaries
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac'

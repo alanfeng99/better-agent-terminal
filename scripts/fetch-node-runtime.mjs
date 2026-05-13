@@ -18,8 +18,8 @@
 // these locations in order. Re-running this script is idempotent — if the
 // target binary already exists it short-circuits.
 
-import { mkdir, rm, writeFile, access, rename, readdir, stat, cp } from 'node:fs/promises'
-import { createWriteStream, createReadStream } from 'node:fs'
+import { mkdir, rm, writeFile, access, readFile, readdir, stat, cp } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -65,6 +65,15 @@ function parseArgs(argv) {
 
 async function pathExists(p) {
   try { await access(p); return true } catch { return false }
+}
+
+async function runtimeIsCurrent(targetExe, meta, version) {
+  if (!await pathExists(targetExe)) return false
+  try {
+    return (await readFile(meta, 'utf8')).trim() === version
+  } catch {
+    return false
+  }
 }
 
 async function download(url, dest) {
@@ -168,7 +177,8 @@ async function main() {
   }
   for (const t of args.targets) {
     const expected = join(runtimeRoot, t, TARGETS[t]?.exePath ?? '')
-    if (!args.force && TARGETS[t] && await pathExists(expected)) {
+    const meta = join(runtimeRoot, t, '.node-version')
+    if (!args.force && TARGETS[t] && await runtimeIsCurrent(expected, meta, args.version)) {
       console.log(`[fetch-node-runtime] ${t}: already present at ${expected} (use --force to refetch)`)
       continue
     }

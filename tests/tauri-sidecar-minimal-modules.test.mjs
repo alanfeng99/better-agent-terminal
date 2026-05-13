@@ -59,6 +59,11 @@ assert.ok(codexRuntimeInfo.size > 1024 * 1024, 'Codex app-server runtime should 
 
 const server = join(root, 'node-sidecar', 'dist', 'server.mjs')
 const serverInfo = await stat(server)
-assert.ok(serverInfo.size > 1024 * 1024, 'bundled sidecar should include JS dependencies')
+const serverSource = await readFile(server, 'utf8')
+assert.ok(serverInfo.size > 500 * 1024, 'bundled sidecar should not be an empty shim')
+assert.ok(
+  serverSource.includes('@anthropic-ai/claude-agent-sdk/sdk.mjs') && serverSource.includes('_zod'),
+  'bundled sidecar should include JS dependencies',
+)
 
 console.log('tauri-sidecar-minimal-modules: passed')
