@@ -202,6 +202,13 @@ jobs:
           shared-key: release-${{ matrix.platform }}-${{ matrix.arch }}
           key: base-${{ steps.rust-base-cache-key.outputs.base }}
           cache-on-failure: true
+          # ~/.cargo/bin is freshly populated by dtolnay/rust-toolchain on
+          # every run. Caching it means a later restore can overwrite the
+          # fresh rustup shims with stale binaries — on macOS-14 this has
+          # surfaced as `cargo metadata` invoking the rustup-init installer
+          # instead of cargo. Skip the bin cache; only target/ + registry
+          # caches matter for build speed.
+          cache-bin: "false"
 
       - name: Cache Tauri bundle tools
         if: env.BUILD_MATRIX_ENTRY == 'true'
