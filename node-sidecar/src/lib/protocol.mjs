@@ -3,14 +3,9 @@
 // `handlers` Map: method name → async fn(params). Populated as each
 // handler module is imported for side effects in server.mjs.
 //
-// `sendEvent` writes a JSON-RPC notification to stdout. Host-originated
-// proxied events are also mirrored to the remote broadcast hub using the
-// legacy-v1 positional event shape consumed by Electron remote clients.
-// Tests swap the underlying impl via __setSendEventForTests so they can
-// capture emits without spawning a child process.
-
-import { broadcastHub } from './remote-broadcast.mjs'
-import { PROXIED_EVENTS } from './remote-protocol.mjs'
+// `sendEvent` writes a JSON-RPC notification to stdout. Tests swap the
+// underlying impl via __setSendEventForTests so they can capture emits
+// without spawning a child process.
 
 const handlers = new Map()
 
@@ -36,50 +31,8 @@ let _emitImpl = (name, params) => {
   writeMessage({ jsonrpc: '2.0', method: `event:${name}`, params: params ?? null })
 }
 
-const CLAUDE_EVENT_PAYLOAD_KEYS = {
-  'claude:message': 'message',
-  'claude:tool-use': 'toolCall',
-  'claude:tool-result': 'result',
-  'claude:stream': 'data',
-  'claude:result': 'result',
-  'claude:turn-end': 'payload',
-  'claude:error': 'error',
-  'claude:status': 'meta',
-  'claude:permission-request': 'data',
-  'claude:permission-resolved': 'toolUseId',
-  'claude:ask-user': 'data',
-  'claude:ask-user-resolved': 'toolUseId',
-  'claude:modeChange': 'mode',
-  'claude:history': 'items',
-  'claude:resume-loading': 'loading',
-  'claude:prompt-suggestion': 'suggestion',
-  'claude:worktree-info': 'payload',
-  'claude:rate-limit': 'info',
-}
-
-export function eventParamsToLegacyV1Args(name, params) {
-  if (Array.isArray(params)) return params
-  if (name === 'pty:output') return [params?.id, params?.data]
-  if (name === 'pty:exit') return [params?.id, params?.exitCode]
-  if (name === 'claude:session-reset') return [params?.sessionId]
-
-  const payloadKey = CLAUDE_EVENT_PAYLOAD_KEYS[name]
-  if (payloadKey) return [params?.sessionId, params?.[payloadKey]]
-
-  if (name === 'fs:changed') return [params]
-  if (name === 'workspace:detached' || name === 'workspace:reattached' || name === 'workspace:reload') {
-    return [params]
-  }
-  if (name === 'system:resume') return [params]
-  return [params]
-}
-
-export function sendEvent(name, params, options = {}) {
-  const payload = params ?? null
-  _emitImpl(name, payload)
-  if (options.broadcast !== false && PROXIED_EVENTS.has(name)) {
-    broadcastHub.broadcast(name, ...eventParamsToLegacyV1Args(name, payload))
-  }
+export function sendEvent(name, params) {
+  _emitImpl(name, params ?? null)
 }
 // Returns a restore() function that resets to the production impl.
 export function __setSendEventForTests(fn) {

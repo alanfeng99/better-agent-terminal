@@ -40,7 +40,6 @@ import {
 } from './lib/models.mjs'
 import { dataUrlToContentBlock, loadInstalledPlugins, __setPluginsPathOverrideForTests } from './lib/plugins.mjs'
 import { scanSkills, parseSkillFrontmatter } from './lib/skills.mjs'
-import { wireRemoteBridgeHandlers } from './lib/remote-bridge.mjs'
 
 const CLAUDE_HANDLER_MODULES = [
   './handlers/claude-auth.mjs',
@@ -77,12 +76,6 @@ async function loadHandlers() {
   readAccountIndex = auth.readAccountIndex
   resolveClaudeCliBinary = auth.resolveClaudeCliBinary
   __resetClaudeCliCacheForTests = auth.__resetClaudeCliCacheForTests
-
-  // Remote invoke bridge — Rust owns every PROXIED_CHANNEL natively in
-  // remote_server.rs. The JS bridge stays wired so the protocol module
-  // keeps its registerRemoteHandler hook live for tests, but no legacy
-  // utility handlers are mounted here.
-  wireRemoteBridgeHandlers()
 }
 
 // Ping is the lone built-in that doesn't fit any namespace — keep it
