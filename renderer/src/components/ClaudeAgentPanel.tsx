@@ -412,10 +412,6 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     followOutputRef.current = true
   }, [])
 
-  const scrollToBottom = useCallback(() => {
-    scrollToBottomNow()
-  }, [scrollToBottomNow])
-
   const forceScrollToBottom = useCallback(() => {
     scrollToBottomNow()
     requestAnimationFrame(scrollToBottomNow)
@@ -4927,7 +4923,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         >
           <button
             className="claude-context-menu-item"
-            onClick={() => { setContextMenu(null); scrollToBottom() }}
+            onClick={() => { setContextMenu(null); forceScrollToBottom() }}
           >
             {t('claude.scrollToBottom')}
           </button>
