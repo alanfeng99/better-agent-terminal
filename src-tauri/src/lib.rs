@@ -18,6 +18,7 @@ mod remote_client;
 pub mod remote_core;
 mod remote_server;
 mod sidecar;
+mod subprocess;
 mod window_registry;
 
 use commands::{

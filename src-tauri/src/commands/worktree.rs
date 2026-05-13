@@ -6,6 +6,7 @@
 
 use super::app::log_tauri;
 use crate::sidecar::BridgeError;
+use crate::subprocess::hide_console_window;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -139,14 +140,15 @@ fn run_git(
     if !cwd.is_dir() {
         return Err("cwd is not a directory".into());
     }
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| err.to_string())?;
+        .stderr(Stdio::piped());
+    hide_console_window(&mut command);
+    let mut child = command.spawn().map_err(|err| err.to_string())?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -429,7 +431,8 @@ fn spawn_pnpm_install_for_worktree(
             );
         }
 
-        let output = Command::new(&pnpm_bin)
+        let mut pnpm_cmd = Command::new(&pnpm_bin);
+        pnpm_cmd
             .args([
                 "install",
                 "--frozen-lockfile",
@@ -441,8 +444,9 @@ fn spawn_pnpm_install_for_worktree(
             .current_dir(&worktree_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
+            .stderr(Stdio::piped());
+        hide_console_window(&mut pnpm_cmd);
+        let output = pnpm_cmd.output();
 
         match output {
             Ok(output) if output.status.success() => {

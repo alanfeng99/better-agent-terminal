@@ -18,12 +18,11 @@
 
 use crate::event_hub::publish_runtime_event;
 use crate::log_file::append_line;
+use crate::subprocess::hide_console_window;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,16 +38,6 @@ const STDERR_TAIL_LIMIT: usize = 100;
 const RESTART_BACKOFF_WINDOW: Duration = Duration::from_secs(30);
 const RESTART_BACKOFF_LIMIT: usize = 3;
 const RESTART_BACKOFF_DURATION: Duration = Duration::from_secs(5);
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-#[cfg(windows)]
-fn suppress_subprocess_window(command: &mut Command) {
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn suppress_subprocess_window(_command: &mut Command) {}
 
 // Avoid launching the sidecar with cwd `/` (the default when a macOS .app is
 // started from Finder). Falls back to None when no usable home dir is found,
@@ -432,7 +421,7 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
     if let Some(dir) = safe_default_cwd() {
         command.current_dir(dir);
     }
-    suppress_subprocess_window(&mut command);
+    hide_console_window(&mut command);
     if let Some(dir) = &cfg.data_dir {
         command.env("BAT_SIDECAR_DATA_DIR", dir);
     }

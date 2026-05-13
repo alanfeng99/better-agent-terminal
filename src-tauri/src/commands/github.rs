@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::subprocess::hide_console_window;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -84,6 +85,7 @@ fn run_gh(cwd: Option<&str>, args: &[&str], timeout: Duration) -> Result<String,
         }
         cmd.current_dir(dir);
     }
+    hide_console_window(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn gh: {e}"))?;

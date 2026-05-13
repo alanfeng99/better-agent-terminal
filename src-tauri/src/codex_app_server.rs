@@ -11,10 +11,9 @@ use crate::sidecar::BridgeError;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use crate::subprocess::hide_console_window;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,16 +29,6 @@ const MSG_BUFFER_CAP: usize = 300;
 const DEFAULT_CODEX_CONTEXT_WINDOW: u64 = 1_000_000;
 const DEFAULT_CODEX_REASONING_SUMMARY: &str = "auto";
 static CODEX_TEMP_IMAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-#[cfg(windows)]
-fn suppress_subprocess_window(command: &mut Command) {
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn suppress_subprocess_window(_command: &mut Command) {}
 
 type ReplySender = Sender<Result<Value, String>>;
 
@@ -481,7 +470,7 @@ fn build_codex_command(app: &AppHandle) -> Command {
             command.current_dir(home);
         }
     }
-    suppress_subprocess_window(&mut command);
+    hide_console_window(&mut command);
     command
 }
 

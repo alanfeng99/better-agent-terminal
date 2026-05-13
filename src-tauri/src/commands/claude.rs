@@ -25,6 +25,7 @@ use crate::commands::worktree as worktree_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::remote_client::RustRemoteClientState;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
+use crate::subprocess::hide_console_window;
 use crate::window_registry;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -242,11 +243,13 @@ fn build_claude_cli_command(cli_path: &str, args: &[&str]) -> Command {
         if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
             let mut command = Command::new("cmd");
             command.arg("/C").arg(cli_path).args(args);
+            hide_console_window(&mut command);
             return command;
         }
     }
     let mut command = Command::new(cli_path);
     command.args(args);
+    hide_console_window(&mut command);
     command
 }
 
@@ -848,14 +851,15 @@ fn run_git_in_dir(
     if !cwd.is_dir() {
         return None;
     }
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    hide_console_window(&mut command);
+    let mut child = command.spawn().ok()?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -880,14 +884,15 @@ fn run_git_status_in_dir(cwd: &Path, args: &[&str], timeout: Duration) -> bool {
     if !cwd.is_dir() {
         return false;
     }
-    let mut child = match Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    hide_console_window(&mut command);
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => return false,
     };

@@ -279,7 +279,10 @@ fn cx_resolve_from_path() -> Option<String> {
     } else {
         "which"
     };
-    let output = Command::new(cmd).arg("cx").output().ok()?;
+    let mut command = Command::new(cmd);
+    command.arg("cx");
+    crate::subprocess::hide_console_window(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -313,10 +316,10 @@ fn cx_resolve_configured(configured: Option<&str>) -> Option<String> {
 
 fn cx_run_version(binary: &str) -> Result<String, String> {
     use std::process::Command;
-    let output = Command::new(binary)
-        .arg("--version")
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    crate::subprocess::hide_console_window(&mut command);
+    let output = command.output().map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!("cx --version exited {}", output.status));
     }

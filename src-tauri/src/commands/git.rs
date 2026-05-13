@@ -21,6 +21,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::subprocess::hide_console_window;
 use serde::Serialize;
 
 // Hard upper bound for log/status/diff output. Mirrors the Electron
@@ -52,14 +53,15 @@ fn run_git(cwd: &str, args: &[&str], timeout: Duration) -> Option<String> {
     if !Path::new(cwd).is_dir() {
         return None;
     }
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    hide_console_window(&mut command);
+    let mut child = command.spawn().ok()?;
 
     // Cheap timeout: poll try_wait every 25 ms.
     let start = std::time::Instant::now();
