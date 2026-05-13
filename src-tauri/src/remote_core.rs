@@ -105,7 +105,7 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
         "claude:load-archived" => Some(&["sessionId", "offset", "limit"]),
         "claude:fetch-subagent-messages" => Some(&["sessionId", "agentToolUseId"]),
         "claude:account-switch" | "claude:account-remove" => Some(&["accountId"]),
-        "worktree:create" => Some(&["sessionId", "cwd"]),
+        "worktree:create" => Some(&["sessionId", "cwd", "installPnpm"]),
         "worktree:remove" => Some(&["sessionId", "deleteBranch"]),
         "worktree:merge" => Some(&["sessionId", "strategy"]),
         "worktree:rehydrate" => Some(&["sessionId", "cwd", "worktreePath", "branchName"]),

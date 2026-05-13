@@ -305,12 +305,12 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
         if (createAgentTerminal) {
           const agentTerminal = workspaceStore.addTerminal(workspace.id, defaultAgent as AgentPresetId)
-          if (defaultAgent === 'codex-agent-worktree') {
-            const wtResult = await host.worktree.create(agentTerminal.id, workspace.folderPath)
+          if (defaultAgent === 'claude-code-worktree' || defaultAgent === 'codex-agent-worktree') {
+            const wtResult = await host.worktree.create(agentTerminal.id, workspace.folderPath, settings.worktreePnpmInstallEnabled === true)
             if (wtResult.success && wtResult.worktreePath) {
               workspaceStore.updateTerminalCwd(agentTerminal.id, wtResult.worktreePath)
               workspaceStore.setTerminalWorktreeInfo(agentTerminal.id, wtResult.worktreePath, wtResult.branchName)
-              workspaceStore.setTerminalGeneratedTitle(agentTerminal.id, 'Codex Agent (worktree)')
+              workspaceStore.setTerminalGeneratedTitle(agentTerminal.id, defaultAgent === 'codex-agent-worktree' ? 'Codex Agent (worktree)' : 'Claude Agent (worktree)')
             }
           }
           if (defaultAgent === 'claude-cli' || defaultAgent === 'claude-cli-worktree') {
@@ -390,7 +390,8 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
   const handleAddWorktreeTerminal = useCallback(async () => {
     const terminal = workspaceStore.addTerminal(workspace.id)
-    const wtResult = await host.worktree.create(terminal.id, workspace.folderPath)
+    const settings = settingsStore.getSettings()
+    const wtResult = await host.worktree.create(terminal.id, workspace.folderPath, settings.worktreePnpmInstallEnabled === true)
 
     if (!wtResult.success || !wtResult.worktreePath) {
       workspaceStore.removeTerminal(terminal.id)
@@ -400,7 +401,6 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     }
 
     const shell = await getShellFromSettings()
-    const settings = settingsStore.getSettings()
     const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
 
     workspaceStore.updateTerminalCwd(terminal.id, wtResult.worktreePath)
@@ -431,7 +431,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     // Set up worktree if needed
     let effectiveCwd = cwd
     if (isWorktree) {
-      const wtResult = await host.worktree.create(terminalId, cwd)
+      const wtResult = await host.worktree.create(terminalId, cwd, settings.worktreePnpmInstallEnabled === true)
       if (wtResult.success && wtResult.worktreePath) {
         effectiveCwd = wtResult.worktreePath
         workspaceStore.setTerminalWorktreeInfo(terminalId, wtResult.worktreePath, wtResult.branchName)
@@ -488,17 +488,18 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
     if (preset.backend === 'sdk') {
       const terminal = workspaceStore.addTerminal(workspace.id, presetId as AgentPresetId)
-      if (presetId === 'codex-agent-worktree') {
-        const wtResult = await host.worktree.create(terminal.id, workspace.folderPath)
+      if (presetId === 'claude-code-worktree' || presetId === 'codex-agent-worktree') {
+        const settings = settingsStore.getSettings()
+        const wtResult = await host.worktree.create(terminal.id, workspace.folderPath, settings.worktreePnpmInstallEnabled === true)
         if (!wtResult.success || !wtResult.worktreePath) {
           workspaceStore.removeTerminal(terminal.id)
           workspaceStore.save()
-          alert(wtResult.error || 'Failed to create Codex Agent worktree.')
+          alert(wtResult.error || `Failed to create ${preset.name} worktree.`)
           return
         }
         workspaceStore.updateTerminalCwd(terminal.id, wtResult.worktreePath)
         workspaceStore.setTerminalWorktreeInfo(terminal.id, wtResult.worktreePath, wtResult.branchName)
-        workspaceStore.setTerminalGeneratedTitle(terminal.id, 'Codex Agent (worktree)')
+        workspaceStore.setTerminalGeneratedTitle(terminal.id, presetId === 'codex-agent-worktree' ? 'Codex Agent (worktree)' : 'Claude Agent (worktree)')
       }
       workspaceStore.setFocusedTerminal(terminal.id)
       workspaceStore.save()

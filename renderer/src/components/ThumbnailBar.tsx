@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import type { TerminalInstance } from '../types'
 import { TerminalThumbnail } from './TerminalThumbnail'
 import type { AgentPreset } from '../types/agent-presets'
+import { groupAgentPresetsForMenu, worktreeMenuName } from '../utils/agent-preset-menu'
 
 interface ThumbnailBarProps {
   terminals: TerminalInstance[]
@@ -43,6 +44,7 @@ export function ThumbnailBar({
 }: ThumbnailBarProps) {
   const { t } = useTranslation()
   const label = t('terminal.workspaceSessions')
+  const presetGroups = groupAgentPresetsForMenu(agentPresets)
 
   // All hooks must be declared before any conditional return (React rules of hooks)
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -275,7 +277,7 @@ export function ThumbnailBar({
                   setShowAddMenu(prev => {
                     if (!prev && addBtnRef.current) {
                       const rect = addBtnRef.current.getBoundingClientRect()
-                      const menuHeight = 200
+                      const menuHeight = 420
                       const spaceBelow = window.innerHeight - rect.bottom
                       const openUpward = spaceBelow < menuHeight && rect.top > menuHeight
                       setMenuStyle(openUpward
@@ -292,6 +294,7 @@ export function ThumbnailBar({
               </button>
               {showAddMenu && createPortal(
                 <div className="thumbnail-add-menu" ref={addMenuPopupRef} style={menuStyle}>
+                  <div className="thumbnail-add-menu-section">Standard</div>
                   <div
                     className="thumbnail-add-menu-item"
                     onClick={() => { onAddTerminal(); setShowAddMenu(false) }}
@@ -299,16 +302,7 @@ export function ThumbnailBar({
                     <span className="thumbnail-add-menu-icon">⌘</span>
                     {t('terminal.terminalLabel')}
                   </div>
-                  {onAddWorktreeTerminal && (
-                    <div
-                      className="thumbnail-add-menu-item"
-                      onClick={() => { onAddWorktreeTerminal(); setShowAddMenu(false) }}
-                    >
-                      <span className="thumbnail-add-menu-icon" style={{ color: '#22c55e' }}>🌳</span>
-                      {t('terminal.worktreeTerminalLabel')}
-                    </div>
-                  )}
-                  {agentPresets.map(preset => (
+                  {[...presetGroups.standardAgents, ...presetGroups.standardCli].map(preset => (
                     <div
                       key={preset.id}
                       className="thumbnail-add-menu-item"
@@ -319,9 +313,34 @@ export function ThumbnailBar({
                       {preset.suggested && <span className="thumbnail-add-menu-suggested">suggested</span>}
                     </div>
                   ))}
+                  {onAddWorktreeTerminal && (
+                    <>
+                      <div className="thumbnail-add-menu-separator" />
+                      <div className="thumbnail-add-menu-section">Worktree</div>
+                      <div
+                        className="thumbnail-add-menu-item"
+                        onClick={() => { onAddWorktreeTerminal(); setShowAddMenu(false) }}
+                      >
+                        <span className="thumbnail-add-menu-icon" style={{ color: '#22c55e' }}>🌳</span>
+                        {worktreeMenuName(t('terminal.worktreeTerminalLabel'))}
+                      </div>
+                      {[...presetGroups.worktreeAgents, ...presetGroups.worktreeCli].map(preset => (
+                        <div
+                          key={preset.id}
+                          className="thumbnail-add-menu-item"
+                          onClick={() => { onAddAgent?.(preset.id); setShowAddMenu(false) }}
+                        >
+                          <span className="thumbnail-add-menu-icon" style={{ color: preset.color }}>{preset.icon}</span>
+                          {worktreeMenuName(preset.name)}
+                          {preset.suggested && <span className="thumbnail-add-menu-suggested">suggested</span>}
+                        </div>
+                      ))}
+                    </>
+                  )}
                   {onAddWorker && (
                     <>
                       <div className="thumbnail-add-menu-separator" />
+                      <div className="thumbnail-add-menu-section">Workers</div>
                       {detectedProcfiles.map(fp => (
                         <div
                           key={fp}

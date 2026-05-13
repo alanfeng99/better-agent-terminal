@@ -134,8 +134,21 @@
   border-radius: var(--radius-sm);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   min-width: 160px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
   z-index: 9999;
   padding: 4px 0;
+}
+
+.thumbnail-add-menu-section {
+  padding: 7px 14px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.8;
 }
 
 .thumbnail-add-menu-item {

@@ -1173,10 +1173,13 @@ fn invoke_rust_for_remote(
         }),
         "worktree:create" => string_param(params, "sessionId", channel).and_then(|session_id| {
             string_param(params, "cwd", channel).and_then(|cwd| {
+                let install_pnpm = Some(bool_param(params, "installPnpm", false));
                 tauri::async_runtime::block_on(worktree_cmd::worktree_create(
+                    app.clone(),
                     app.state::<worktree_cmd::WorktreeState>(),
                     session_id,
                     cwd,
+                    install_pnpm,
                 ))
                 .map_err(bridge_error_message)
             })
