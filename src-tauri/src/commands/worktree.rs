@@ -4,6 +4,7 @@
 // waking the Node sidecar for local worktree creation/status/cleanup while
 // preserving the renderer-facing worktree.* result shapes.
 
+use super::app::log_tauri;
 use crate::sidecar::BridgeError;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
@@ -157,19 +158,21 @@ fn worktree_git_root_from_path(worktree_path: &str) -> Option<PathBuf> {
 
 fn add_worktree_to_git_exclude(git_root: &Path) {
     let exclude_file = git_root.join(".git").join("info").join("exclude");
-    let pattern = format!("/{WORKTREE_DIR}/");
+    let patterns = [format!("/{WORKTREE_DIR}/"), "/.bat-cache/".to_string()];
     if let Some(parent) = exclude_file.parent() {
         let _ = fs::create_dir_all(parent);
     }
     let mut content = fs::read_to_string(&exclude_file).unwrap_or_default();
-    if content.contains(&pattern) {
-        return;
-    }
-    if !content.is_empty() && !content.ends_with('\n') {
+    for pattern in patterns {
+        if content.contains(&pattern) {
+            continue;
+        }
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&pattern);
         content.push('\n');
     }
-    content.push_str(&pattern);
-    content.push('\n');
     let _ = fs::write(exclude_file, content);
 }
 
@@ -257,9 +260,11 @@ fn link_claude_untracked(git_root: &Path, worktree_path: &Path) {
 }
 
 fn create_worktree_native(
+    app: Option<AppHandle>,
     state: &WorktreeState,
     session_id: String,
     cwd: String,
+    install_pnpm: bool,
 ) -> Result<Value, BridgeError> {
     if session_id.trim().is_empty() || cwd.trim().is_empty() {
         return Ok(
@@ -313,7 +318,97 @@ fn create_worktree_native(
         created_at: now_ms(),
     };
     state.set(info.clone());
+    if install_pnpm {
+        spawn_pnpm_install_for_worktree(app, git_root_path, worktree_path);
+    }
     Ok(worktree_info_value(info))
+}
+
+fn spawn_pnpm_install_for_worktree(
+    app: Option<AppHandle>,
+    git_root: PathBuf,
+    worktree_path: PathBuf,
+) {
+    if !worktree_path.join("pnpm-lock.yaml").is_file() {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let store_dir = git_root.join(".bat-cache").join("pnpm-store");
+        let _ = fs::create_dir_all(&store_dir);
+        if let Some(app) = app.as_ref() {
+            log_tauri(
+                app,
+                &format!(
+                    "[worktree] starting background pnpm install cwd={} store={}",
+                    worktree_path.display(),
+                    store_dir.display()
+                ),
+            );
+        }
+
+        let output = Command::new("pnpm")
+            .args([
+                "install",
+                "--frozen-lockfile",
+                "--prefer-offline",
+                "--store-dir",
+            ])
+            .arg(&store_dir)
+            .arg("--config.enable-global-virtual-store=true")
+            .current_dir(&worktree_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                if let Some(app) = app.as_ref() {
+                    log_tauri(
+                        app,
+                        &format!(
+                            "[worktree] background pnpm install completed cwd={}",
+                            worktree_path.display()
+                        ),
+                    );
+                }
+            }
+            Ok(output) => {
+                if let Some(app) = app.as_ref() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let detail = stderr
+                        .trim()
+                        .lines()
+                        .last()
+                        .or_else(|| stdout.trim().lines().last());
+                    log_tauri(
+                        app,
+                        &format!(
+                            "[worktree] background pnpm install failed cwd={} status={}{}",
+                            worktree_path.display(),
+                            output.status,
+                            detail
+                                .map(|line| format!(" detail={line}"))
+                                .unwrap_or_default(),
+                        ),
+                    );
+                }
+            }
+            Err(err) => {
+                if let Some(app) = app.as_ref() {
+                    log_tauri(
+                        app,
+                        &format!(
+                            "[worktree] failed to start background pnpm install cwd={} error={err}",
+                            worktree_path.display()
+                        ),
+                    );
+                }
+            }
+        }
+    });
 }
 
 pub fn ensure_worktree_for_session_native(
@@ -401,7 +496,7 @@ pub fn ensure_worktree_for_session_native(
         return Ok(worktree_info_value(info));
     }
 
-    create_worktree_native(state, session_id, cwd)
+    create_worktree_native(None, state, session_id, cwd, false)
 }
 
 fn force_remove_worktree(info: &WorktreeInfo, delete_branch: bool) {
@@ -583,16 +678,26 @@ fn rehydrate_worktree_native(
 
 #[tauri::command]
 pub async fn worktree_create(
+    app: AppHandle,
     state: State<'_, WorktreeState>,
     session_id: String,
     cwd: String,
+    install_pnpm: Option<bool>,
 ) -> Result<Value, BridgeError> {
     let state = (*state).clone();
-    tauri::async_runtime::spawn_blocking(move || create_worktree_native(&state, session_id, cwd))
-        .await
-        .map_err(|err| BridgeError {
-            message: format!("worktree.create worker failed: {err}"),
-        })?
+    tauri::async_runtime::spawn_blocking(move || {
+        create_worktree_native(
+            Some(app),
+            &state,
+            session_id,
+            cwd,
+            install_pnpm.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|err| BridgeError {
+        message: format!("worktree.create worker failed: {err}"),
+    })?
 }
 
 #[tauri::command]

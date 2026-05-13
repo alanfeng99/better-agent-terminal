@@ -2337,6 +2337,16 @@
   max-height: 50vh;
   overflow-y: auto;
 }
+.claude-file-picker-section {
+  padding: 8px 14px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
 .claude-file-picker-item {
   display: flex;
   align-items: center;

@@ -989,8 +989,12 @@ function createTauriHost(): BatAppAPI {
       get(_t, prop) {
         const key = String(prop)
         if (key === 'create') {
-          return (sessionId: string, cwd: string) =>
-            getInvoke()<unknown>('worktree_create', { sessionId, cwd })
+          return (sessionId: string, cwd: string, installPnpm?: boolean) =>
+            getInvoke()<unknown>('worktree_create', {
+              sessionId,
+              cwd,
+              ...(installPnpm ? { installPnpm: true } : {}),
+            })
         }
         if (key === 'remove') {
           return (sessionId: string, deleteBranch: boolean) =>

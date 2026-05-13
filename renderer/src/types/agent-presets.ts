@@ -38,7 +38,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     id: 'claude-code-worktree',
     name: 'Claude Agent (Worktree)',
-    icon: '🌳',
+    icon: '✦',
     color: '#22c55e',
     backend: 'sdk',
     needsGitRepo: true,
@@ -54,7 +54,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     id: 'claude-cli-worktree',
     name: 'Claude CLI (Worktree)',
-    icon: '🌳',
+    icon: '▶',
     color: '#22c55e',
     backend: 'cli',
     needsGitRepo: true,
@@ -69,7 +69,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     id: 'codex-agent-worktree',
     name: 'Codex Agent (Worktree)',
-    icon: '🌳',
+    icon: '⬡',
     color: '#10a37f',
     backend: 'sdk',
     needsGitRepo: true,

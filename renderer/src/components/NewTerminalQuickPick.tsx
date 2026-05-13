@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AGENT_PRESETS, getVisiblePresets, type AgentPreset, type AgentPresetId } from '../types/agent-presets'
+import { groupAgentPresetsForMenu, worktreeMenuName } from '../utils/agent-preset-menu'
 
 export type QuickPickChoice =
   | { kind: 'terminal' }
@@ -24,6 +25,7 @@ interface Item {
   color: string
   choice: QuickPickChoice
   searchText: string
+  section: string
 }
 
 const TERMINAL_PRESET = AGENT_PRESETS.find(p => p.id === 'none')!
@@ -37,24 +39,16 @@ function buildItems(isGitRepo: boolean, supportedPresetIds: string[] | null): It
       color: TERMINAL_PRESET.color,
       choice: { kind: 'terminal' },
       searchText: TERMINAL_PRESET.name.toLowerCase(),
+      section: 'Standard',
     },
   ]
-  if (isGitRepo) {
-    items.push({
-      key: 'worktree',
-      name: 'Terminal (Worktree)',
-      icon: '🌳',
-      color: '#22c55e',
-      choice: { kind: 'worktree' },
-      searchText: 'terminal worktree',
-    })
-  }
   const presets = getVisiblePresets().filter((p: AgentPreset) =>
     p.id !== 'none'
     && (!p.needsGitRepo || isGitRepo)
     && (supportedPresetIds === null || supportedPresetIds.includes(p.id))
   )
-  for (const p of presets) {
+  const groups = groupAgentPresetsForMenu(presets)
+  for (const p of [...groups.standardAgents, ...groups.standardCli]) {
     items.push({
       key: p.id,
       name: p.name,
@@ -62,6 +56,29 @@ function buildItems(isGitRepo: boolean, supportedPresetIds: string[] | null): It
       color: p.color,
       choice: { kind: 'agent', presetId: p.id as AgentPresetId },
       searchText: `${p.name} ${p.id}`.toLowerCase(),
+      section: 'Standard',
+    })
+  }
+  if (isGitRepo) {
+    items.push({
+      key: 'worktree',
+      name: 'Terminal',
+      icon: '🌳',
+      color: '#22c55e',
+      choice: { kind: 'worktree' },
+      searchText: 'terminal worktree',
+      section: 'Worktree',
+    })
+  }
+  for (const p of [...groups.worktreeAgents, ...groups.worktreeCli]) {
+    items.push({
+      key: p.id,
+      name: worktreeMenuName(p.name),
+      icon: p.icon,
+      color: p.color,
+      choice: { kind: 'agent', presetId: p.id as AgentPresetId },
+      searchText: `${p.name} ${p.id}`.toLowerCase(),
+      section: 'Worktree',
     })
   }
   return items
@@ -139,16 +156,20 @@ export function NewTerminalQuickPick({ isGitRepo, supportedPresetIds, onSelect, 
             <div className="claude-file-picker-empty">{t('quickPick.noMatches')}</div>
           )}
           {items.map((item, i) => (
-            <div
-              key={item.key}
-              data-qp-index={i}
-              className={`claude-file-picker-item${i === index ? ' selected' : ''}`}
-              onMouseEnter={() => setIndex(i)}
-              onClick={() => commit(item.choice)}
-            >
-              <span className="claude-file-picker-name" style={{ color: item.color, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
-              <span className="claude-file-picker-name">{item.name}</span>
-            </div>
+            <Fragment key={item.key}>
+              {(i === 0 || items[i - 1]?.section !== item.section) && (
+                <div className="claude-file-picker-section">{item.section}</div>
+              )}
+              <div
+                data-qp-index={i}
+                className={`claude-file-picker-item${i === index ? ' selected' : ''}`}
+                onMouseEnter={() => setIndex(i)}
+                onClick={() => commit(item.choice)}
+              >
+                <span className="claude-file-picker-name" style={{ color: item.color, minWidth: 18, textAlign: 'center' }}>{item.icon}</span>
+                <span className="claude-file-picker-name">{item.name}</span>
+              </div>
+            </Fragment>
           ))}
         </div>
       </div>
