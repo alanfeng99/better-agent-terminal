@@ -268,6 +268,18 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     }
     return null
   })
+  useEffect(() => {
+    if (!isWorktreeSession || !terminal?.worktreePath || !terminal?.worktreeBranch) return
+    setWorktreeInfo(prev => {
+      if (prev?.worktreePath === terminal.worktreePath && prev?.branchName === terminal.worktreeBranch) return prev
+      return {
+        branchName: terminal.worktreeBranch!,
+        worktreePath: terminal.worktreePath!,
+        sourceBranch: prev?.sourceBranch || '',
+        gitRoot: prev?.gitRoot,
+      }
+    })
+  }, [isWorktreeSession, terminal?.worktreePath, terminal?.worktreeBranch])
   const markdownCwd = worktreeInfo?.worktreePath || terminal?.worktreePath || cwd
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null)
   const [isResumingHistory, setIsResumingHistory] = useState(false)
