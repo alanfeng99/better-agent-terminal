@@ -1,10 +1,78 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
 const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'))
+
+async function pingBundledSidecar(serverPath) {
+  const child = spawn(process.execPath, [serverPath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      BAT_SIDECAR_DISABLE_SDK: '1',
+    },
+  })
+  const stderrChunks = []
+  const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer)
+        rl.removeAllListeners()
+        child.stderr.removeListener('data', onStderr)
+        child.stdin.removeListener('error', onError)
+        child.removeListener('error', onError)
+        child.removeListener('exit', onExit)
+      }
+      const stderrTail = () => Buffer.concat(stderrChunks).toString('utf8').slice(-4000)
+      const onStderr = (chunk) => stderrChunks.push(Buffer.from(chunk))
+      const onError = (err) => {
+        cleanup()
+        reject(err)
+      }
+      const onExit = (code, signal) => {
+        cleanup()
+        reject(new Error(`bundled sidecar exited before ping response code=${code} signal=${signal} stderr=${stderrTail()}`))
+      }
+      const timer = setTimeout(() => {
+        cleanup()
+        child.kill()
+        reject(new Error(`timed out waiting for bundled sidecar ping stderr=${stderrTail()}`))
+      }, 10_000)
+
+      child.stderr.on('data', onStderr)
+      child.stdin.on('error', onError)
+      child.on('error', onError)
+      child.on('exit', onExit)
+      rl.on('line', (line) => {
+        let msg
+        try {
+          msg = JSON.parse(line)
+        } catch {
+          return
+        }
+        if (msg?.id !== 'bundle-ping') return
+        cleanup()
+        child.kill()
+        resolve(msg)
+      })
+      child.stdin.write(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'bundle-ping',
+        method: 'ping',
+        params: { from: 'tauri-sidecar-minimal-modules' },
+      }) + '\n')
+    })
+  } finally {
+    rl.close()
+    if (!child.killed) child.kill()
+  }
+}
 
 assert.equal(
   config?.bundle?.resources?.['../node-sidecar/dist-node_modules/'],
@@ -65,5 +133,13 @@ assert.ok(
   serverSource.includes('@anthropic-ai/claude-agent-sdk/sdk.mjs') && serverSource.includes('_zod'),
   'bundled sidecar should include JS dependencies',
 )
+assert.ok(
+  !serverSource.includes('await import(path)'),
+  'bundled sidecar must not retain variable handler imports',
+)
+
+const pingReply = await pingBundledSidecar(server)
+assert.equal(pingReply.result?.ok, true, 'bundled sidecar must boot and answer ping without external handler files')
+assert.deepEqual(pingReply.result?.echo, { from: 'tauri-sidecar-minimal-modules' })
 
 console.log('tauri-sidecar-minimal-modules: passed')

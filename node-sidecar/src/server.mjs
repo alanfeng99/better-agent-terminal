@@ -51,6 +51,20 @@ const CLAUDE_HANDLER_MODULES = [
   './handlers/claude-mcp.mjs',
 ]
 
+// Keep the import specifiers as string literals. The Tauri release build
+// bundles this entry into one dist/server.mjs file; variable import(path)
+// leaves runtime imports behind and packaged installs do not ship
+// node-sidecar/dist/handlers/*.mjs.
+const CLAUDE_HANDLER_LOADERS = new Map([
+  ['./handlers/claude-auth.mjs', () => import('./handlers/claude-auth.mjs')],
+  ['./handlers/claude-session.mjs', () => import('./handlers/claude-session.mjs')],
+  ['./handlers/claude-permission.mjs', () => import('./handlers/claude-permission.mjs')],
+  ['./handlers/claude-history.mjs', () => import('./handlers/claude-history.mjs')],
+  ['./handlers/claude-send.mjs', () => import('./handlers/claude-send.mjs')],
+  ['./handlers/claude-readonly.mjs', () => import('./handlers/claude-readonly.mjs')],
+  ['./handlers/claude-mcp.mjs', () => import('./handlers/claude-mcp.mjs')],
+])
+
 export let findClaudeCliPath
 export let listSessionsFallback
 export let __resetMetadataCacheForTests
@@ -62,7 +76,9 @@ export let __resetClaudeCliCacheForTests
 async function loadHandlers() {
   const loaded = new Map()
   const load = async (path) => {
-    if (!loaded.has(path)) loaded.set(path, await import(path))
+    const loader = CLAUDE_HANDLER_LOADERS.get(path)
+    if (!loader) throw new Error(`sidecar: missing handler loader for ${path}`)
+    if (!loaded.has(path)) loaded.set(path, await loader())
     return loaded.get(path)
   }
   for (const path of CLAUDE_HANDLER_MODULES) await load(path)
