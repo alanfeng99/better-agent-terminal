@@ -15,6 +15,7 @@ import { WorkspaceEnvDialog } from './components/WorkspaceEnvDialog'
 import { ResizeHandle } from './components/ResizeHandle'
 import { ProfilePanel } from './components/ProfilePanel'
 import { FolderPicker } from './components/FolderPicker'
+import { consumeKeyboardShortcut, isBackquoteShortcutEvent } from './utils/keyboard-shortcuts'
 import type { AppState, EnvVariable, TerminalInstance } from './types'
 
 // Panel settings interface
@@ -297,10 +298,9 @@ export default function App() {
   // Cmd/Ctrl+Left/Right (cycle tabs), Cmd/Ctrl+Up/Down (switch workspace)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const isBackquote = e.key === '`' || e.code === 'Backquote'
+      const isBackquote = isBackquoteShortcutEvent(e)
 
       if (isBackquote && e.altKey && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault()
         const currentState = workspaceStore.getState()
         if (!currentState.activeWorkspaceId) return
         const terminals = workspaceStore.getWorkspaceTerminals(currentState.activeWorkspaceId)
@@ -312,6 +312,7 @@ export default function App() {
           : (direction > 0 ? 0 : terminals.length - 1)
         workspaceStore.setFocusedTerminal(terminals[nextIndex].id)
         window.dispatchEvent(new CustomEvent('workspace-switch-tab', { detail: { tab: 'terminal' } }))
+        consumeKeyboardShortcut(e)
         return
       }
 
@@ -322,21 +323,20 @@ export default function App() {
         : e.ctrlKey && !e.metaKey
 
       if (isBackquote && isWindowCycleShortcut && !e.shiftKey) {
-        e.preventDefault()
         host.app.focusNextWindow()
+        consumeKeyboardShortcut(e)
         return
       }
 
       // Ctrl+Tab (Win + Mac): jump to window with most recent unread notification.
       if (e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'Tab' || e.code === 'Tab')) {
-        e.preventDefault()
         host.notification.focusLatestUnread()
+        consumeKeyboardShortcut(e)
         return
       }
 
       // Cmd+Up / Cmd+Down: Switch workspaces
       if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey) {
-        e.preventDefault()
         const currentState = workspaceStore.getState()
         const workspaces = currentState.workspaces
         if (workspaces.length <= 1) return
@@ -344,6 +344,7 @@ export default function App() {
         const direction = e.key === 'ArrowDown' ? 1 : -1
         const nextIndex = (currentIndex + direction + workspaces.length) % workspaces.length
         workspaceStore.setActiveWorkspace(workspaces[nextIndex].id)
+        consumeKeyboardShortcut(e)
         return
       }
 
@@ -354,12 +355,12 @@ export default function App() {
         (e.metaKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 't') ||
         (e.ctrlKey && !e.metaKey && e.shiftKey && e.key.toLowerCase() === 't')
       if (isOpenTerminal) {
-        e.preventDefault()
         const currentState = workspaceStore.getState()
         if (!currentState.activeWorkspaceId) return
         // Make sure the terminal tab is visible so the new terminal is in view.
         window.dispatchEvent(new CustomEvent('workspace-switch-tab', { detail: { tab: 'terminal' } }))
         window.dispatchEvent(new CustomEvent('workspace-add-terminal-quick-pick'))
+        consumeKeyboardShortcut(e)
         return
       }
 
@@ -370,12 +371,12 @@ export default function App() {
       const isCloseTerminal =
         e.shiftKey && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'w'
       if (isCloseTerminal) {
-        e.preventDefault()
         const currentState = workspaceStore.getState()
         if (!currentState.focusedTerminalId) return
         window.dispatchEvent(new CustomEvent('workspace-close-terminal', {
           detail: { terminalId: currentState.focusedTerminalId },
         }))
+        consumeKeyboardShortcut(e)
         return
       }
     }

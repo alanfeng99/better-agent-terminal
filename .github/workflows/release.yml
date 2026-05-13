@@ -159,11 +159,30 @@ jobs:
         if: env.BUILD_MATRIX_ENTRY == 'true'
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - name: Compute Rust base cache key
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        id: rust-base-cache-key
+        run: node scripts/rust-base-cache-key.mjs
+
+      - name: Cache Cargo registry base
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-registry-base-${{ steps.rust-base-cache-key.outputs.base }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-cargo-registry-base-
+
       - name: Cache Rust build outputs
         if: env.BUILD_MATRIX_ENTRY == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: release-${{ matrix.platform }}-${{ matrix.arch }}
+          key: base-${{ steps.rust-base-cache-key.outputs.base }}
           cache-on-failure: true
 
       - name: Cache Tauri bundle tools
