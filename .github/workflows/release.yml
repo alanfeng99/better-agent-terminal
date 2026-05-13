@@ -146,6 +146,17 @@ jobs:
         if: env.BUILD_MATRIX_ENTRY == 'true'
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Ensure Rust shims are first on PATH
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        shell: bash
+        run: |
+          RUST_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "$RUST_BIN" >> "$GITHUB_PATH"
+          export PATH="$RUST_BIN:$PATH"
+          command -v rustup
+          command -v cargo
+          "$RUST_BIN/cargo" --version
+
       - name: Install Linux Tauri dependencies
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
         run: |
