@@ -106,6 +106,21 @@ fn bridge_error(message: impl Into<String>) -> BridgeError {
     }
 }
 
+fn bat_debug_enabled() -> bool {
+    matches!(
+        std::env::var("BAT_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+fn worktree_debug_log(app: Option<&AppHandle>, message: impl AsRef<str>) {
+    if bat_debug_enabled() {
+        if let Some(app) = app {
+            log_tauri(app, message.as_ref());
+        }
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -356,6 +371,14 @@ fn create_worktree_native(
     state.set(info.clone());
     if install_pnpm {
         spawn_pnpm_install_for_worktree(app, git_root_path, worktree_path);
+    } else {
+        worktree_debug_log(
+            app.as_ref(),
+            format!(
+                "[worktree] background pnpm install skipped cwd={} reason=installPnpm-false",
+                info.worktree_path
+            ),
+        );
     }
     Ok(worktree_info_value(info))
 }
@@ -366,24 +389,42 @@ fn spawn_pnpm_install_for_worktree(
     worktree_path: PathBuf,
 ) {
     if !worktree_path.join("pnpm-lock.yaml").is_file() {
+        worktree_debug_log(
+            app.as_ref(),
+            format!(
+                "[worktree] background pnpm install skipped cwd={} reason=missing-pnpm-lock",
+                worktree_path.display()
+            ),
+        );
         return;
     }
 
     std::thread::spawn(move || {
         let store_dir = git_root.join(".bat-cache").join("pnpm-store");
         let _ = fs::create_dir_all(&store_dir);
+        let pnpm_bin = resolve_pnpm_binary().unwrap_or_else(|| PathBuf::from("pnpm"));
         if let Some(app) = app.as_ref() {
             log_tauri(
                 app,
                 &format!(
-                    "[worktree] starting background pnpm install cwd={} store={}",
+                    "[worktree] starting background pnpm install cwd={} store={} pnpm={}",
                     worktree_path.display(),
-                    store_dir.display()
+                    store_dir.display(),
+                    pnpm_bin.display()
+                ),
+            );
+            worktree_debug_log(
+                Some(app),
+                format!(
+                    "[worktree] pnpm install debug cwd={} pnpm={} path={}",
+                    worktree_path.display(),
+                    pnpm_bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
                 ),
             );
         }
 
-        let output = Command::new("pnpm")
+        let output = Command::new(&pnpm_bin)
             .args([
                 "install",
                 "--frozen-lockfile",
@@ -437,14 +478,60 @@ fn spawn_pnpm_install_for_worktree(
                     log_tauri(
                         app,
                         &format!(
-                            "[worktree] failed to start background pnpm install cwd={} error={err}",
-                            worktree_path.display()
+                            "[worktree] failed to start background pnpm install cwd={} pnpm={} error={err}",
+                            worktree_path.display(),
+                            pnpm_bin.display()
                         ),
                     );
                 }
             }
         }
     });
+}
+
+fn resolve_pnpm_binary() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("BAT_PNPM_BIN").filter(|value| !value.is_empty()) {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    find_binary_on_path("pnpm").or_else(|| {
+        [
+            "/opt/homebrew/bin/pnpm",
+            "/usr/local/bin/pnpm",
+            "/usr/bin/pnpm",
+            "/bin/pnpm",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+    })
+}
+
+fn find_binary_on_path(name: &str) -> Option<PathBuf> {
+    let path_env = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let extensions: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+        .split(';')
+        .map(|ext| ext.to_string())
+        .collect();
+    #[cfg(not(windows))]
+    let extensions: Vec<String> = vec!["".into()];
+
+    for dir in std::env::split_paths(&path_env) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for ext in &extensions {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 pub fn ensure_worktree_for_session_native(

@@ -1989,7 +1989,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
     // Add user message locally only when this renderer can authoritatively predict display.
     // Remote clients and running turns wait for the host/backend message so wrapping/queueing stays consistent.
-    const shouldEchoUserMessageLocally = !isRemoteConnected && !isStreaming
+    const shouldEchoUserMessageLocally = !isRemoteConnected && (!isStreaming || isInterrupted)
     const imageNote = imageDataUrls.length > 0
       ? `\n[${imageDataUrls.length} image${imageDataUrls.length > 1 ? 's' : ''} attached]`
       : ''
@@ -2028,7 +2028,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         host.debug.log(`[handleSend] sync=${sync.toFixed(1)}ms invoke=${invoke.toFixed(1)}ms total=${total.toFixed(1)}ms sessionId=${sessionId} promptLen=${trimmed.length}`)
       }
     }
-  }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput])
+  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return

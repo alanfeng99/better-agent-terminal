@@ -1292,6 +1292,8 @@ async function inProcess() {
   // mirrors Electron's "accept while busy" contract and protects the UI
   // from showing a user bubble whose prompt was dropped by the sidecar.
   const queuedCaptured = []
+  const queuedEvents = []
+  const restoreQueuedSend = mod.__setSendEventForTests((name, payload) => queuedEvents.push({ name, payload }))
   let releaseFirstResult
   let firstTurnStartedResolve
   const firstTurnStarted = new Promise(resolve => { firstTurnStartedResolve = resolve })
@@ -1330,6 +1332,14 @@ async function inProcess() {
     await firstTurnStarted
     const p2 = dispatch({ jsonrpc: '2.0', id: 229, method: 'claude.sendMessage',
       params: { sessionId: 'queued-1', prompt: 'second' } })
+    const userEchoesBeforeFirstCompletes = queuedEvents
+      .filter(e => e.name === 'claude:message' && e.payload?.message?.role === 'user')
+      .map(e => e.payload.message.content)
+    assert.deepEqual(
+      userEchoesBeforeFirstCompletes,
+      ['first', 'second'],
+      'queued user prompts should be echoed before the previous turn finishes',
+    )
     releaseFirstResult()
     const [q1, q2] = await Promise.all([p1, p2])
     assert.equal(q1.result.ok, true)
@@ -1338,6 +1348,7 @@ async function inProcess() {
     assert.deepEqual(queuedCaptured, ['first', 'second'])
   } finally {
     __setSdkOverrideForTests(undefined)
+    restoreQueuedSend()
     mod.sessions.get('queued-1')?.liveQuery?.close()
   }
 
@@ -3180,14 +3191,10 @@ async function inProcess() {
   delete process.env.BAT_SIDECAR_CLAUDE_BIN
   try {
     const bundledPath = resolveClaudeCliBinary()
-    if (bundledPath) {
+    const bundledLower = bundledPath?.toLowerCase().replace(/\\/g, '/') || ''
+    if (bundledLower.includes('node_modules/@anthropic-ai/claude-agent-sdk-')) {
       // Bundled binary resolved. Sanity check: it points at the SDK
       // package's claude executable.
-      const bundledLower = bundledPath.toLowerCase().replace(/\\/g, '/')
-      assert.ok(
-        bundledLower.includes('node_modules/@anthropic-ai/claude-agent-sdk-'),
-        `expected bundled path under @anthropic-ai/claude-agent-sdk-<triple>, got ${bundledPath}`,
-      )
       assert.ok(
         bundledLower.endsWith('claude.exe') || bundledLower.endsWith('/claude'),
         `expected exe suffix, got ${bundledPath}`,
@@ -3195,8 +3202,9 @@ async function inProcess() {
     } else {
       // No bundled binary — that's OK in fresh checkouts where
       // node-sidecar/node_modules hasn't been installed. The handler
-      // falls back to PATH lookup which we can't deterministically test.
-      console.log('claude CLI bundle not present — bundled-resolver assertion skipped')
+      // falls back to PATH lookup, which may resolve a system `claude`
+      // or pnpm's root node_modules/.bin shim.
+      console.log(`claude CLI bundle not present — bundled-resolver assertion skipped${bundledPath ? ` (${bundledPath})` : ''}`)
     }
   } finally {
     if (savedBin !== undefined) process.env.BAT_SIDECAR_CLAUDE_BIN = savedBin

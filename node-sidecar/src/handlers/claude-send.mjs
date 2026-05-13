@@ -365,8 +365,6 @@ async function performSendMessage(params) {
   const sid = shortSessionId(sessionId)
   if (s.isResting) s.isResting = false
 
-  emitUserEcho(params, sessionId, prompt, images)
-
   const sdk = await loadAnthropicSdk()
   if (!sdk || typeof sdk.query !== 'function') {
     logWarn(`claude.sendMessage: SDK unavailable, returning stub for session ${sessionId}`)
@@ -435,6 +433,11 @@ registerHandler('claude.sendMessage', async (params) => {
   }
   const s = ensureSession(sessionId)
   const sid = shortSessionId(sessionId)
+  const prompt = typeof params?.prompt === 'string' ? params.prompt : ''
+  const images = Array.isArray(params?.images) ? params.images : null
+  if (!isCodexSession(sessionId)) {
+    emitUserEcho(params, sessionId, prompt, images)
+  }
   const wasQueued = Boolean(s.sendQueue)
   if (wasQueued) {
     logInfo(`claude.sendMessage(${sid}): queued behind active turn`)

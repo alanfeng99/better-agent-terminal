@@ -82,7 +82,7 @@ const LEGACY_V1_PARAM_KEYS = new Map([
   ['claude:account-switch', ['accountId']],
   ['claude:account-remove', ['accountId']],
 
-  ['worktree:create', ['sessionId', 'cwd']],
+  ['worktree:create', ['sessionId', 'cwd', 'installPnpm']],
   ['worktree:remove', ['sessionId', 'deleteBranch']],
   ['worktree:status', ['sessionId']],
   ['worktree:merge', ['sessionId', 'strategy']],
