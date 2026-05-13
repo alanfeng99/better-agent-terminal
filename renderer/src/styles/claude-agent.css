@@ -1370,6 +1370,17 @@
   text-overflow: ellipsis;
 }
 
+.claude-worktree-identity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.claude-worktree-identity .worktree-merged-chip {
+  flex-shrink: 0;
+}
+
 .claude-worktree-actions {
   display: flex;
   gap: 6px;

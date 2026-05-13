@@ -13,6 +13,7 @@ import { shallowEqual } from '../stores/use-store'
 import { getAgentPreset, type AgentPresetId } from '../types/agent-presets'
 import { LinkedText, FilePreviewModal } from './PathLinker'
 import { ChatMarkdown } from './ChatMarkdown'
+import { WorktreeMergedChip } from './WorktreeMergedChip'
 import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-url'
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
 import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
@@ -3847,7 +3848,12 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       {/* Worktree action bar — always visible when worktree is active, buttons hidden during streaming */}
       {isWorktreeSession && worktreeInfo && (
         <div className="claude-worktree-bar">
-          <span className="claude-worktree-label">🌳 {worktreeInfo.branchName}</span>
+          <div className="claude-worktree-identity">
+            <span className="claude-worktree-label">🌳 {worktreeInfo.branchName}</span>
+            {terminal?.worktreeMergedKind && terminal.worktreeMergedKind !== 'unknown' && (
+              <WorktreeMergedChip kind={terminal.worktreeMergedKind} />
+            )}
+          </div>
           {!isStreaming && <div className="claude-worktree-actions">
             <button
               className="claude-worktree-btn"
