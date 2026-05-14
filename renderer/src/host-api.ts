@@ -827,6 +827,21 @@ function createTauriHost(): BatAppAPI {
         }
         // Read-only metadata.
         if (key === 'getCliPath') return () => getInvoke()<unknown>('claude_get_cli_path')
+        if (key === 'prepareCliSession') {
+          return (
+            terminalId: string,
+            workspaceId: string,
+            cwd: string,
+            agentPreset: string,
+            currentSessionId?: string,
+          ) => getInvoke()<unknown>('claude_prepare_cli_session', {
+            terminalId,
+            workspaceId,
+            cwd,
+            agentPreset,
+            currentSessionId,
+          })
+        }
         if (key === 'listSessions') {
           return (cwd: string, agentKind?: 'claude' | 'codex') =>
             getInvoke()<unknown>('claude_list_sessions', { cwd, agentKind })

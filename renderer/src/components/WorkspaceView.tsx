@@ -304,11 +304,8 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           // Worker terminals manage their own PTYs internally via WorkerPanel
           if (terminal.procfilePath) continue
           if (terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree') continue
-          // claude-cli presets use startClaudeCliPty for bundled CLI + env setup
-          if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') {
-            startClaudeCliPty(terminal.id, terminal.cwd || workspace.folderPath, terminal.agentPreset === 'claude-cli-worktree')
-            continue
-          }
+          // Claude CLI presets are started by ClaudeCliPanel so it can own session restore.
+          if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') continue
           host.pty.create({
             id: terminal.id,
             cwd: terminal.cwd || workspace.folderPath,
@@ -347,9 +344,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
               workspaceStore.setTerminalGeneratedTitle(agentTerminal.id, defaultAgent === 'codex-agent-worktree' ? 'Codex Agent (worktree)' : 'Claude Agent (worktree)')
             }
           }
-          if (defaultAgent === 'claude-cli' || defaultAgent === 'claude-cli-worktree') {
-            startClaudeCliPty(agentTerminal.id, workspace.folderPath, defaultAgent === 'claude-cli-worktree')
-          } else if (defaultAgent !== 'claude-code' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
+          if (defaultAgent !== 'claude-cli' && defaultAgent !== 'claude-cli-worktree' && defaultAgent !== 'claude-code' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
             host.pty.create({
               id: agentTerminal.id,
               cwd: workspace.folderPath,
@@ -455,67 +450,6 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     workspaceStore.save()
   }, [workspace.id, workspace.folderPath, workspace.envVars])
 
-  /** Create a claude-cli PTY terminal with bundled CLI, CLAUDE_CODE_NO_FLICKER, and optional worktree */
-  const startClaudeCliPty = useCallback(async (terminalId: string, cwd: string, isWorktree: boolean) => {
-    const settings = settingsStore.getSettings()
-    const shell = await getShellFromSettings()
-    const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-    const cliPath = await host.claude.getCliPath()
-
-    // Set up worktree if needed
-    let effectiveCwd = cwd
-    if (isWorktree) {
-      const wtResult = await host.worktree.create(terminalId, cwd, settings.worktreePnpmInstallEnabled === true)
-      if (wtResult.success && wtResult.worktreePath) {
-        effectiveCwd = wtResult.worktreePath
-        workspaceStore.setTerminalWorktreeInfo(terminalId, wtResult.worktreePath, wtResult.branchName)
-      }
-    }
-
-    const termInst = workspaceStore.getState().terminals.find(t => t.id === terminalId)
-    host.pty.create({
-      id: terminalId,
-      cwd: effectiveCwd,
-      type: 'terminal',
-      agentPreset: isWorktree ? 'claude-cli-worktree' as AgentPresetId : 'claude-cli' as AgentPresetId,
-      shell,
-      customEnv: {
-        ...customEnv,
-        CLAUDE_CODE_NO_FLICKER: '1',
-      },
-      perTerminalHistory: settingsStore.getSettings().perTerminalHistory,
-      historyKey: termInst?.historyKey,
-    })
-
-    // Build CLI command using bundled CLI.
-    // Since claude-code 2.1.113 the bundled CLI is a native binary (claude[.exe])
-    // rather than cli.js — invoke directly instead of via `node`. Legacy cli.js
-    // paths (ending in .js) still use the node launcher.
-    // PowerShell needs `& "..."` to invoke a quoted executable path.
-    // Worktree sessions start fresh (--continue would resume a session in git root)
-    const isLegacyJs = /\.js$/i.test(cliPath)
-    const isPowerShell = !!shell && /pwsh|powershell/i.test(shell)
-    const cmdParts: string[] = []
-    if (isLegacyJs) {
-      cmdParts.push('node', `"${cliPath}"`)
-    } else if (isPowerShell) {
-      cmdParts.push('&', `"${cliPath}"`)
-    } else {
-      cmdParts.push(`"${cliPath}"`)
-    }
-    if (!isWorktree) {
-      cmdParts.push('--continue')
-    }
-    if (settings.allowBypassPermissions) {
-      cmdParts.push('--dangerously-skip-permissions')
-    }
-    const cmd = cmdParts.join(' ')
-
-    setTimeout(() => {
-      host.pty.write(terminalId, cmd + '\r')
-    }, 500)
-  }, [workspace.folderPath, workspace.envVars])
-
   const handleAddAgent = useCallback(async (presetId: string) => {
     const preset = getAgentPreset(presetId)
     if (!preset) return
@@ -538,11 +472,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       workspaceStore.setFocusedTerminal(terminal.id)
       workspaceStore.save()
     } else if (preset.backend === 'cli') {
-      const isWorktree = presetId === 'claude-cli-worktree'
       const terminal = workspaceStore.addTerminal(workspace.id, presetId as AgentPresetId)
       workspaceStore.setFocusedTerminal(terminal.id)
       workspaceStore.save()
-      await startClaudeCliPty(terminal.id, workspace.folderPath, isWorktree)
     } else {
       // pty: generic PTY with auto-run command
       const terminal = workspaceStore.addTerminal(workspace.id, presetId as AgentPresetId)
@@ -568,7 +500,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       workspaceStore.setFocusedTerminal(terminal.id)
       workspaceStore.save()
     }
-  }, [workspace.id, workspace.folderPath, workspace.envVars, startClaudeCliPty])
+  }, [workspace.id, workspace.folderPath, workspace.envVars])
 
   const handleAddWorker = useCallback(async (selectedPath?: string) => {
     let procfilePath = selectedPath
@@ -678,9 +610,8 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           ...(terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent-worktree' ? { useWorktree: true, worktreePath: terminal.worktreePath, worktreeBranch: terminal.worktreeBranch } : {}),
         })
       } else if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') {
-        // Restart claude-cli PTY with bundled CLI
         await host.pty.kill(id)
-        await startClaudeCliPty(id, terminal.cwd || workspace.folderPath, terminal.agentPreset === 'claude-cli-worktree')
+        workspaceStore.bumpTerminalClaudeCliRestart(id)
       } else {
         const cwd = await host.pty.getCwd(id) || terminal.cwd
         const shell = await getShellFromSettings()

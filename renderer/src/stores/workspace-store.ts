@@ -190,6 +190,30 @@ class WorkspaceStore {
     this.save()
   }
 
+  setTerminalClaudeCliSessionId(terminalId: string, claudeCliSessionId: string | undefined): void {
+    const current = this.state.terminals.find(t => t.id === terminalId)
+    if (!current || current.claudeCliSessionId === claudeCliSessionId) return
+    this.state = {
+      ...this.state,
+      terminals: this.state.terminals.map(t =>
+        t.id === terminalId ? { ...t, claudeCliSessionId } : t
+      )
+    }
+    this.notify()
+    this.save()
+  }
+
+  bumpTerminalClaudeCliRestart(terminalId: string): void {
+    this.state = {
+      ...this.state,
+      terminals: this.state.terminals.map(t =>
+        t.id === terminalId ? { ...t, claudeCliRestartToken: Date.now() } : t
+      )
+    }
+    this.notify()
+    this.save()
+  }
+
   setTerminalWorktreeInfo(terminalId: string, worktreePath: string | undefined, worktreeBranch: string | undefined): void {
     this.state = {
       ...this.state,
@@ -626,9 +650,15 @@ class WorkspaceStore {
         alias: t.alias,
         cwd: t.cwd,
         sdkSessionId: t.sdkSessionId,
+        claudeCliSessionId: t.claudeCliSessionId,
+        claudeCliRestartToken: t.claudeCliRestartToken,
         model: t.model,
         agentParams: t.agentParams,
         sessionMeta: t.sessionMeta,
+        worktreePath: t.worktreePath,
+        worktreeBranch: t.worktreeBranch,
+        worktreeMergedKind: t.worktreeMergedKind,
+        historyKey: t.historyKey,
         procfilePath: t.procfilePath,
       }))
       // Persist current focus into the active workspace at save time
@@ -674,7 +704,7 @@ class WorkspaceStore {
           host.debug.log?.(`[workspace-store] Warning: terminal ${t.id} has no valid workspace, skipping`)
           return null
         }
-        const cwd = ws.folderPath
+        const cwd = t.cwd || ws.folderPath
         // For agent terminals, always derive title from preset to fix any persisted corruption
         const agentPreset = normalizePersistedAgentPreset(t.agentPreset)
         const presetTitle = agentPreset && agentPreset !== 'none'
@@ -689,9 +719,15 @@ class WorkspaceStore {
           alias: t.alias,
           cwd,
           sdkSessionId: t.sdkSessionId,
+          claudeCliSessionId: t.claudeCliSessionId,
+          claudeCliRestartToken: t.claudeCliRestartToken,
           model: t.model,
           agentParams: normalizeAgentParams(agentPreset, t.agentParams),
           sessionMeta: t.sessionMeta,
+          worktreePath: t.worktreePath,
+          worktreeBranch: t.worktreeBranch,
+          worktreeMergedKind: t.worktreeMergedKind,
+          historyKey: t.historyKey || uuidv4().replace(/-/g, '').slice(0, 12),
           procfilePath: t.procfilePath,
           scrollbackBuffer: [],
           pid: undefined,

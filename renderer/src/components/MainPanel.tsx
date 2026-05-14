@@ -11,6 +11,7 @@ import { WorktreeMergedChip } from './WorktreeMergedChip'
 // Lazy load heavy components
 const ClaudeAgentPanel = lazy(() => import('./ClaudeAgentPanel').then(m => ({ default: m.ClaudeAgentPanel })))
 const CodexAgentPanel = lazy(() => import('./CodexAgentPanel').then(m => ({ default: m.CodexAgentPanel })))
+const ClaudeCliPanel = lazy(() => import('./ClaudeCliPanel').then(m => ({ default: m.ClaudeCliPanel })))
 const WorkerPanel = lazy(() => import('./WorkerPanel').then(m => ({ default: m.WorkerPanel })))
 
 interface MainPanelProps {
@@ -27,6 +28,7 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
   const isWorker = !!terminal.procfilePath
   const isAgent = terminal.agentPreset && terminal.agentPreset !== 'none'
   const isSdkManaged = terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree'
+  const isClaudeCli = terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree'
   const isCodexAgent = terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree'
   const isClaudeCode = isSdkManaged
   const agentConfig = isAgent ? getAgentPreset(terminal.agentPreset!) : null
@@ -196,6 +198,15 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
                 isRemoteConnected={isRemoteConnected}
               />
             )}
+          </Suspense>
+        ) : isClaudeCli ? (
+          <Suspense fallback={<div className="loading-panel" />}>
+            <ClaudeCliPanel
+              terminal={terminal}
+              isActive={isActive}
+              onClose={onClose}
+              workspaceId={workspaceId}
+            />
           </Suspense>
         ) : (
           <TerminalPanel

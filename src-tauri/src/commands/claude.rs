@@ -26,7 +26,7 @@ use crate::remote_client::RustRemoteClientState;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use crate::subprocess::hide_console_window;
 use crate::window_registry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -48,6 +48,41 @@ const PREVIEW_CHARS: usize = 120;
 const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
 const WORKTREE_DIFF_MAX_BYTES: usize = 10 * 1024 * 1024;
+const CLAUDE_CLI_HOOK_SCRIPT: &str = r#"import { appendFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+
+function arg(name) {
+  const index = process.argv.indexOf(name)
+  return index >= 0 && index + 1 < process.argv.length ? process.argv[index + 1] : ''
+}
+
+let raw = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => { raw += chunk })
+process.stdin.on('end', () => {
+  try {
+    const input = raw.trim() ? JSON.parse(raw) : {}
+    const sessionId = input.session_id || input.sessionId || ''
+    if (!sessionId) process.exit(0)
+    const eventsPath = arg('--events')
+    if (!eventsPath) process.exit(0)
+    mkdirSync(dirname(eventsPath), { recursive: true })
+    appendFileSync(eventsPath, JSON.stringify({
+      terminalId: arg('--terminal-id'),
+      workspaceId: arg('--workspace-id'),
+      agentPreset: arg('--agent-preset'),
+      sessionId,
+      cwd: input.cwd || arg('--cwd') || process.env.CLAUDE_PROJECT_DIR || '',
+      source: input.source || '',
+      transcriptPath: input.transcript_path || input.transcriptPath || '',
+      hookEventName: input.hook_event_name || input.hookEventName || '',
+      timestamp: Date.now()
+    }) + '\n', 'utf8')
+  } catch {
+    process.exit(0)
+  }
+})
+"#;
 
 fn bat_debug_enabled() -> bool {
     matches!(
@@ -351,6 +386,37 @@ struct SessionListEntry {
     message_count: usize,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeCliSessionEvent {
+    #[serde(default)]
+    terminal_id: String,
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    agent_preset: String,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    cwd: String,
+    #[serde(default)]
+    transcript_path: String,
+    #[serde(default)]
+    timestamp: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeCliPrepareSessionResult {
+    session_id: String,
+    launch_mode: String,
+    settings_path: String,
+    events_path: String,
+    hook_script_path: String,
+    cli_path: String,
+    source: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct SlashCommandEntry {
@@ -404,6 +470,226 @@ fn claude_project_dir_candidates(projects_dir: &Path, cwd: &str) -> Vec<PathBuf>
         }
     }
     candidates
+}
+
+fn safe_file_segment(value: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(120)
+        .collect::<String>();
+    if safe.is_empty() {
+        "terminal".into()
+    } else {
+        safe
+    }
+}
+
+fn generate_uuid_v4() -> String {
+    let mut bytes: [u8; 16] = rand::random();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (idx, byte) in bytes.iter().enumerate() {
+        if matches!(idx, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_safe_cli_session_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 128
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+}
+
+fn write_if_changed(path: &Path, text: &str) -> Result<(), BridgeError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::read_to_string(path)
+        .map(|existing| existing == text)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    fs::write(path, text)?;
+    Ok(())
+}
+
+fn claude_cli_dir(app: &AppHandle) -> Result<PathBuf, BridgeError> {
+    Ok(app_data_dir(app)?.join("claude-cli"))
+}
+
+fn claude_cli_events_path(app: &AppHandle) -> Result<PathBuf, BridgeError> {
+    Ok(claude_cli_dir(app)?.join("session-events.jsonl"))
+}
+
+fn claude_cli_hook_script_path(app: &AppHandle) -> Result<PathBuf, BridgeError> {
+    Ok(claude_cli_dir(app)?.join("hook-session-start.mjs"))
+}
+
+fn claude_cli_settings_path(app: &AppHandle, terminal_id: &str) -> Result<PathBuf, BridgeError> {
+    Ok(claude_cli_dir(app)?
+        .join("settings")
+        .join(format!("{}.json", safe_file_segment(terminal_id))))
+}
+
+fn read_latest_claude_cli_event<F>(
+    events_path: &Path,
+    predicate: F,
+) -> Option<ClaudeCliSessionEvent>
+where
+    F: Fn(&ClaudeCliSessionEvent) -> bool,
+{
+    let raw = fs::read_to_string(events_path).ok()?;
+    raw.lines().rev().find_map(|line| {
+        let event = serde_json::from_str::<ClaudeCliSessionEvent>(line).ok()?;
+        if is_safe_cli_session_id(&event.session_id) && predicate(&event) {
+            Some(event)
+        } else {
+            None
+        }
+    })
+}
+
+fn claude_history_file_exists(cwd: &str, session_id: &str) -> bool {
+    if cwd.trim().is_empty() || !is_safe_cli_session_id(session_id) {
+        return false;
+    }
+    let Some(home) = home_dir() else {
+        return false;
+    };
+    let projects_dir = home.join(".claude").join("projects");
+    claude_project_dir_candidates(&projects_dir, cwd)
+        .into_iter()
+        .any(|dir| dir.join(format!("{session_id}.jsonl")).is_file())
+}
+
+fn claude_cli_event_transcript_exists(event: Option<&ClaudeCliSessionEvent>) -> bool {
+    event
+        .map(|event| event.transcript_path.trim())
+        .filter(|path| !path.is_empty())
+        .map(|path| Path::new(path).is_file())
+        .unwrap_or(false)
+}
+
+fn choose_claude_cli_session(
+    events_path: &Path,
+    terminal_id: &str,
+    workspace_id: &str,
+    cwd: &str,
+    agent_preset: &str,
+    current_session_id: Option<&str>,
+) -> (String, String) {
+    if let Some(event) =
+        read_latest_claude_cli_event(events_path, |event| event.terminal_id == terminal_id)
+    {
+        return (event.session_id, "terminal-event".into());
+    }
+
+    if let Some(session_id) = current_session_id.map(str::trim) {
+        if is_safe_cli_session_id(session_id) {
+            return (session_id.to_string(), "terminal-state".into());
+        }
+    }
+
+    if let Some(event) = read_latest_claude_cli_event(events_path, |event| {
+        event.workspace_id == workspace_id && event.agent_preset == agent_preset && event.cwd == cwd
+    }) {
+        return (event.session_id, "workspace-event".into());
+    }
+
+    (generate_uuid_v4(), "new".into())
+}
+
+fn write_claude_cli_hook_assets(
+    app: &AppHandle,
+    terminal_id: &str,
+    workspace_id: &str,
+    cwd: &str,
+    agent_preset: &str,
+) -> Result<(PathBuf, PathBuf, PathBuf), BridgeError> {
+    let settings_path = claude_cli_settings_path(app, terminal_id)?;
+    let events_path = claude_cli_events_path(app)?;
+    let hook_script_path = claude_cli_hook_script_path(app)?;
+    let node_path = resolve_spawn_config(app)?.node_path;
+
+    write_if_changed(&hook_script_path, CLAUDE_CLI_HOOK_SCRIPT)?;
+    if let Some(parent) = events_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let settings = json!({
+        "hooks": {
+            "SessionStart": [
+                {
+                    "matcher": "startup|resume|clear|compact",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": node_path.to_string_lossy(),
+                            "args": [
+                                hook_script_path.to_string_lossy(),
+                                "--events",
+                                events_path.to_string_lossy(),
+                                "--terminal-id",
+                                terminal_id,
+                                "--workspace-id",
+                                workspace_id,
+                                "--agent-preset",
+                                agent_preset,
+                                "--cwd",
+                                cwd
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+    let settings_text = serde_json::to_string_pretty(&settings)?;
+    write_if_changed(&settings_path, &(settings_text + "\n"))?;
+    Ok((settings_path, events_path, hook_script_path))
 }
 
 fn preview_text_from_claude_content(content: &Value) -> Option<String> {
@@ -2473,6 +2759,59 @@ pub async fn claude_get_cli_path(
 }
 
 #[tauri::command]
+pub async fn claude_prepare_cli_session(
+    app: AppHandle,
+    terminal_id: String,
+    workspace_id: String,
+    cwd: String,
+    agent_preset: String,
+    current_session_id: Option<String>,
+) -> Result<Value, BridgeError> {
+    let (settings_path, events_path, hook_script_path) =
+        write_claude_cli_hook_assets(&app, &terminal_id, &workspace_id, &cwd, &agent_preset)?;
+    let (mut session_id, mut source) = choose_claude_cli_session(
+        &events_path,
+        &terminal_id,
+        &workspace_id,
+        &cwd,
+        &agent_preset,
+        current_session_id.as_deref(),
+    );
+    let selected_event = if source == "terminal-event" {
+        read_latest_claude_cli_event(&events_path, |event| event.terminal_id == terminal_id)
+    } else if source == "workspace-event" {
+        read_latest_claude_cli_event(&events_path, |event| {
+            event.workspace_id == workspace_id
+                && event.agent_preset == agent_preset
+                && event.cwd == cwd
+        })
+    } else {
+        None
+    };
+    let can_resume = source != "new"
+        && (claude_history_file_exists(&cwd, &session_id)
+            || claude_cli_event_transcript_exists(selected_event.as_ref()));
+    let launch_mode = if can_resume {
+        "resume"
+    } else {
+        if !is_uuid_like(&session_id) {
+            session_id = generate_uuid_v4();
+            source = "new".into();
+        }
+        "session"
+    };
+    Ok(serde_json::to_value(ClaudeCliPrepareSessionResult {
+        session_id,
+        launch_mode: launch_mode.into(),
+        settings_path: settings_path.to_string_lossy().to_string(),
+        events_path: events_path.to_string_lossy().to_string(),
+        hook_script_path: hook_script_path.to_string_lossy().to_string(),
+        cli_path: resolve_claude_cli_path(&app),
+        source,
+    })?)
+}
+
+#[tauri::command]
 pub async fn claude_list_sessions(
     app: AppHandle,
     window: WebviewWindow,
@@ -3261,6 +3600,79 @@ mod tests {
         assert_eq!(sessions[0].sdk_session_id, "sdk-1");
         assert_eq!(sessions[0].preview, "hello from history");
         assert_eq!(sessions[0].message_count, 2);
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn uuid_generation_produces_v4_shape() {
+        let id = generate_uuid_v4();
+        assert!(is_uuid_like(&id));
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+    }
+
+    #[test]
+    fn claude_cli_session_selection_prefers_latest_terminal_event() {
+        let base = temp_data_dir("claude-cli-events");
+        fs::create_dir_all(&base).unwrap();
+        let events_path = base.join("session-events.jsonl");
+        fs::write(
+            &events_path,
+            [
+                r#"{"terminalId":"term-1","workspaceId":"ws","agentPreset":"claude-cli","sessionId":"old-session","cwd":"C:/repo","timestamp":1}"#,
+                r#"{"terminalId":"term-2","workspaceId":"ws","agentPreset":"claude-cli","sessionId":"other-session","cwd":"C:/repo","timestamp":2}"#,
+                r#"{"terminalId":"term-1","workspaceId":"ws","agentPreset":"claude-cli","sessionId":"new-session","cwd":"C:/repo","timestamp":3}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let (session_id, source) = choose_claude_cli_session(
+            &events_path,
+            "term-1",
+            "ws",
+            "C:/repo",
+            "claude-cli",
+            Some("state-session"),
+        );
+        assert_eq!(session_id, "new-session");
+        assert_eq!(source, "terminal-event");
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn claude_cli_session_selection_uses_state_then_workspace_then_new() {
+        let base = temp_data_dir("claude-cli-fallbacks");
+        fs::create_dir_all(&base).unwrap();
+        let events_path = base.join("session-events.jsonl");
+        fs::write(
+            &events_path,
+            r#"{"terminalId":"term-x","workspaceId":"ws","agentPreset":"claude-cli","sessionId":"workspace-session","cwd":"C:/repo","timestamp":1}"#,
+        )
+        .unwrap();
+
+        let (state_session, state_source) = choose_claude_cli_session(
+            &events_path,
+            "term-1",
+            "ws",
+            "C:/repo",
+            "claude-cli",
+            Some("state-session"),
+        );
+        assert_eq!(state_session, "state-session");
+        assert_eq!(state_source, "terminal-state");
+
+        let (workspace_session, workspace_source) =
+            choose_claude_cli_session(&events_path, "term-1", "ws", "C:/repo", "claude-cli", None);
+        assert_eq!(workspace_session, "workspace-session");
+        assert_eq!(workspace_source, "workspace-event");
+
+        let (new_session, new_source) =
+            choose_claude_cli_session(&events_path, "term-1", "ws", "C:/other", "claude-cli", None);
+        assert!(is_uuid_like(&new_session));
+        assert_eq!(new_source, "new");
 
         fs::remove_dir_all(base).ok();
     }

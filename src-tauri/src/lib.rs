@@ -235,6 +235,7 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
             claude_cmd::claude_account_remove,
             claude_cmd::claude_account_mark_warning_shown,
             claude_cmd::claude_get_cli_path,
+            claude_cmd::claude_prepare_cli_session,
             claude_cmd::claude_list_sessions,
             claude_cmd::claude_get_supported_models,
             claude_cmd::claude_get_supported_commands,

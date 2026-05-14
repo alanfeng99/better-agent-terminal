@@ -62,6 +62,8 @@ export interface TerminalInstance {
   agentParams?: Record<string, AgentParamValue>; // Normalized agent-specific persisted params
   pendingPrompt?: string;        // Prompt to auto-send after fork/resume
   pendingImages?: string[];      // Data URLs of images to send with pendingPrompt
+  claudeCliSessionId?: string;   // Claude CLI session ID for PTY-based auto-resume
+  claudeCliRestartToken?: number; // Bumped to ask ClaudeCliPanel to recreate its PTY
   sessionMeta?: {                // Persisted session metadata for status line
     totalCost: number;
     inputTokens: number;
