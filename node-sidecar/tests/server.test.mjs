@@ -1037,15 +1037,18 @@ async function inProcess() {
     const sendReply = await dispatch({ jsonrpc: '2.0', id: 221, method: 'claude.sendMessage',
       params: { sessionId: 'send-1', prompt: 'hi' } })
     assert.equal(sendReply.result.ok, true)
-    // Event sequence: local/remote user echo, status, assistant message,
-    // result, turn-end (in order).
+    // Event sequence: local/remote user echo, request progress statuses,
+    // SDK init status, assistant message, result, turn-end (in order).
     const events = captured.filter(c => c.name && c.name.startsWith('claude:'))
     const seq = events.map(e => e.name)
-    assert.deepEqual(seq, ['claude:message', 'claude:status', 'claude:message', 'claude:result', 'claude:turn-end'])
+    assert.deepEqual(seq, ['claude:message', 'claude:status', 'claude:status', 'claude:status', 'claude:message', 'claude:result', 'claude:turn-end'])
     assert.equal(events[0].payload.message.role, 'user')
     assert.equal(events[0].payload.message.content, 'hi')
+    assert.equal(events[1].payload.meta.runtimeStatus, 'starting')
+    assert.equal(events[2].payload.meta.runtimeStatus, 'waiting_for_api')
     // status payload.meta.sdkSessionId
-    assert.equal(events[1].payload.meta.sdkSessionId, 'sdk-sess-abc')
+    const sdkStatus = events.find(e => e.name === 'claude:status' && e.payload?.meta?.sdkSessionId === 'sdk-sess-abc')
+    assert.ok(sdkStatus, 'expected sdk init claude:status with sdkSessionId')
     // status meta must carry the full SessionMetadata shape, not a
     // sparse subset — the renderer's ClaudeAgentPanel reads
     // `inputTokens.toLocaleString()` etc. without optional chaining.
@@ -1059,8 +1062,9 @@ async function inProcess() {
       'contextWindow', 'maxOutputTokens', 'contextTokens',
       'cacheReadTokens', 'cacheCreationTokens',
       'callCacheRead', 'callCacheWrite', 'lastQueryCalls',
+      'runtimeStatus', 'runtimeMessage', 'runtimeStatusStartedAt',
     ]) {
-      assert.ok(key in events[1].payload.meta,
+      assert.ok(key in sdkStatus.payload.meta,
         `claude:status meta missing field: ${key}`)
     }
     for (const numKey of [
@@ -1069,14 +1073,14 @@ async function inProcess() {
       'cacheReadTokens', 'cacheCreationTokens',
       'callCacheRead', 'callCacheWrite', 'lastQueryCalls',
     ]) {
-      assert.equal(typeof events[1].payload.meta[numKey], 'number',
+      assert.equal(typeof sdkStatus.payload.meta[numKey], 'number',
         `claude:status meta.${numKey} must be a number`)
     }
     // message payload.message.content shape preserved
-    assert.equal(events[2].payload.message.message.content[0].text, 'hello back')
+    assert.equal(events[4].payload.message.message.content[0].text, 'hello back')
     // turn-end carries reason + sdkSessionId
-    assert.equal(events[4].payload.payload.reason, 'completed')
-    assert.equal(events[4].payload.payload.sdkSessionId, 'sdk-sess-abc')
+    assert.equal(events[6].payload.payload.reason, 'completed')
+    assert.equal(events[6].payload.payload.sdkSessionId, 'sdk-sess-abc')
 
     // Second sendMessage must pass `resume: 'sdk-sess-abc'` to the SDK
     // (proving multi-turn context preservation).
@@ -3077,7 +3081,9 @@ async function inProcess() {
     assert.equal(stubReply.result.ok, true)
     assert.equal(stubReply.result.stub, true)
     const stubEvents = captured2.filter(c => c.name?.startsWith('claude:')).map(c => c.name)
-    assert.deepEqual(stubEvents, ['claude:message', 'claude:message', 'claude:turn-end'])
+    assert.deepEqual(stubEvents, ['claude:message', 'claude:status', 'claude:message', 'claude:turn-end'])
+    const stubStatus = captured2.find(c => c.name === 'claude:status')?.payload.meta
+    assert.equal(stubStatus?.runtimeStatus, 'starting')
     assert.equal(captured2.find(c => c.name === 'claude:message')?.payload.message.role, 'user')
   } finally {
     __setSdkOverrideForTests(undefined)

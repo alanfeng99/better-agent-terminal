@@ -146,6 +146,43 @@ function emitUserEcho(params, sessionId, prompt, images) {
   })
 }
 
+function setRuntimeStatus(s, sessionId, status, message) {
+  s.runtimeStatus = status
+  s.runtimeMessage = message
+  s.runtimeStatusStartedAt = Date.now()
+  sendEvent('claude:status', { sessionId, meta: buildSessionMeta(s) })
+}
+
+function clearRuntimeStatus(s) {
+  if (!s) return
+  s.runtimeStatus = null
+  s.runtimeMessage = null
+  s.runtimeStatusStartedAt = null
+}
+
+function currentContextTokens(s) {
+  const u = s?.lastUsage
+  if (!u) return 0
+  return (u.input_tokens || 0)
+    + (u.output_tokens || 0)
+    + (u.cache_creation_input_tokens || 0)
+    + (u.cache_read_input_tokens || 0)
+}
+
+function pendingApiStatusForSession(s) {
+  const compactWindow = typeof s?.autoCompactWindow === 'number' ? s.autoCompactWindow : 0
+  if (compactWindow > 0 && currentContextTokens(s) >= compactWindow * 0.9) {
+    return {
+      status: 'compacting',
+      message: 'Compacting context; still waiting for Claude API response.',
+    }
+  }
+  return {
+    status: 'waiting_for_api',
+    message: 'Still waiting for Claude API response.',
+  }
+}
+
 function resultErrorMessage(msg) {
   for (const value of [msg?.message, msg?.error, msg?.result]) {
     if (typeof value === 'string' && value.trim()) return value.trim()
@@ -500,10 +537,12 @@ async function performSendMessage(params) {
   }
   const sid = shortSessionId(sessionId)
   if (s.isResting) s.isResting = false
+  setRuntimeStatus(s, sessionId, 'starting', 'Preparing Claude request.')
 
   const sdk = await loadAnthropicSdk()
   if (!sdk || typeof sdk.query !== 'function') {
     logWarn(`claude.sendMessage: SDK unavailable, returning stub for session ${sessionId}`)
+    clearRuntimeStatus(s)
     sendEvent('claude:message', { sessionId, message: { role: 'assistant', content: '(stub reply — SDK unavailable)' } })
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: '(stub)' } })
     return { ok: true, stub: true }
@@ -516,6 +555,7 @@ async function performSendMessage(params) {
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     logWarn(`claude.sendMessage(${sid}): ensureLiveQuery failed: ${errMsg}`)
+    clearRuntimeStatus(s)
     sendEvent('claude:error', { sessionId, error: errMsg })
     sendEvent('claude:turn-end', { sessionId, payload: { reason: 'error' } })
     return { ok: false, error: errMsg }
@@ -523,6 +563,8 @@ async function performSendMessage(params) {
 
   const startedAt = Date.now()
   s.streaming = true
+  const pendingStatus = pendingApiStatusForSession(s)
+  setRuntimeStatus(s, sessionId, pendingStatus.status, pendingStatus.message)
   logInfo(`claude.sendMessage(${sid}): start promptLen=${prompt.length} images=${Array.isArray(params?.images) ? params.images.length : 0} liveClosed=${live.isClosed}`)
   debugLog('push-user-message', sessionId, {
     promptLen: prompt.length,
@@ -547,10 +589,12 @@ async function performSendMessage(params) {
         stopReason: result.stop_reason || null,
       })
       logInfo(`claude.sendMessage(${sid}): completed ok elapsedMs=${elapsedMs}`)
+      clearRuntimeStatus(s)
       return { ok: true }
     }
     const errMsg = resultErrorMessage(result)
     logWarn(`claude.sendMessage(${sid}): completed error elapsedMs=${elapsedMs} error=${errMsg}`)
+    clearRuntimeStatus(s)
     return { ok: false, error: errMsg }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
@@ -567,6 +611,7 @@ async function performSendMessage(params) {
       s.liveQuery = null
       s.currentQuery = null
     }
+    clearRuntimeStatus(s)
     return { ok: !aborted, error: aborted ? undefined : errMsg }
   } finally {
     s.streaming = false

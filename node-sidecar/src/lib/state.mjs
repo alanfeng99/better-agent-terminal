@@ -79,6 +79,9 @@ export function ensureSession(sessionId) {
       // claude.resolveAskUser, which calls the stored resolve fn.
       pendingPermissions: new Map(),
       pendingAskUser: new Map(),
+      runtimeStatus: null,
+      runtimeMessage: null,
+      runtimeStatusStartedAt: null,
       // Renderer's "resting" UX: ClaudeAgentPanel toggles this when the
       // user sends the session to background so it doesn't keep
       // streaming. wakeSession and the next sendMessage both clear it.
@@ -135,5 +138,8 @@ export function buildSessionMeta(s) {
     callCacheRead: 0,
     callCacheWrite: 0,
     lastQueryCalls: 0,
+    runtimeStatus: s.runtimeStatus ?? null,
+    runtimeMessage: s.runtimeMessage ?? null,
+    runtimeStatusStartedAt: s.runtimeStatusStartedAt ?? null,
   }
 }

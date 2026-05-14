@@ -64,8 +64,25 @@ function makeMetadata(overrides = {}) {
     callCacheRead: 0,
     callCacheWrite: 0,
     lastQueryCalls: 0,
+    runtimeStatus: null,
+    runtimeMessage: null,
+    runtimeStatusStartedAt: null,
     ...overrides,
   }
+}
+
+function setRuntimeStatus(session, sessionId, status, message) {
+  session.metadata.runtimeStatus = status
+  session.metadata.runtimeMessage = message
+  session.metadata.runtimeStatusStartedAt = Date.now()
+  send('claude:status', sessionId, 'meta', { ...session.metadata })
+}
+
+function clearRuntimeStatus(session) {
+  if (!session) return
+  session.metadata.runtimeStatus = null
+  session.metadata.runtimeMessage = null
+  session.metadata.runtimeStatusStartedAt = null
 }
 
 function normalizeEffort(effort) {
@@ -570,6 +587,7 @@ export async function sendCodexMessage(params) {
   session.state.streamingText = ''
   session.state.streamingThinking = ''
   const ctrl = session.abortController
+  setRuntimeStatus(session, sessionId, 'waiting_for_api', 'Still waiting for Codex API response.')
 
   if (!params?._suppressUserEcho) {
     addMessage(sessionId, {
@@ -611,8 +629,10 @@ export async function sendCodexMessage(params) {
       } else if (type === 'turn.started') {
         session.metadata.numTurns += 1
       } else if (type === 'item.started') {
+        clearRuntimeStatus(session)
         handleItemStarted(sessionId, event.item || {}, state)
       } else if (type === 'item.updated') {
+        clearRuntimeStatus(session)
         handleItemUpdated(sessionId, event.item || {}, state)
       } else if (type === 'item.completed') {
         handleItemCompleted(sessionId, event.item || {}, state)
@@ -626,6 +646,7 @@ export async function sendCodexMessage(params) {
         session.metadata.lastQueryCalls = 1
         session.metadata.durationMs = Date.now() - (session.startTime || startedAt)
         session.metadata.lastTurnDurationMs = Date.now() - startedAt
+        clearRuntimeStatus(session)
         send('claude:status', sessionId, 'meta', { ...session.metadata })
         send('claude:result', sessionId, 'result', { subtype: 'success', result: state.assistantText || undefined, totalCost: session.metadata.totalCost })
         send('claude:turn-end', sessionId, 'payload', { reason: 'completed', result: state.assistantText || undefined, sdkSessionId: session.threadId })
@@ -647,6 +668,7 @@ export async function sendCodexMessage(params) {
     if (!ctrl.signal.aborted) {
       if (!params?._retriedAfterThreadResume && isCodexThreadNotFoundError(err) && recoverCodexThread(sessionId, session)) {
         logWarn(`[codex:${sessionId.slice(0, 8)}] thread not found; resumed ${session.threadId} and retrying turn`)
+        setRuntimeStatus(session, sessionId, 'starting', 'Resuming Codex thread before retrying the API request.')
         return sendCodexMessage({
           ...params,
           _retriedAfterThreadResume: true,
@@ -664,6 +686,7 @@ export async function sendCodexMessage(params) {
   } finally {
     for (const file of tempImages) unlink(file).catch(() => {})
     if (session.abortController === ctrl) {
+      clearRuntimeStatus(session)
       session.isRunning = false
       session.state.isStreaming = false
       session.state.streamingText = ''

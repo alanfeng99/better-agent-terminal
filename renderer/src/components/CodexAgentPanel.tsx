@@ -28,6 +28,31 @@ import { buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFu
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
 
+function clearRuntimeStatusMeta(meta: SessionMeta | null): SessionMeta | null {
+  if (!meta?.runtimeStatus && !meta?.runtimeMessage && !meta?.runtimeStatusStartedAt) return meta
+  return { ...meta, runtimeStatus: null, runtimeMessage: null, runtimeStatusStartedAt: null }
+}
+
+function runtimeWaitingMessage(meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
+  if (!isStreaming || !meta?.runtimeStatus) return null
+  const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
+  const elapsedMs = Math.max(0, now - startedAt)
+  const elapsed = elapsedMs >= 1000 ? ` (${Math.floor(elapsedMs / 1000)}s)` : ''
+  if (meta.runtimeStatus === 'compacting') {
+    return `${meta.runtimeMessage || 'Compacting context; still waiting for API response.'}${elapsed}`
+  }
+  if (meta.runtimeStatus === 'waiting_for_api' && elapsedMs >= 8000) {
+    return `${meta.runtimeMessage || 'Still waiting for API response.'}${elapsed}`
+  }
+  if (meta.runtimeStatus === 'starting' && elapsedMs >= 8000) {
+    return `${meta.runtimeMessage || 'Preparing request.'}${elapsed}`
+  }
+  if (meta.runtimeStatus === 'queued') {
+    return `${meta.runtimeMessage || 'Queued behind the previous request.'}${elapsed}`
+  }
+  return null
+}
+
 // Track sessions that have been started to prevent duplicate calls across
 // StrictMode remounts. Real window/profile remounts must be allowed to resume
 // again, so unmounts schedule a delayed cleanup that StrictMode's immediate
@@ -137,6 +162,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }>())
   const inputValueRef = useRef('')
   const [isStreaming, setIsStreaming] = useState(false)
+  const [runtimeWaitNow, setRuntimeWaitNow] = useState(() => Date.now())
   const [isInterrupted, setIsInterrupted] = useState(false)
   const lastEscRef = useRef(0)
   const streamingTextStore = useRafBatchedString('')
@@ -306,6 +332,16 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [filePickerIndex, setFilePickerIndex] = useState(0)
   const [filePickerPreview, setFilePickerPreview] = useState<string | null>(null)
   const filePickerInputRef = useRef<HTMLInputElement>(null)
+  const runtimeWaitMessage = useMemo(
+    () => runtimeWaitingMessage(sessionMeta, isStreaming, runtimeWaitNow),
+    [sessionMeta, isStreaming, runtimeWaitNow],
+  )
+  useEffect(() => {
+    if (!isStreaming || !sessionMeta?.runtimeStatus) return
+    setRuntimeWaitNow(Date.now())
+    const timer = window.setInterval(() => setRuntimeWaitNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [isStreaming, sessionMeta?.runtimeStatus, sessionMeta?.runtimeStatusStartedAt])
   // Message archiving — keep renderer memory bounded
   const [loadedArchive, setLoadedArchive] = useState<MessageItem[]>([])
   const [hasMoreArchived, setHasMoreArchived] = useState(false)
@@ -770,7 +806,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         host.debug.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
         workspaceStore.updateTerminalActivity(sessionId)
         const message = msg as ClaudeMessage
-        // On restart, sys-init message arrives again — reset messages
+        if (message.role !== 'user') setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+        // On restart, sys-init message arrives again - reset messages
         // But skip reset if history will be loaded (resume flow)
         if (message.id === `sys-init-${sessionId}`) {
           host.debug.log(`${tag} sys-init historyLoaded=${historyLoadedRef.current}`)
@@ -858,6 +895,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       api.onToolUse((sid: string, tool: unknown) => {
         if (sid !== sessionId) return
         workspaceStore.updateTerminalActivity(sessionId)
+        setSessionMeta(prev => clearRuntimeStatusMeta(prev))
         const toolCall = tool as ClaudeToolCall
         host.debug.log(`[renderer] onToolUse name=${toolCall.toolName} id=${toolCall.id?.slice(0, 12)} status=${toolCall.status} parentToolUseId=${toolCall.parentToolUseId || 'none'}`)
         // Route subagent tool calls to separate bucket
@@ -954,6 +992,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (sid !== sessionId) return
         setIsStreaming(false)
         setIsInterrupted(false)
+        setSessionMeta(prev => clearRuntimeStatusMeta(prev))
         setStreamingText('')
         setStreamingThinking('')
         // Refresh usage after agent activity (usage likely changed)
@@ -999,11 +1038,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         }])
         setIsStreaming(false)
         setIsInterrupted(false)
+        setSessionMeta(prev => clearRuntimeStatusMeta(prev))
       }),
 
       api.onStream((sid: string, data: unknown) => {
         if (sid !== sessionId) return
         workspaceStore.updateTerminalActivity(sessionId)
+        setSessionMeta(prev => clearRuntimeStatusMeta(prev))
         const d = data as { text?: string; thinking?: string; parentToolUseId?: string }
         if (d.parentToolUseId) {
           // Route to per-subagent streaming state
@@ -3677,7 +3718,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <div className="tl-item">
               <div className="tl-dot dot-thinking" />
               <div className="tl-content claude-thinking">
-                <span className="claude-thinking-text">{t('claude.thinking')}</span>
+                <span className="claude-thinking-text">{runtimeWaitMessage || t('claude.thinking')}</span>
                 <span className="claude-thinking-dots"><span>.</span><span>.</span><span>.</span></span>
               </div>
             </div>

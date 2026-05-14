@@ -148,6 +148,9 @@ struct CodexSession {
     messages: Vec<Value>,
     temporary_image_paths: Vec<PathBuf>,
     command_outputs: HashMap<String, String>,
+    runtime_status: Option<String>,
+    runtime_message: Option<String>,
+    runtime_status_started_at: Option<u128>,
     is_running: bool,
     is_resting: bool,
 }
@@ -178,8 +181,23 @@ impl CodexSession {
             "effort": self.effort,
             "lastTurnFirstTokenMs": self.last_turn_first_token_ms,
             "lastTurnDurationMs": self.last_turn_duration_ms,
+            "runtimeStatus": self.runtime_status.as_deref(),
+            "runtimeMessage": self.runtime_message.as_deref(),
+            "runtimeStatusStartedAt": self.runtime_status_started_at,
         })
     }
+}
+
+fn set_runtime_status(session: &mut CodexSession, status: &str, message: &str) {
+    session.runtime_status = Some(status.to_string());
+    session.runtime_message = Some(message.to_string());
+    session.runtime_status_started_at = Some(now_millis());
+}
+
+fn clear_runtime_status(session: &mut CodexSession) {
+    session.runtime_status = None;
+    session.runtime_message = None;
+    session.runtime_status_started_at = None;
 }
 
 fn codex_context_window_for_model(model: &str) -> u64 {
@@ -1168,6 +1186,9 @@ impl CodexAppServerState {
             messages: Vec::new(),
             temporary_image_paths: Vec::new(),
             command_outputs: HashMap::new(),
+            runtime_status: None,
+            runtime_message: None,
+            runtime_status_started_at: None,
             is_running: false,
             is_resting: false,
         };
@@ -1317,6 +1338,9 @@ impl CodexAppServerState {
             messages: Vec::new(),
             temporary_image_paths: Vec::new(),
             command_outputs: HashMap::new(),
+            runtime_status: None,
+            runtime_message: None,
+            runtime_status_started_at: None,
             is_running: false,
             is_resting: false,
         };
@@ -1442,9 +1466,21 @@ impl CodexAppServerState {
             session.assistant_text.clear();
             session.thinking_text.clear();
             session.command_outputs.clear();
+            set_runtime_status(
+                session,
+                "waiting_for_api",
+                "Still waiting for Codex API response.",
+            );
             let msg = make_user_message(&session_id, &prompt, image_count);
             session.messages.push(msg.clone());
             emit(app, "claude:message", &session_id, "message", msg);
+            emit(
+                app,
+                "claude:status",
+                &session_id,
+                "meta",
+                session.metadata(),
+            );
             (
                 session
                     .thread_id
@@ -1480,6 +1516,24 @@ impl CodexAppServerState {
                         &session_id,
                         format!("thread not found; attempting thread/resume thread={thread_id}"),
                     );
+                    {
+                        let mut sessions =
+                            self.inner.sessions.lock().expect("codex sessions lock");
+                        if let Some(session) = sessions.get_mut(&session_id) {
+                            set_runtime_status(
+                                session,
+                                "starting",
+                                "Resuming Codex thread before retrying the API request.",
+                            );
+                            emit(
+                                app,
+                                "claude:status",
+                                &session_id,
+                                "meta",
+                                session.metadata(),
+                            );
+                        }
+                    }
                     match connection.request(
                         "thread/resume",
                         build_thread_resume_params(
@@ -1578,6 +1632,7 @@ impl CodexAppServerState {
             sessions.get_mut(session_id).map(|session| {
                 session.is_running = false;
                 session.active_turn_id = None;
+                clear_runtime_status(session);
                 if let Some(started_at) = session.last_turn_started_at {
                     session.last_turn_duration_ms = Some(started_at.elapsed().as_millis() as u64);
                 }
@@ -2176,6 +2231,7 @@ fn append_stream_delta(
             } else {
                 session.thinking_text.push_str(&delta);
             }
+            clear_runtime_status(session);
         }
     }
     emit(
@@ -2523,6 +2579,7 @@ fn handle_turn_completed(
         };
         session.is_running = false;
         session.active_turn_id = None;
+        clear_runtime_status(session);
         cleanup_session_temp_images(session);
         session.command_outputs.clear();
         let turn = params.get("turn").unwrap_or(params);
@@ -2799,6 +2856,9 @@ mod tests {
             messages: Vec::new(),
             temporary_image_paths: Vec::new(),
             command_outputs: HashMap::new(),
+            runtime_status: None,
+            runtime_message: None,
+            runtime_status_started_at: None,
             is_running: false,
             is_resting: false,
         };
@@ -2840,6 +2900,9 @@ mod tests {
                     messages: Vec::new(),
                     temporary_image_paths: Vec::new(),
                     command_outputs: HashMap::new(),
+                    runtime_status: None,
+                    runtime_message: None,
+                    runtime_status_started_at: None,
                     is_running: false,
                     is_resting: false,
                 },

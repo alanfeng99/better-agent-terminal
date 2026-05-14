@@ -511,6 +511,11 @@
   font-style: italic;
 }
 
+.claude-thinking-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .claude-thinking-dots span {
   animation: thinking-bounce 1.4s ease-in-out infinite;
   display: inline-block;
