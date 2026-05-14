@@ -95,6 +95,10 @@ export interface CreatePtyOptions {
   type: 'terminal';              // 統一為 terminal
   agentPreset?: AgentPresetId;   // 可選的 Agent 預設
   shell?: string;
+  command?: string;              // Optional direct program to spawn instead of a shell
+  args?: string[];               // Args for direct program spawn
+  cols?: number;                 // Initial PTY columns
+  rows?: number;                 // Initial PTY rows
   customEnv?: Record<string, string>;  // 自定義環境變數
   perTerminalHistory?: boolean;  // Use per-terminal HISTFILE
   historyKey?: string;           // Stable key for HISTFILE filename

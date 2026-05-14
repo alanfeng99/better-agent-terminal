@@ -50,6 +50,14 @@ pub struct CreatePtyOptions {
     #[allow(dead_code)] // accepted for API compat with Electron contract
     pub r#type: String,
     pub shell: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
     #[allow(dead_code)]
     pub agent_preset: Option<String>,
     #[serde(default)]
@@ -162,6 +170,8 @@ const OUTPUT_FLUSH_MS: u64 = 8;
 // of growing until the time deadline.
 const OUTPUT_FRAME_MAX_BYTES: usize = 64 * 1024;
 const WORKER_PTY_SEPARATOR: &str = "__w__";
+const DEFAULT_PTY_COLS: u16 = 100;
+const DEFAULT_PTY_ROWS: u16 = 30;
 
 fn worker_parts_from_pty_id(id: &str) -> Option<(&str, &str)> {
     let (panel_id, process_name) = id.split_once(WORKER_PTY_SEPARATOR)?;
@@ -291,14 +301,34 @@ fn new_shell_command(shell: &str) -> CommandBuilder {
 }
 
 fn build_command(opts: &CreatePtyOptions, app_data_dir: Option<&Path>) -> CommandBuilder {
-    let exists = |s: &str| Path::new(s).exists();
-    let shell = select_shell(opts.shell.as_deref(), TARGET_OS, &exists);
-    let mut cmd = new_shell_command(&shell);
     let cwd = if Path::new(&opts.cwd).is_dir() {
         PathBuf::from(&opts.cwd)
     } else {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     };
+    if let Some(program) = opts
+        .command
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let mut cmd = CommandBuilder::new(program);
+        if let Some(args) = &opts.args {
+            for arg in args {
+                cmd.arg(arg);
+            }
+        }
+        cmd.cwd(cwd);
+        if let Some(env) = &opts.custom_env {
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+        }
+        return cmd;
+    }
+
+    let exists = |s: &str| Path::new(s).exists();
+    let shell = select_shell(opts.shell.as_deref(), TARGET_OS, &exists);
+    let mut cmd = new_shell_command(&shell);
     cmd.cwd(cwd);
     if let Some(env) = &opts.custom_env {
         for (k, v) in env {
@@ -414,10 +444,18 @@ pub(crate) fn start_pty_session(
         }
     }
     let pty_system = native_pty_system();
+    let cols = options
+        .cols
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PTY_COLS);
+    let rows = options
+        .rows
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PTY_ROWS);
     let pair = pty_system
         .openpty(PtySize {
-            rows: 30,
-            cols: 100,
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -645,6 +683,10 @@ fn pty_restart_impl(
             cwd,
             r#type: kind,
             shell,
+            command: None,
+            args: None,
+            cols: None,
+            rows: None,
             agent_preset: None,
             custom_env: None,
             per_terminal_history: None,
@@ -722,6 +764,10 @@ mod tests {
             cwd: ".".into(),
             r#type: "terminal".into(),
             shell: None,
+            command: None,
+            args: None,
+            cols: None,
+            rows: None,
             agent_preset: None,
             custom_env: None,
             per_terminal_history: Some(true),
@@ -737,6 +783,10 @@ mod tests {
             cwd: ".".into(),
             r#type: "terminal".into(),
             shell: None,
+            command: None,
+            args: None,
+            cols: None,
+            rows: None,
             agent_preset: None,
             custom_env: None,
             per_terminal_history: Some(true),
@@ -773,6 +823,10 @@ mod tests {
             cwd: ".".into(),
             r#type: "terminal".into(),
             shell: Some("/bin/zsh".into()),
+            command: None,
+            args: None,
+            cols: None,
+            rows: None,
             agent_preset: None,
             custom_env: None,
             per_terminal_history: None,
@@ -783,6 +837,52 @@ mod tests {
         assert_eq!(
             cmd.get_env("SHELL").and_then(|v| v.to_str()),
             Some("/bin/zsh")
+        );
+    }
+
+    #[test]
+    fn build_command_uses_direct_program_when_provided() {
+        let opts = CreatePtyOptions {
+            id: "term-direct".into(),
+            cwd: ".".into(),
+            r#type: "terminal".into(),
+            shell: Some("ignored-shell".into()),
+            command: Some("claude".into()),
+            args: Some(vec![
+                "--settings".into(),
+                "settings.json".into(),
+                "--session-id".into(),
+                "abc".into(),
+            ]),
+            cols: Some(132),
+            rows: Some(36),
+            agent_preset: None,
+            custom_env: Some(HashMap::from([(
+                "CLAUDE_CODE_NO_FLICKER".into(),
+                "1".into(),
+            )])),
+            per_terminal_history: Some(true),
+            history_key: Some("should-not-matter".into()),
+        };
+        let cmd = build_command(&opts, None);
+        assert!(!cmd.is_default_prog());
+        assert_eq!(
+            cmd.get_argv()
+                .iter()
+                .map(|value| value.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "claude",
+                "--settings",
+                "settings.json",
+                "--session-id",
+                "abc"
+            ]
+        );
+        assert_eq!(
+            cmd.get_env("CLAUDE_CODE_NO_FLICKER")
+                .and_then(|value| value.to_str()),
+            Some("1")
         );
     }
 }

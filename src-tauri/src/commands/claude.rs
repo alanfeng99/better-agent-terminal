@@ -414,6 +414,7 @@ struct ClaudeCliPrepareSessionResult {
     events_path: String,
     hook_script_path: String,
     cli_path: String,
+    node_path: String,
     source: String,
 }
 
@@ -648,11 +649,12 @@ fn write_claude_cli_hook_assets(
     workspace_id: &str,
     cwd: &str,
     agent_preset: &str,
-) -> Result<(PathBuf, PathBuf, PathBuf), BridgeError> {
+) -> Result<(PathBuf, PathBuf, PathBuf, String), BridgeError> {
     let settings_path = claude_cli_settings_path(app, terminal_id)?;
     let events_path = claude_cli_events_path(app)?;
     let hook_script_path = claude_cli_hook_script_path(app)?;
     let node_path = resolve_spawn_config(app)?.node_path;
+    let node_path_text = node_path.to_string_lossy().to_string();
 
     write_if_changed(&hook_script_path, CLAUDE_CLI_HOOK_SCRIPT)?;
     if let Some(parent) = events_path.parent() {
@@ -667,7 +669,7 @@ fn write_claude_cli_hook_assets(
                     "hooks": [
                         {
                             "type": "command",
-                            "command": node_path.to_string_lossy(),
+                            "command": node_path_text.as_str(),
                             "args": [
                                 hook_script_path.to_string_lossy(),
                                 "--events",
@@ -689,7 +691,7 @@ fn write_claude_cli_hook_assets(
     });
     let settings_text = serde_json::to_string_pretty(&settings)?;
     write_if_changed(&settings_path, &(settings_text + "\n"))?;
-    Ok((settings_path, events_path, hook_script_path))
+    Ok((settings_path, events_path, hook_script_path, node_path_text))
 }
 
 fn preview_text_from_claude_content(content: &Value) -> Option<String> {
@@ -2767,7 +2769,7 @@ pub async fn claude_prepare_cli_session(
     agent_preset: String,
     current_session_id: Option<String>,
 ) -> Result<Value, BridgeError> {
-    let (settings_path, events_path, hook_script_path) =
+    let (settings_path, events_path, hook_script_path, node_path) =
         write_claude_cli_hook_assets(&app, &terminal_id, &workspace_id, &cwd, &agent_preset)?;
     let (mut session_id, mut source) = choose_claude_cli_session(
         &events_path,
@@ -2807,6 +2809,7 @@ pub async fn claude_prepare_cli_session(
         events_path: events_path.to_string_lossy().to_string(),
         hook_script_path: hook_script_path.to_string_lossy().to_string(),
         cli_path: resolve_claude_cli_path(&app),
+        node_path,
         source,
     })?)
 }

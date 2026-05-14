@@ -28,6 +28,8 @@ interface TerminalPanelProps {
   isActive?: boolean
   terminalType?: 'terminal' | 'code-agent'
   agentPreset?: AgentPresetId
+  ptyReady?: boolean
+  onReadySize?: (size: { cols: number, rows: number }) => void
 }
 
 interface ContextMenu {
@@ -43,7 +45,19 @@ function getWindowsBuildNumber(): number | undefined {
   return Number.isFinite(build) ? build : undefined
 }
 
-export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, isActive = true, terminalType, agentPreset }: TerminalPanelProps) {
+function isClaudeCliPreset(agentPreset?: AgentPresetId): boolean {
+  return agentPreset === 'claude-cli' || agentPreset === 'claude-cli-worktree'
+}
+
+export const TerminalPanel = memo(function TerminalPanel({
+  terminalId,
+  onClose,
+  isActive = true,
+  terminalType,
+  agentPreset,
+  ptyReady = true,
+  onReadySize,
+}: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -53,11 +67,25 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
   const isActiveRef = useRef(isActive)
   const doResizeRef = useRef<(() => void) | null>(null)
   const supportsImagePaste = agentPreset === 'codex-cli'
+  const isClaudeCliTerminal = isClaudeCliPreset(agentPreset)
+  const ptyReadyRef = useRef(ptyReady)
+  const onReadySizeRef = useRef(onReadySize)
 
   // Keep isActiveRef in sync with isActive prop
   useEffect(() => {
     isActiveRef.current = isActive
   }, [isActive])
+
+  useEffect(() => {
+    ptyReadyRef.current = ptyReady
+    if (ptyReady) {
+      doResizeRef.current?.()
+    }
+  }, [ptyReady])
+
+  useEffect(() => {
+    onReadySizeRef.current = onReadySize
+  }, [onReadySize])
 
   const pasteAbortRef = useRef<{ cancelled: boolean } | null>(null)
 
@@ -270,9 +298,9 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
       fontFamily: settingsStore.getFontFamilyString(),
       cursorBlink: true,
       scrollback: 10000,
-      convertEol: true,
+      convertEol: !isClaudeCliTerminal,
       allowProposedApi: true,
-      allowTransparency: true,
+      allowTransparency: !isClaudeCliTerminal,
       windowsPty: host.platform === 'win32'
         ? {
             backend: 'conpty',
@@ -327,7 +355,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
     const doResize = () => {
       fitAddon.fit()
       const { cols, rows } = terminal
-      if (cols !== lastSentCols || rows !== lastSentRows) {
+      if (ptyReadyRef.current && (cols !== lastSentCols || rows !== lastSentRows)) {
         lastSentCols = cols
         lastSentRows = rows
         dlog(`[resize] pty.resize cols=${cols} rows=${rows} terminal=${terminalId}`)
@@ -335,6 +363,26 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
       }
     }
     doResizeRef.current = doResize
+
+    let readySizeRaf: number | null = null
+    let refreshRaf: number | null = null
+    const scheduleFullRefresh = () => {
+      if (refreshRaf !== null) return
+      refreshRaf = requestAnimationFrame(() => {
+        refreshRaf = null
+        terminal.refresh(0, terminal.rows - 1)
+      })
+    }
+    if (onReadySizeRef.current) {
+      readySizeRaf = requestAnimationFrame(() => {
+        try {
+          fitAddon.fit()
+        } catch {
+          // xterm can throw if the panel is not measurable yet; report the current fallback size.
+        }
+        onReadySizeRef.current?.({ cols: terminal.cols, rows: terminal.rows })
+      })
+    }
 
     // Fix IME textarea position - force it to bottom left
     const fixImePosition = () => {
@@ -373,6 +421,7 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
 
     // Handle terminal input
     terminal.onData((data) => {
+      if (!ptyReadyRef.current) return
       host.pty.write(terminalId, data)
       // Mark terminal as having user input (for agent command tracking)
       if (terminalType === 'code-agent') {
@@ -461,7 +510,11 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
     // Handle terminal output
     const unsubscribeOutput = host.pty.onOutput((id, data) => {
       if (id === terminalId) {
-        terminal.write(data)
+        if (isClaudeCliTerminal) {
+          terminal.write(data, scheduleFullRefresh)
+        } else {
+          terminal.write(data)
+        }
         // Update activity time when there's output
         workspaceStore.updateTerminalActivity(terminalId)
       }
@@ -533,6 +586,8 @@ export const TerminalPanel = memo(function TerminalPanel({ terminalId, onClose, 
       unsubscribeExit()
       unsubscribeSettings()
       if (resizeTimer) clearTimeout(resizeTimer)
+      if (readySizeRaf !== null) cancelAnimationFrame(readySizeRaf)
+      if (refreshRaf !== null) cancelAnimationFrame(refreshRaf)
       resizeObserver.disconnect()
       observer.disconnect()
       if (xtermTextarea) {
