@@ -609,6 +609,13 @@
   font-size: calc(var(--claude-font-size) - 1px);
 }
 
+.claude-tool-shell {
+  color: var(--text-secondary);
+  font-family: 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  font-size: calc(var(--claude-font-size) - 2px);
+  flex: 0 0 auto;
+}
+
 .claude-tool-summary {
   color: #bbb;
   font-family: 'Cascadia Code', 'SF Mono', Consolas, monospace;

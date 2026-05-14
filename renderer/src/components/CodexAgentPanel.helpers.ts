@@ -12,7 +12,7 @@ export function shouldAutoContinueAfterTurnEnd(payload: { reason?: string; error
 export function toolInputSummary(_toolName: string, input: Record<string, unknown>): string {
   const askUserSummary = summarizeAskUserInput(input)
   if (askUserSummary) return askUserSummary
-  if (input.command) return summarizeShellCommand(String(input.command)) || String(input.command).slice(0, 80)
+  if (input.command) return summarizeToolCommandInput(String(input.command))
   if (input.file_path) return String(input.file_path)
   if (input.pattern) return String(input.pattern)
   if (input.query) return String(input.query).slice(0, 80)
@@ -55,6 +55,22 @@ function unwrapShellCommand(command: string): string {
   const trimmed = command.trim()
   const match = /^(?:\/[^\s]+\/)?(?:zsh|bash|sh)\s+-lc\s+([\s\S]+)$/.exec(trimmed)
   return match ? stripShellQuotes(match[1]) : trimmed
+}
+
+export function parseShellInvocation(command: string): { shell: string; command: string } | null {
+  const trimmed = command.trim()
+  const match = /^(?:\/[^\s]+\/)?(zsh|bash|sh)\s+-lc\s+([\s\S]+)$/.exec(trimmed)
+  if (!match) return null
+  return {
+    shell: match[1],
+    command: stripShellQuotes(match[2]),
+  }
+}
+
+export function summarizeToolCommandInput(command: string): string {
+  const invocation = parseShellInvocation(command)
+  const displayCommand = invocation?.command || command
+  return summarizeShellCommand(command) || truncateMiddle(displayCommand, 120)
 }
 
 function summarizeSingleShellReadCommand(command: string): string | null {

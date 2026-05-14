@@ -22,7 +22,7 @@ import { buildSnippetContextPrompt, parseSnippetSlashCommand, type SnippetForCon
 import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } from '../utils/tool-result-cache'
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
-import { buildCollapsedOutputPreview, formatContentSize, summarizeShellCommand, truncateMiddle } from './CodexAgentPanel.helpers'
+import { buildCollapsedOutputPreview, formatContentSize, parseShellInvocation, summarizeToolCommandInput, truncateMiddle } from './CodexAgentPanel.helpers'
 import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
 
 interface SessionMeta {
@@ -2923,7 +2923,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Show a compact one-line summary of tool input
     const askUserSummary = summarizeAskUserInput(input)
     if (askUserSummary) return askUserSummary
-    if (input.command) return summarizeShellCommand(String(input.command)) || String(input.command).slice(0, 80)
+    if (input.command) return summarizeToolCommandInput(String(input.command))
     if (input.file_path) return String(input.file_path)
     if (input.pattern) return String(input.pattern)
     if (input.query) return String(input.query).slice(0, 80)
@@ -3447,6 +3447,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }
 
       const inContent = toolInputContent(item.input)
+      const shellInvocation = item.toolName === 'Bash' && item.input.command
+        ? parseShellInvocation(String(item.input.command))
+        : null
       const inBlockId = `in-${item.id}`
       const outBlockId = `out-${item.id}`
       const inLines = inContent.split('\n')
@@ -3458,6 +3461,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           <div className="tl-content">
             <div className="claude-tool-header" onClick={() => toggleTool(item.id)}>
               <span className="claude-tool-name">{item.toolName}</span>
+              {shellInvocation && <span className="claude-tool-shell">| {shellInvocation.shell} |</span>}
               {item.isDeferred && <span className="claude-tool-badge claude-deferred-badge">deferred</span>}
               {desc && <span className="claude-tool-desc">{desc}</span>}
               {!desc && <span className="claude-tool-summary">{toolInputSummary(item.toolName, item.input)}</span>}

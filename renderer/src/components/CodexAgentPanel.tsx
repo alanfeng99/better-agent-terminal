@@ -24,7 +24,7 @@ import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } f
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
-import { buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
+import { buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
 
@@ -3347,6 +3347,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       }
 
       const inContent = toolInputContent(item.input)
+      const shellInvocation = item.toolName === 'Bash' && item.input.command
+        ? parseShellInvocation(String(item.input.command))
+        : null
       const inBlockId = `in-${item.id}`
       const outBlockId = `out-${item.id}`
       const inLines = inContent.split(/\r?\n/)
@@ -3364,6 +3367,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           <div className="tl-content">
             <div className="claude-tool-header" onClick={() => toggleTool(item.id)}>
               <span className="claude-tool-name">{item.toolName}</span>
+              {shellInvocation && <span className="claude-tool-shell">| {shellInvocation.shell} |</span>}
               {item.isDeferred && <span className="claude-tool-badge claude-deferred-badge">deferred</span>}
               {desc && <span className="claude-tool-desc">{desc}</span>}
               {!desc && <span className="claude-tool-summary">{toolInputSummary(item.toolName, item.input)}</span>}
