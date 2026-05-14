@@ -557,6 +557,68 @@ fn write_if_changed(path: &Path, text: &str) -> Result<(), BridgeError> {
     Ok(())
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn drive_letter_mount_path(windows_path: &str, mount_root: &str) -> Option<String> {
+    let forward = windows_path.replace('\\', "/");
+    let bytes = forward.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'/' || !bytes[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let drive = (bytes[0] as char).to_ascii_lowercase();
+    let rest = &forward[2..];
+    if mount_root.is_empty() {
+        Some(format!("/{drive}{rest}"))
+    } else {
+        Some(format!("{mount_root}/{drive}{rest}"))
+    }
+}
+
+fn build_claude_cli_hook_command(
+    node_path: &Path,
+    hook_script_path: &Path,
+    events_path: &Path,
+    terminal_id: &str,
+    workspace_id: &str,
+    agent_preset: &str,
+    cwd: &str,
+) -> String {
+    let node_path_text = node_path.to_string_lossy().to_string();
+    let node_forward = node_path_text.replace('\\', "/");
+    let args = [
+        hook_script_path.to_string_lossy().to_string(),
+        "--events".into(),
+        events_path.to_string_lossy().to_string(),
+        "--terminal-id".into(),
+        terminal_id.into(),
+        "--workspace-id".into(),
+        workspace_id.into(),
+        "--agent-preset".into(),
+        agent_preset.into(),
+        "--cwd".into(),
+        cwd.into(),
+    ];
+    let args_text = args
+        .iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let Some(wsl_node_path) = drive_letter_mount_path(&node_path_text, "/mnt") else {
+        return format!("{} {args_text}", shell_quote(&node_path_text));
+    };
+    let git_bash_node_path =
+        drive_letter_mount_path(&node_path_text, "").unwrap_or_else(|| node_forward.clone());
+    let wsl_node = shell_quote(&wsl_node_path);
+    let git_bash_node = shell_quote(&git_bash_node_path);
+    let fallback_node = shell_quote(&node_forward);
+    format!(
+        "if [ -x {wsl_node} ]; then {wsl_node} {args_text}; elif [ -x {git_bash_node} ]; then {git_bash_node} {args_text}; else {fallback_node} {args_text}; fi"
+    )
+}
+
 fn claude_cli_dir(app: &AppHandle) -> Result<PathBuf, BridgeError> {
     Ok(app_data_dir(app)?.join("claude-cli"))
 }
@@ -660,6 +722,15 @@ fn write_claude_cli_hook_assets(
     if let Some(parent) = events_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let hook_command = build_claude_cli_hook_command(
+        &node_path,
+        &hook_script_path,
+        &events_path,
+        terminal_id,
+        workspace_id,
+        agent_preset,
+        cwd,
+    );
 
     let settings = json!({
         "hooks": {
@@ -669,20 +740,7 @@ fn write_claude_cli_hook_assets(
                     "hooks": [
                         {
                             "type": "command",
-                            "command": node_path_text.as_str(),
-                            "args": [
-                                hook_script_path.to_string_lossy(),
-                                "--events",
-                                events_path.to_string_lossy(),
-                                "--terminal-id",
-                                terminal_id,
-                                "--workspace-id",
-                                workspace_id,
-                                "--agent-preset",
-                                agent_preset,
-                                "--cwd",
-                                cwd
-                            ]
+                            "command": hook_command
                         }
                     ]
                 }
@@ -3613,6 +3671,49 @@ mod tests {
         assert!(is_uuid_like(&id));
         assert_eq!(&id[14..15], "4");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+    }
+
+    #[test]
+    fn shell_quote_preserves_windows_paths_and_quotes() {
+        assert_eq!(
+            shell_quote(r"C:\Users\User\AppData\Local\node.exe"),
+            r#"'C:\Users\User\AppData\Local\node.exe'"#
+        );
+        assert_eq!(
+            shell_quote("C:\\Users\\O'Malley"),
+            r#"'C:\Users\O'"'"'Malley'"#
+        );
+    }
+
+    #[test]
+    fn claude_cli_hook_command_uses_bash_mounts_for_windows_node() {
+        let command = build_claude_cli_hook_command(
+            Path::new(
+                r"C:\Users\User\AppData\Local\Programs\BetterAgentTerminal\node-runtime\windows-x86_64\node.exe",
+            ),
+            Path::new(
+                r"C:\Users\User\AppData\Roaming\better-agent-terminal\claude-cli\hook-session-start.mjs",
+            ),
+            Path::new(
+                r"C:\Users\User\AppData\Roaming\better-agent-terminal\claude-cli\session-events.jsonl",
+            ),
+            "term-1",
+            "ws-1",
+            "claude-cli",
+            r"C:\workspaces\tools\better-terminal",
+        );
+
+        assert!(command.contains(
+            "'/mnt/c/Users/User/AppData/Local/Programs/BetterAgentTerminal/node-runtime/windows-x86_64/node.exe'"
+        ));
+        assert!(command.contains(
+            "'/c/Users/User/AppData/Local/Programs/BetterAgentTerminal/node-runtime/windows-x86_64/node.exe'"
+        ));
+        assert!(command.contains(
+            "'C:\\Users\\User\\AppData\\Roaming\\better-agent-terminal\\claude-cli\\hook-session-start.mjs'"
+        ));
+        assert!(command.contains("'C:\\workspaces\\tools\\better-terminal'"));
+        assert!(!command.contains("C:Users"));
     }
 
     #[test]
