@@ -92,7 +92,7 @@
     "cxInstallAgentHint": "Don't have cx yet? Copy the prompt below and paste it into Claude Code or Codex Agent — it'll detect your OS and install for you. Reference:",
     "cxInstallCopyPrompt": "Copy install prompt",
     "worktreePnpmInstall": "Accelerate pnpm installs for new worktrees",
-    "worktreePnpmInstallHint": "Optional and off by default. When a new worktree contains pnpm-lock.yaml, BAT runs pnpm install in the background with pnpm's global virtual store and a repo-local .bat-cache/pnpm-store. This executes package lifecycle scripts from the project.",
+    "worktreePnpmInstallHint": "Optional and off by default. When a new worktree contains pnpm-lock.yaml, BAT runs pnpm install in the background with a repo-local .bat-cache/pnpm-store. This executes package lifecycle scripts from the project.",
     "clearTerminalHistory": "Clear All Terminal History",
     "clearTerminalHistoryConfirm": "Are you sure you want to delete all saved terminal history files? This cannot be undone.",
     "clearTerminalHistoryDone": "All terminal history files have been cleared.",

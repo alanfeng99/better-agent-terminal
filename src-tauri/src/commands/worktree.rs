@@ -10,6 +10,7 @@ use crate::subprocess::hide_console_window;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -19,6 +20,7 @@ use tauri::{AppHandle, State};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
+const PNPM_LOG_TAIL_CHARS: usize = 4000;
 const WORKTREE_DIR: &str = ".bat-worktrees";
 
 #[derive(Clone, Default)]
@@ -411,24 +413,31 @@ fn spawn_pnpm_install_for_worktree(
         let store_dir = git_root.join(".bat-cache").join("pnpm-store");
         let _ = fs::create_dir_all(&store_dir);
         let pnpm_bin = resolve_pnpm_binary().unwrap_or_else(|| PathBuf::from("pnpm"));
+        let pnpm_path = augmented_path_for_pnpm(&pnpm_bin);
+        let pnpm_path_text = pnpm_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| std::env::var("PATH").ok())
+            .unwrap_or_default();
         for install_dir in install_dirs {
             if let Some(app) = app.as_ref() {
                 log_tauri(
                     app,
                     &format!(
-                        "[worktree] starting background pnpm install cwd={} store={} pnpm={}",
+                        "[worktree] starting background pnpm install cwd={} store={} pnpm={} path={}",
                         install_dir.display(),
                         store_dir.display(),
-                        pnpm_bin.display()
+                        pnpm_bin.display(),
+                        pnpm_path_text
                     ),
                 );
                 worktree_debug_log(
                     Some(app),
                     format!(
-                        "[worktree] pnpm install debug cwd={} pnpm={} path={}",
+                        "[worktree] pnpm install command cwd={} argv=install --frozen-lockfile --prefer-offline --store-dir {} pnpm={}",
                         install_dir.display(),
-                        pnpm_bin.display(),
-                        std::env::var("PATH").unwrap_or_default()
+                        store_dir.display(),
+                        pnpm_bin.display()
                     ),
                 );
             }
@@ -442,12 +451,15 @@ fn spawn_pnpm_install_for_worktree(
                     "--store-dir",
                 ])
                 .arg(&store_dir)
-                .arg("--config.enable-global-virtual-store=true")
                 .current_dir(&install_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            if let Some(path) = pnpm_path.as_ref() {
+                pnpm_cmd.env("PATH", path);
+            }
             hide_console_window(&mut pnpm_cmd);
+            let started = Instant::now();
             let output = pnpm_cmd.output();
 
             match output {
@@ -456,32 +468,31 @@ fn spawn_pnpm_install_for_worktree(
                         log_tauri(
                             app,
                             &format!(
-                                "[worktree] background pnpm install completed cwd={}",
-                                install_dir.display()
+                                "[worktree] background pnpm install completed cwd={} status={} elapsedMs={}",
+                                install_dir.display(),
+                                output.status,
+                                started.elapsed().as_millis()
                             ),
                         );
+                        log_pnpm_output_tail(app, &install_dir, "stdout", &output.stdout);
+                        log_pnpm_output_tail(app, &install_dir, "stderr", &output.stderr);
                     }
                 }
                 Ok(output) => {
                     if let Some(app) = app.as_ref() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let detail = stderr
-                            .trim()
-                            .lines()
-                            .last()
-                            .or_else(|| stdout.trim().lines().last());
                         log_tauri(
                             app,
                             &format!(
-                                "[worktree] background pnpm install failed cwd={} status={}{}",
+                                "[worktree] background pnpm install failed cwd={} status={} elapsedMs={} pnpm={} path={}",
                                 install_dir.display(),
                                 output.status,
-                                detail
-                                    .map(|line| format!(" detail={line}"))
-                                    .unwrap_or_default(),
+                                started.elapsed().as_millis(),
+                                pnpm_bin.display(),
+                                pnpm_path_text
                             ),
                         );
+                        log_pnpm_output_tail(app, &install_dir, "stdout", &output.stdout);
+                        log_pnpm_output_tail(app, &install_dir, "stderr", &output.stderr);
                     }
                 }
                 Err(err) => {
@@ -489,9 +500,10 @@ fn spawn_pnpm_install_for_worktree(
                         log_tauri(
                             app,
                             &format!(
-                                "[worktree] failed to start background pnpm install cwd={} pnpm={} error={err}",
+                                "[worktree] failed to start background pnpm install cwd={} pnpm={} path={} error={err}",
                                 install_dir.display(),
-                                pnpm_bin.display()
+                                pnpm_bin.display(),
+                                pnpm_path_text
                             ),
                         );
                     }
@@ -500,6 +512,35 @@ fn spawn_pnpm_install_for_worktree(
             }
         }
     });
+}
+
+fn log_pnpm_output_tail(app: &AppHandle, cwd: &Path, stream: &str, bytes: &[u8]) {
+    let Some(tail) = output_tail_for_log(bytes) else {
+        return;
+    };
+    log_tauri(
+        app,
+        &format!(
+            "[worktree] pnpm install {stream} tail cwd={} {stream}={tail}",
+            cwd.display()
+        ),
+    );
+}
+
+fn output_tail_for_log(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let char_count = trimmed.chars().count();
+    let tail = if char_count > PNPM_LOG_TAIL_CHARS {
+        let start = char_count - PNPM_LOG_TAIL_CHARS;
+        trimmed.chars().skip(start).collect::<String>()
+    } else {
+        trimmed.to_string()
+    };
+    Some(tail.replace('\n', "\\n").replace('\r', "\\r"))
 }
 
 fn find_pnpm_install_dirs(worktree_path: &Path) -> Vec<PathBuf> {
@@ -560,6 +601,77 @@ fn resolve_pnpm_binary() -> Option<PathBuf> {
         .map(PathBuf::from)
         .find(|path| path.is_file())
     })
+}
+
+fn augmented_path_for_pnpm(pnpm_bin: &Path) -> Option<OsString> {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = Vec::<PathBuf>::new();
+
+    if let Some(parent) = pnpm_bin
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty() && path.is_dir())
+    {
+        push_unique_path(&mut dirs, parent.to_path_buf());
+    }
+    if let Some(node) =
+        find_node_on_path(&existing).and_then(|path| path.parent().map(Path::to_path_buf))
+    {
+        push_unique_path(&mut dirs, node);
+    }
+
+    #[cfg(target_os = "macos")]
+    let fallbacks: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+    #[cfg(target_os = "linux")]
+    let fallbacks: &[&str] = &["/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"];
+    #[cfg(windows)]
+    let fallbacks: &[&str] = &[];
+
+    for fallback in fallbacks {
+        let path = PathBuf::from(fallback);
+        if path.is_dir() {
+            push_unique_path(&mut dirs, path);
+        }
+    }
+
+    if dirs.is_empty() {
+        return None;
+    }
+    for entry in std::env::split_paths(&existing) {
+        push_unique_path(&mut dirs, entry);
+    }
+    std::env::join_paths(dirs).ok()
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn find_node_on_path(path_env: &OsStr) -> Option<PathBuf> {
+    let exe_names: &[&str] = if cfg!(windows) {
+        &["node.exe", "node.cmd", "node"]
+    } else {
+        &["node"]
+    };
+    for dir in std::env::split_paths(path_env) {
+        for name in exe_names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for fallback in ["/opt/homebrew/bin/node", "/usr/local/bin/node"] {
+            let path = PathBuf::from(fallback);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn find_binary_on_path(name: &str) -> Option<PathBuf> {
@@ -1175,6 +1287,20 @@ mod tests {
         let install_dirs = find_pnpm_install_dirs(&base);
 
         assert_eq!(install_dirs, vec![frontend]);
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn pnpm_path_prepends_resolved_pnpm_dir() {
+        let base = std::env::temp_dir().join(format!("bat-pnpm-path-{}", now_ms()));
+        fs::create_dir_all(&base).expect("create pnpm bin dir");
+        let pnpm = base.join(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" });
+        fs::write(&pnpm, "").expect("write fake pnpm");
+
+        let path = augmented_path_for_pnpm(&pnpm).expect("augmented pnpm PATH");
+        let first = std::env::split_paths(&path).next();
+
+        assert_eq!(first.as_deref(), Some(base.as_path()));
         fs::remove_dir_all(base).ok();
     }
 

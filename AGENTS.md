@@ -24,6 +24,7 @@ Follow the project guidance in `CLAUDE.md`. The most important operational notes
 
 - Do not replace the built-in status line implementation.
 - Renderer logs should use `window.batAppAPI.debug.log(...)`; Tauri/backend logs should use the project logger/debug helpers.
+- Tauri logs live under `<app-data>/logs/`: renderer/Rust logs in `debug.log`, sidecar logs in `sidecar.log`. On macOS fresh Tauri installs this is usually `~/Library/Application Support/com.tonyq.better-agent-terminal/logs/debug.log`; existing Electron migrations may use `~/Library/Application Support/BetterAgentTerminal/logs/debug.log`. `BAT_TAURI_DATA_DIR` overrides this in dev/tests.
 - When modifying shared code such as stores, IPC handlers, or shared types, trace consumers before committing.
 
 ## IPC Compatibility

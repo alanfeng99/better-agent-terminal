@@ -27,10 +27,14 @@
 - **Frontend (renderer)**: Use `window.batAppAPI.debug.log(...)` instead of `console.log()`. This sends logs to the Tauri host logger, which writes to disk.
 - **Backend (Tauri/Rust)**: Use the project Rust logging/debug helpers so logs are persisted.
 - Do NOT use `console.log()` for debugging — use the logger so logs are persisted and visible in the log file.
-- **Log file location** (`debug.log` inside the userData directory):
-  - macOS: `~/Library/Application Support/better-agent-terminal/debug.log`
-  - Windows: `%APPDATA%\better-agent-terminal\debug.log`
-  - Linux: `~/.config/better-agent-terminal/debug.log`
+- **Log file location**:
+  - Tauri writes renderer/Rust logs to `<app-data>/logs/debug.log` and sidecar logs to `<app-data>/logs/sidecar.log`.
+  - macOS fresh Tauri install: `~/Library/Application Support/com.tonyq.better-agent-terminal/logs/debug.log`
+  - macOS existing Electron migration: `~/Library/Application Support/BetterAgentTerminal/logs/debug.log`
+  - Windows fresh Tauri install: `%APPDATA%\com.tonyq.better-agent-terminal\logs\debug.log`
+  - Linux fresh Tauri install: `~/.local/share/com.tonyq.better-agent-terminal/logs/debug.log` or the platform-resolved Tauri app data dir.
+  - `BAT_TAURI_DATA_DIR` overrides the app data directory in dev/tests.
+  - In the app, Settings → Open Logs Folder opens the active logs directory.
 
 ## Sub-agent / Active Tasks Tracking
 
