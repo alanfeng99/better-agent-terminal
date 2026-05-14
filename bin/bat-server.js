@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
-console.error('bat-server: Tauri headless server is not implemented yet.')
-console.error('bat-server: start the GUI and enable Remote Access from Settings for now.')
-process.exit(1)
+// Headless RemoteServer entry. The historical Electron package loaded
+// dist-electron/server-cli.js here; the Tauri package keeps the same loader
+// shape and delegates to the compatibility server-cli shim.
+require('./server-cli.js').runServerCli()

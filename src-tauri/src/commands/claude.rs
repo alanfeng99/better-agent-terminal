@@ -1,10 +1,9 @@
-// claude.* — first cut of the Phase 2 sidecar surface.
+// claude.* — Rust-owned runtime routing for Claude-compatible agent sessions.
 //
-// These commands forward to the Node sidecar over JSON-RPC. The actual
-// Claude/agent logic lives in node-sidecar/src/server.mjs (and will grow
-// as we move @anthropic-ai/claude-agent-sdk callsites out of the Electron
-// main process). The Rust side is intentionally thin: pick a method name,
-// pass through params, and return whatever the sidecar returns.
+// Commands keep the renderer-facing IPC stable, then route through Rust to the
+// native Codex app-server, local native helpers, or the Node sidecar compatibility
+// bridge. Keep runtime ownership decisions in ClaudeRuntimeRouter so local Tauri
+// calls and remote-server fallbacks do not grow separate compatibility rules.
 //
 // MVP commands:
 //   claude_ping            — round-trip probe used by tests.
@@ -1352,7 +1351,16 @@ async fn call_with_timeout_blocking(
     params: Value,
     timeout: Duration,
 ) -> Result<Value, BridgeError> {
-    let state = (*state).clone();
+    call_sidecar_with_timeout_blocking(app, (*state).clone(), method, params, timeout).await
+}
+
+async fn call_sidecar_with_timeout_blocking(
+    app: AppHandle,
+    state: SidecarState,
+    method: &'static str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         call_with_timeout(&app, &state, method, params, timeout)
     })
@@ -1463,6 +1471,658 @@ async fn prepare_codex_worktree_options(
     Ok(Some(options_value))
 }
 
+#[derive(Clone)]
+struct ClaudeRuntimeRouter {
+    app: AppHandle,
+    sidecar: SidecarState,
+    codex: CodexAppServerState,
+}
+
+impl ClaudeRuntimeRouter {
+    fn from_states(
+        app: AppHandle,
+        sidecar: &State<'_, SidecarState>,
+        codex: &State<'_, CodexAppServerState>,
+    ) -> Self {
+        Self {
+            app,
+            sidecar: sidecar.inner().clone(),
+            codex: codex.inner().clone(),
+        }
+    }
+
+    async fn sidecar_call(
+        &self,
+        method: &'static str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, BridgeError> {
+        call_sidecar_with_timeout_blocking(
+            self.app.clone(),
+            self.sidecar.clone(),
+            method,
+            params,
+            timeout,
+        )
+        .await
+    }
+
+    async fn start_session(
+        &self,
+        session_id: String,
+        options: Option<Value>,
+    ) -> Result<Value, BridgeError> {
+        if should_handle_codex(&options) {
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            let codex_options = options.clone();
+            let started = Instant::now();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                codex.start_session(&codex_app, codex_session_id, codex_options)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server start worker failed: {err}"),
+            })?;
+            match result {
+                Ok(value) => {
+                    emit_codex_route_metric(
+                        &self.app,
+                        "codexRuntime",
+                        "codex.startSession",
+                        &session_id,
+                        started.elapsed(),
+                        true,
+                        None,
+                    );
+                    return Ok(value);
+                }
+                Err(err) => {
+                    let message = err.message.clone();
+                    emit_codex_route_metric(
+                        &self.app,
+                        "codexRuntime",
+                        "codex.startSession",
+                        &session_id,
+                        started.elapsed(),
+                        false,
+                        Some(message),
+                    );
+                    let _ = self.codex.stop_session(session_id.clone());
+                    return Err(err);
+                }
+            }
+        }
+        self.sidecar_call(
+            "claude.startSession",
+            json!({ "sessionId": session_id, "options": options.unwrap_or(Value::Null) }),
+            SESSION_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn send_message(
+        &self,
+        session_id: String,
+        prompt: String,
+        images: Option<Vec<String>>,
+        auto_compact_window: Option<i64>,
+        client_message_id: Option<String>,
+        display_prompt: Option<String>,
+        suppress_user_echo: Option<bool>,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            claude_debug_log(
+                &self.app,
+                &format!(
+                    "[claude_send_message:{}] routing to codex app-server",
+                    session_id.chars().take(8).collect::<String>()
+                ),
+            );
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            let codex_prompt = prompt.clone();
+            let codex_images = images.clone().unwrap_or_default();
+            return tauri::async_runtime::spawn_blocking(move || {
+                codex.send_message(&codex_app, codex_session_id, codex_prompt, codex_images)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server send worker failed: {err}"),
+            })?;
+        }
+        self.sidecar_call(
+            "claude.sendMessage",
+            json!({
+                "sessionId": session_id,
+                "prompt": prompt,
+                "images": images.unwrap_or_default(),
+                "autoCompactWindow": auto_compact_window,
+                "clientMessageId": client_message_id,
+                "displayPrompt": display_prompt,
+                "suppressUserEcho": suppress_user_echo.unwrap_or(false),
+            }),
+            SESSION_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn stop_session(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(self.codex.stop_session(session_id));
+        }
+        self.sidecar_call(
+            "claude.stopSession",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn abort_session(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            claude_debug_log(
+                &self.app,
+                &format!(
+                    "[claude_abort_session:{}] routing to codex app-server",
+                    session_id.chars().take(8).collect::<String>()
+                ),
+            );
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            return tauri::async_runtime::spawn_blocking(move || {
+                codex.abort_session(&codex_app, codex_session_id)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server abort worker failed: {err}"),
+            })?;
+        }
+        self.sidecar_call(
+            "claude.abortSession",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn stop_task(&self, session_id: String, task_id: String) -> Result<bool, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            let value = tauri::async_runtime::spawn_blocking(move || {
+                codex.abort_session(&codex_app, codex_session_id)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server stopTask worker failed: {err}"),
+            })??;
+            return Ok(value.get("ok").and_then(Value::as_bool).unwrap_or(true));
+        }
+        let value = self
+            .sidecar_call(
+                "claude.stopTask",
+                json!({ "sessionId": session_id, "taskId": task_id }),
+                DEFAULT_TIMEOUT,
+            )
+            .await?;
+        Ok(value
+            .as_bool()
+            .or_else(|| value.get("ok").and_then(Value::as_bool))
+            .unwrap_or(false))
+    }
+
+    async fn reset_session(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            return tauri::async_runtime::spawn_blocking(move || {
+                codex.reset_session(&codex_app, codex_session_id)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server reset worker failed: {err}"),
+            })?;
+        }
+        self.sidecar_call(
+            "claude.resetSession",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn resume_session(
+        &self,
+        session_id: String,
+        sdk_session_id: String,
+        options: Option<Value>,
+    ) -> Result<Value, BridgeError> {
+        let should_use_codex = should_handle_codex(&options);
+        if should_use_codex || self.codex.is_owned(&session_id) {
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            let codex_sdk_session_id = sdk_session_id.clone();
+            let codex_options = options.clone();
+            let resume_started = Instant::now();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                codex.resume_session(
+                    &codex_app,
+                    codex_session_id,
+                    codex_sdk_session_id,
+                    codex_options,
+                )
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server resume worker failed: {err}"),
+            })?;
+            match result {
+                Ok(value) => {
+                    emit_codex_route_metric(
+                        &self.app,
+                        "codexRuntime",
+                        "codex.resumeSession",
+                        &session_id,
+                        resume_started.elapsed(),
+                        true,
+                        None,
+                    );
+                    return Ok(value);
+                }
+                Err(err) if should_use_codex => {
+                    emit_codex_route_metric(
+                        &self.app,
+                        "codexRuntime",
+                        "codex.resumeSession",
+                        &session_id,
+                        resume_started.elapsed(),
+                        false,
+                        Some(format!(
+                            "resume failed for stale sdkSessionId {}; starting fresh: {}",
+                            sdk_session_id, err.message
+                        )),
+                    );
+                    let _ = self.codex.stop_session(session_id.clone());
+
+                    let codex = self.codex.clone();
+                    let codex_app = self.app.clone();
+                    let codex_session_id = session_id.clone();
+                    let codex_options = options.clone();
+                    let fresh_started = Instant::now();
+                    let fresh_result = tauri::async_runtime::spawn_blocking(move || {
+                        codex.start_session(&codex_app, codex_session_id, codex_options)
+                    })
+                    .await
+                    .map_err(|err| BridgeError {
+                        message: format!("codex app-server fresh start worker failed: {err}"),
+                    })?;
+                    match fresh_result {
+                        Ok(value) => {
+                            emit_codex_route_metric(
+                                &self.app,
+                                "codexRuntime",
+                                "codex.freshStartAfterResumeFailure",
+                                &session_id,
+                                fresh_started.elapsed(),
+                                true,
+                                Some(format!("replaced stale sdkSessionId {}", sdk_session_id)),
+                            );
+                            return Ok(value);
+                        }
+                        Err(start_err) => {
+                            let message = start_err.message.clone();
+                            emit_codex_route_metric(
+                                &self.app,
+                                "codexRuntime",
+                                "codex.freshStartAfterResumeFailure",
+                                &session_id,
+                                fresh_started.elapsed(),
+                                false,
+                                Some(format!(
+                                    "fresh start failed after stale sdkSessionId {}: {}",
+                                    sdk_session_id, message
+                                )),
+                            );
+                            let _ = self.codex.stop_session(session_id.clone());
+                            return Err(start_err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    let message = err.message.clone();
+                    emit_codex_route_metric(
+                        &self.app,
+                        "codexRuntime",
+                        "codex.resumeSession",
+                        &session_id,
+                        resume_started.elapsed(),
+                        false,
+                        Some(message),
+                    );
+                    let _ = self.codex.stop_session(session_id.clone());
+                    return Err(err);
+                }
+            }
+        }
+        self.sidecar_call(
+            "claude.resumeSession",
+            json!({
+                "sessionId": session_id,
+                "sdkSessionId": sdk_session_id,
+                "options": options,
+            }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    fn supported_models(&self, session_id: &str) -> Value {
+        if self.codex.is_owned(session_id) {
+            return self.codex.supported_models();
+        }
+        claude_builtin_models_native()
+    }
+
+    async fn supported_commands(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!([]));
+        }
+        if let Some(cwd) = notification_cmd::get_agent_session_cwd(&self.app, &session_id) {
+            return Ok(
+                serde_json::to_value(supported_commands_native(Path::new(&cwd)))
+                    .unwrap_or_else(|_| json!([])),
+            );
+        }
+        self.sidecar_call(
+            "claude.getSupportedCommands",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn supported_agents(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!([]));
+        }
+        if let Some(cwd) = notification_cmd::get_agent_session_cwd(&self.app, &session_id) {
+            return Ok(
+                serde_json::to_value(supported_agents_native(Path::new(&cwd)))
+                    .unwrap_or_else(|_| json!([])),
+            );
+        }
+        self.sidecar_call(
+            "claude.getSupportedAgents",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn account_info(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(Value::Null);
+        }
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            account_info_from_auth_status(&fetch_auth_status_native(&app))
+        })
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("claude.getAccountInfo worker failed: {err}"),
+        })
+    }
+
+    async fn session_state(&self, session_id: String) -> Result<Value, BridgeError> {
+        if let Some(value) = self.codex.get_session_state(&session_id) {
+            return Ok(value);
+        }
+        if let Some(session) = notification_cmd::get_agent_session_snapshot(&self.app, &session_id)
+        {
+            return Ok(session_state_from_notification_snapshot(&session));
+        }
+        self.sidecar_call(
+            "claude.getSessionState",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn session_meta(&self, session_id: String) -> Result<Value, BridgeError> {
+        if let Some(value) = self.codex.get_session_meta(&session_id) {
+            return Ok(value);
+        }
+        if let Some(session) = notification_cmd::get_agent_session_snapshot(&self.app, &session_id)
+        {
+            return Ok(session_meta_from_notification_snapshot(&session));
+        }
+        self.sidecar_call(
+            "claude.getSessionMeta",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn context_usage(&self, session_id: String) -> Result<Value, BridgeError> {
+        if let Some(value) = self.codex.get_context_usage(&session_id) {
+            return Ok(value);
+        }
+        if self.codex.is_owned(&session_id) {
+            return Ok(Value::Null);
+        }
+        if let Some(session) = notification_cmd::get_agent_session_snapshot(&self.app, &session_id)
+        {
+            if let Some(value) = context_usage_from_notification_snapshot(&session) {
+                return Ok(value);
+            }
+        }
+        self.sidecar_call(
+            "claude.getContextUsage",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn set_auto_continue(
+        &self,
+        session_id: String,
+        opts: Value,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!(false));
+        }
+        if let Some(value) =
+            notification_cmd::set_agent_session_auto_continue(&self.app, &session_id, &opts)
+        {
+            return Ok(json!(value));
+        }
+        self.sidecar_call(
+            "claude.setAutoContinue",
+            json!({ "sessionId": session_id, "opts": opts }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn get_auto_continue(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(Value::Null);
+        }
+        if let Some(value) =
+            notification_cmd::get_agent_session_auto_continue(&self.app, &session_id)
+        {
+            return Ok(value);
+        }
+        self.sidecar_call(
+            "claude.getAutoContinue",
+            json!({ "sessionId": session_id }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn set_permission_mode(
+        &self,
+        session_id: String,
+        mode: String,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!(false));
+        }
+        let result = self
+            .sidecar_call(
+                "claude.setPermissionMode",
+                json!({ "sessionId": session_id, "mode": mode }),
+                DEFAULT_TIMEOUT,
+            )
+            .await?;
+        if result.as_bool().unwrap_or(false) {
+            notification_cmd::update_agent_session_permission_mode(&self.app, &session_id, &mode);
+        }
+        Ok(result)
+    }
+
+    async fn set_codex_sandbox_mode(
+        &self,
+        session_id: String,
+        mode: String,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            return tauri::async_runtime::spawn_blocking(move || {
+                let _ = codex.set_sandbox_mode(&codex_app, &codex_session_id, mode);
+                codex.reconfigure_session(&codex_app, &codex_session_id)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server setSandboxMode worker failed: {err}"),
+            })?;
+        }
+        self.sidecar_call(
+            "claude.setCodexSandboxMode",
+            json!({ "sessionId": session_id, "mode": mode }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn set_codex_approval_policy(
+        &self,
+        session_id: String,
+        policy: String,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            let codex = self.codex.clone();
+            let codex_app = self.app.clone();
+            let codex_session_id = session_id.clone();
+            return tauri::async_runtime::spawn_blocking(move || {
+                let _ = codex.set_approval_policy(&codex_app, &codex_session_id, policy);
+                codex.reconfigure_session(&codex_app, &codex_session_id)
+            })
+            .await
+            .map_err(|err| BridgeError {
+                message: format!("codex app-server setApprovalPolicy worker failed: {err}"),
+            })?;
+        }
+        self.sidecar_call(
+            "claude.setCodexApprovalPolicy",
+            json!({ "sessionId": session_id, "policy": policy }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn fork_session(&self, session_id: String) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(Value::Null);
+        }
+        self.sidecar_call(
+            "claude.forkSession",
+            json!({ "sessionId": session_id }),
+            Duration::from_secs(90),
+        )
+        .await
+    }
+
+    async fn fetch_subagent_messages(
+        &self,
+        session_id: String,
+        agent_tool_use_id: String,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!([]));
+        }
+        self.sidecar_call(
+            "claude.fetchSubagentMessages",
+            json!({ "sessionId": session_id, "agentToolUseId": agent_tool_use_id }),
+            Duration::from_secs(30),
+        )
+        .await
+    }
+
+    async fn rewind_to_prompt(
+        &self,
+        session_id: String,
+        prompt_index: u32,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!({ "error": "Rewind not supported for this session type" }));
+        }
+        self.sidecar_call(
+            "claude.rewindToPrompt",
+            json!({ "sessionId": session_id, "promptIndex": prompt_index }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn resolve_permission(
+        &self,
+        session_id: String,
+        tool_use_id: String,
+        result: Value,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!(false));
+        }
+        self.sidecar_call(
+            "claude.resolvePermission",
+            json!({ "sessionId": session_id, "toolUseId": tool_use_id, "result": result }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn resolve_ask_user(
+        &self,
+        session_id: String,
+        tool_use_id: String,
+        answers: Value,
+    ) -> Result<Value, BridgeError> {
+        if self.codex.is_owned(&session_id) {
+            return Ok(json!(false));
+        }
+        self.sidecar_call(
+            "claude.resolveAskUser",
+            json!({ "sessionId": session_id, "toolUseId": tool_use_id, "answers": answers }),
+            DEFAULT_TIMEOUT,
+        )
+        .await
+    }
+}
+
 #[tauri::command]
 pub fn claude_ping(
     app: AppHandle,
@@ -1529,56 +2189,9 @@ pub async fn claude_start_session(
         &session_id,
         options.as_ref(),
     );
-    if should_handle_codex(&options) {
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        let codex_options = options.clone();
-        let started = Instant::now();
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            codex.start_session(&codex_app, codex_session_id, codex_options)
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .start_session(session_id, options)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server start worker failed: {err}"),
-        })?;
-        match result {
-            Ok(value) => {
-                emit_codex_route_metric(
-                    &app,
-                    "codexRuntime",
-                    "codex.startSession",
-                    &session_id,
-                    started.elapsed(),
-                    true,
-                    None,
-                );
-                return Ok(value);
-            }
-            Err(err) => {
-                let message = err.message.clone();
-                emit_codex_route_metric(
-                    &app,
-                    "codexRuntime",
-                    "codex.startSession",
-                    &session_id,
-                    started.elapsed(),
-                    false,
-                    Some(message),
-                );
-                let _ = (*codex_state).stop_session(session_id.clone());
-                return Err(err);
-            }
-        }
-    }
-    call_with_timeout_blocking(
-        app,
-        state,
-        "claude.startSession",
-        json!({ "sessionId": session_id, "options": options.unwrap_or(Value::Null) }),
-        SESSION_TIMEOUT,
-    )
-    .await
 }
 
 #[tauri::command]
@@ -1626,49 +2239,17 @@ pub async fn claude_send_message(
     {
         return result;
     }
-    if codex_state.is_owned(&session_id) {
-        claude_debug_log(
-            &app,
-            &format!(
-                "[claude_send_message:{}] routing to codex app-server",
-                session_id.chars().take(8).collect::<String>()
-            ),
-        );
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        let codex_prompt = prompt.clone();
-        let codex_images = images.clone().unwrap_or_default();
-        return tauri::async_runtime::spawn_blocking(move || {
-            codex.send_message(&codex_app, codex_session_id, codex_prompt, codex_images)
-        })
-        .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server send worker failed: {err}"),
-        })?;
-    }
-    let state = (*state).clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        call_with_timeout(
-            &app,
-            &state,
-            "claude.sendMessage",
-            json!({
-                "sessionId": session_id,
-                "prompt": prompt,
-                "images": images.unwrap_or_default(),
-                "autoCompactWindow": auto_compact_window,
-                "clientMessageId": client_message_id,
-                "displayPrompt": display_prompt,
-                "suppressUserEcho": suppress_user_echo.unwrap_or(false),
-            }),
-            SESSION_TIMEOUT,
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .send_message(
+            session_id,
+            prompt,
+            images,
+            auto_compact_window,
+            client_message_id,
+            display_prompt,
+            suppress_user_echo,
         )
-    })
-    .await
-    .map_err(|err| BridgeError {
-        message: format!("claude.sendMessage worker failed: {err}"),
-    })?
+        .await
 }
 
 #[tauri::command]
@@ -1692,16 +2273,9 @@ pub async fn claude_stop_session(
     {
         return result;
     }
-    if codex_state.is_owned(&session_id) {
-        return Ok(codex_state.stop_session(session_id));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.stopSession",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .stop_session(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -1731,32 +2305,9 @@ pub async fn claude_abort_session(
     {
         return result;
     }
-    if codex_state.is_owned(&session_id) {
-        claude_debug_log(
-            &app,
-            &format!(
-                "[claude_abort_session:{}] routing to codex app-server",
-                session_id.chars().take(8).collect::<String>()
-            ),
-        );
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        return tauri::async_runtime::spawn_blocking(move || {
-            codex.abort_session(&codex_app, codex_session_id)
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .abort_session(session_id)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server abort worker failed: {err}"),
-        })?;
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.abortSession",
-        json!({ "sessionId": session_id }),
-    )
-    .await
 }
 
 #[tauri::command]
@@ -1767,30 +2318,9 @@ pub async fn claude_stop_task(
     session_id: String,
     task_id: String,
 ) -> Result<bool, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        let value = tauri::async_runtime::spawn_blocking(move || {
-            codex.abort_session(&codex_app, codex_session_id)
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .stop_task(session_id, task_id)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server stopTask worker failed: {err}"),
-        })??;
-        return Ok(value.get("ok").and_then(Value::as_bool).unwrap_or(true));
-    }
-    let value = call_blocking(
-        app,
-        state,
-        "claude.stopTask",
-        json!({ "sessionId": session_id, "taskId": task_id }),
-    )
-    .await?;
-    Ok(value
-        .as_bool()
-        .or_else(|| value.get("ok").and_then(Value::as_bool))
-        .unwrap_or(false))
 }
 
 // --- account / auth ops ---------------------------------------------------
@@ -1970,15 +2500,12 @@ pub async fn claude_list_sessions(
 
 #[tauri::command]
 pub async fn claude_get_supported_models(
-    _app: AppHandle,
-    _state: State<'_, SidecarState>,
+    app: AppHandle,
+    state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(codex_state.supported_models());
-    }
-    Ok(claude_builtin_models_native())
+    Ok(ClaudeRuntimeRouter::from_states(app, &state, &codex_state).supported_models(&session_id))
 }
 
 #[tauri::command]
@@ -1988,22 +2515,9 @@ pub async fn claude_get_supported_commands(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!([]));
-    }
-    if let Some(cwd) = notification_cmd::get_agent_session_cwd(&app, &session_id) {
-        return Ok(
-            serde_json::to_value(supported_commands_native(Path::new(&cwd)))
-                .unwrap_or_else(|_| json!([])),
-        );
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.getSupportedCommands",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .supported_commands(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2013,41 +2527,21 @@ pub async fn claude_get_supported_agents(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!([]));
-    }
-    if let Some(cwd) = notification_cmd::get_agent_session_cwd(&app, &session_id) {
-        return Ok(
-            serde_json::to_value(supported_agents_native(Path::new(&cwd)))
-                .unwrap_or_else(|_| json!([])),
-        );
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.getSupportedAgents",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .supported_agents(session_id)
+        .await
 }
 
 #[tauri::command]
 pub async fn claude_get_account_info(
     app: AppHandle,
-    _state: State<'_, SidecarState>,
+    state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(Value::Null);
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        account_info_from_auth_status(&fetch_auth_status_native(&app))
-    })
-    .await
-    .map_err(|err| BridgeError {
-        message: format!("claude.getAccountInfo worker failed: {err}"),
-    })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .account_info(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2057,19 +2551,9 @@ pub async fn claude_get_session_state(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if let Some(value) = codex_state.get_session_state(&session_id) {
-        return Ok(value);
-    }
-    if let Some(session) = notification_cmd::get_agent_session_snapshot(&app, &session_id) {
-        return Ok(session_state_from_notification_snapshot(&session));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.getSessionState",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .session_state(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2079,19 +2563,9 @@ pub async fn claude_get_session_meta(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if let Some(value) = codex_state.get_session_meta(&session_id) {
-        return Ok(value);
-    }
-    if let Some(session) = notification_cmd::get_agent_session_snapshot(&app, &session_id) {
-        return Ok(session_meta_from_notification_snapshot(&session));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.getSessionMeta",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .session_meta(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2101,24 +2575,9 @@ pub async fn claude_get_context_usage(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if let Some(value) = codex_state.get_context_usage(&session_id) {
-        return Ok(value);
-    }
-    if codex_state.is_owned(&session_id) {
-        return Ok(Value::Null);
-    }
-    if let Some(session) = notification_cmd::get_agent_session_snapshot(&app, &session_id) {
-        if let Some(value) = context_usage_from_notification_snapshot(&session) {
-            return Ok(value);
-        }
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.getContextUsage",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .context_usage(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2226,22 +2685,9 @@ pub async fn claude_set_auto_continue(
     session_id: String,
     opts: Value,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!(false));
-    }
-    if let Some(value) = notification_cmd::set_agent_session_auto_continue(&app, &session_id, &opts)
-    {
-        return Ok(json!(value));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.setAutoContinue",
-        json!({
-            "sessionId": session_id, "opts": opts,
-        }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .set_auto_continue(session_id, opts)
+        .await
 }
 
 #[tauri::command]
@@ -2251,19 +2697,9 @@ pub async fn claude_get_auto_continue(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(Value::Null);
-    }
-    if let Some(value) = notification_cmd::get_agent_session_auto_continue(&app, &session_id) {
-        return Ok(value);
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.getAutoContinue",
-        json!({ "sessionId": session_id }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .get_auto_continue(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2274,22 +2710,9 @@ pub async fn claude_set_permission_mode(
     session_id: String,
     mode: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!(false));
-    }
-    let result = call_blocking(
-        app.clone(),
-        state,
-        "claude.setPermissionMode",
-        json!({
-            "sessionId": session_id, "mode": mode,
-        }),
-    )
-    .await?;
-    if result.as_bool().unwrap_or(false) {
-        notification_cmd::update_agent_session_permission_mode(&app, &session_id, &mode);
-    }
-    Ok(result)
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .set_permission_mode(session_id, mode)
+        .await
 }
 
 #[tauri::command]
@@ -2300,28 +2723,9 @@ pub async fn claude_set_codex_sandbox_mode(
     session_id: String,
     mode: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        return tauri::async_runtime::spawn_blocking(move || {
-            let _ = codex.set_sandbox_mode(&codex_app, &codex_session_id, mode);
-            codex.reconfigure_session(&codex_app, &codex_session_id)
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .set_codex_sandbox_mode(session_id, mode)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server setSandboxMode worker failed: {err}"),
-        })?;
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.setCodexSandboxMode",
-        json!({
-            "sessionId": session_id, "mode": mode,
-        }),
-    )
-    .await
 }
 
 #[tauri::command]
@@ -2332,28 +2736,9 @@ pub async fn claude_set_codex_approval_policy(
     session_id: String,
     policy: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        return tauri::async_runtime::spawn_blocking(move || {
-            let _ = codex.set_approval_policy(&codex_app, &codex_session_id, policy);
-            codex.reconfigure_session(&codex_app, &codex_session_id)
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .set_codex_approval_policy(session_id, policy)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server setApprovalPolicy worker failed: {err}"),
-        })?;
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.setCodexApprovalPolicy",
-        json!({
-            "sessionId": session_id, "policy": policy,
-        }),
-    )
-    .await
 }
 
 #[tauri::command]
@@ -2421,25 +2806,9 @@ pub async fn claude_reset_session(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        return tauri::async_runtime::spawn_blocking(move || {
-            codex.reset_session(&codex_app, codex_session_id)
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .reset_session(session_id)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server reset worker failed: {err}"),
-        })?;
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.resetSession",
-        json!({ "sessionId": session_id }),
-    )
-    .await
 }
 
 #[tauri::command]
@@ -2449,20 +2818,9 @@ pub async fn claude_fork_session(
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(Value::Null);
-    }
-    // Fork can take up to 60s in pathological cases (the SDK has to run a
-    // full one-turn query to persist the new transcript). Use a generous
-    // timeout to match the sidecar's internal limit + slack.
-    call_with_timeout_blocking(
-        app,
-        state,
-        "claude.forkSession",
-        json!({ "sessionId": session_id }),
-        Duration::from_secs(90),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .fork_session(session_id)
+        .await
 }
 
 #[tauri::command]
@@ -2582,22 +2940,9 @@ pub async fn claude_fetch_subagent_messages(
     session_id: String,
     agent_tool_use_id: String,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!([]));
-    }
-    // Subagent message fetch reads an on-disk transcript shard via the
-    // SDK helper; in the worst case (cold SDK load + slow disk) this can
-    // take up to a couple of seconds. Bump past the default 15s to be
-    // safe — failure path returns [] so the renderer just shows "no
-    // messages" instead of throwing.
-    call_with_timeout_blocking(
-        app,
-        state,
-        "claude.fetchSubagentMessages",
-        json!({ "sessionId": session_id, "agentToolUseId": agent_tool_use_id }),
-        Duration::from_secs(30),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .fetch_subagent_messages(session_id, agent_tool_use_id)
+        .await
 }
 
 #[tauri::command]
@@ -2608,19 +2953,9 @@ pub async fn claude_rewind_to_prompt(
     session_id: String,
     prompt_index: u32,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!({ "error": "Rewind not supported for this session type" }));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.rewindToPrompt",
-        json!({
-            "sessionId": session_id,
-            "promptIndex": prompt_index,
-        }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .rewind_to_prompt(session_id, prompt_index)
+        .await
 }
 
 #[tauri::command]
@@ -2669,125 +3004,9 @@ pub async fn claude_resume_session(
         &session_id,
         options.as_ref(),
     );
-    let should_use_codex = should_handle_codex(&options);
-    if should_use_codex || codex_state.is_owned(&session_id) {
-        let codex = (*codex_state).clone();
-        let codex_app = app.clone();
-        let codex_session_id = session_id.clone();
-        let codex_sdk_session_id = sdk_session_id.clone();
-        let codex_options = options.clone();
-        let resume_started = Instant::now();
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            codex.resume_session(
-                &codex_app,
-                codex_session_id,
-                codex_sdk_session_id,
-                codex_options,
-            )
-        })
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .resume_session(session_id, sdk_session_id, options)
         .await
-        .map_err(|err| BridgeError {
-            message: format!("codex app-server resume worker failed: {err}"),
-        })?;
-        match result {
-            Ok(value) => {
-                emit_codex_route_metric(
-                    &app,
-                    "codexRuntime",
-                    "codex.resumeSession",
-                    &session_id,
-                    resume_started.elapsed(),
-                    true,
-                    None,
-                );
-                return Ok(value);
-            }
-            Err(err) if should_use_codex => {
-                emit_codex_route_metric(
-                    &app,
-                    "codexRuntime",
-                    "codex.resumeSession",
-                    &session_id,
-                    resume_started.elapsed(),
-                    false,
-                    Some(format!(
-                        "resume failed for stale sdkSessionId {}; starting fresh: {}",
-                        sdk_session_id, err.message
-                    )),
-                );
-                let _ = (*codex_state).stop_session(session_id.clone());
-
-                let codex = (*codex_state).clone();
-                let codex_app = app.clone();
-                let codex_session_id = session_id.clone();
-                let codex_options = options.clone();
-                let fresh_started = Instant::now();
-                let fresh_result = tauri::async_runtime::spawn_blocking(move || {
-                    codex.start_session(&codex_app, codex_session_id, codex_options)
-                })
-                .await
-                .map_err(|err| BridgeError {
-                    message: format!("codex app-server fresh start worker failed: {err}"),
-                })?;
-                match fresh_result {
-                    Ok(value) => {
-                        emit_codex_route_metric(
-                            &app,
-                            "codexRuntime",
-                            "codex.freshStartAfterResumeFailure",
-                            &session_id,
-                            fresh_started.elapsed(),
-                            true,
-                            Some(format!("replaced stale sdkSessionId {}", sdk_session_id)),
-                        );
-                        return Ok(value);
-                    }
-                    Err(start_err) => {
-                        let message = start_err.message.clone();
-                        emit_codex_route_metric(
-                            &app,
-                            "codexRuntime",
-                            "codex.freshStartAfterResumeFailure",
-                            &session_id,
-                            fresh_started.elapsed(),
-                            false,
-                            Some(format!(
-                                "fresh start failed after stale sdkSessionId {}: {}",
-                                sdk_session_id, message
-                            )),
-                        );
-                        let _ = (*codex_state).stop_session(session_id.clone());
-                        return Err(start_err);
-                    }
-                }
-            }
-            Err(err) => {
-                let message = err.message.clone();
-                emit_codex_route_metric(
-                    &app,
-                    "codexRuntime",
-                    "codex.resumeSession",
-                    &session_id,
-                    resume_started.elapsed(),
-                    false,
-                    Some(message),
-                );
-                let _ = (*codex_state).stop_session(session_id.clone());
-                return Err(err);
-            }
-        }
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.resumeSession",
-        json!({
-            "sessionId": session_id,
-            "sdkSessionId": sdk_session_id,
-            "options": options,
-        }),
-    )
-    .await
 }
 
 #[tauri::command]
@@ -2799,18 +3018,9 @@ pub async fn claude_resolve_permission(
     tool_use_id: String,
     result: Value,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!(false));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.resolvePermission",
-        json!({
-            "sessionId": session_id, "toolUseId": tool_use_id, "result": result,
-        }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .resolve_permission(session_id, tool_use_id, result)
+        .await
 }
 
 #[tauri::command]
@@ -2822,18 +3032,9 @@ pub async fn claude_resolve_ask_user(
     tool_use_id: String,
     answers: Value,
 ) -> Result<Value, BridgeError> {
-    if codex_state.is_owned(&session_id) {
-        return Ok(json!(false));
-    }
-    call_blocking(
-        app,
-        state,
-        "claude.resolveAskUser",
-        json!({
-            "sessionId": session_id, "toolUseId": tool_use_id, "answers": answers,
-        }),
-    )
-    .await
+    ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .resolve_ask_user(session_id, tool_use_id, answers)
+        .await
 }
 
 #[tauri::command]

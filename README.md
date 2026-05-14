@@ -411,7 +411,25 @@ After installation, sign in with the same account on all devices and they will b
 
 ### Headless Mode (`bat-server`)
 
-The `bat-server` entry is reserved for the upcoming Tauri/Rust headless remote server. It currently exits with a clear "not implemented yet" message; use the GUI Remote Access settings until the Rust CLI is wired up.
+`bat-server` starts the same Tauri/Rust Remote Server without opening the GUI. It is useful for always-on hosts, SSH sessions, and container-style deployments where another BAT instance connects remotely.
+
+```bash
+pnpm run start:server -- --port=9876 --bind=localhost
+```
+
+Options:
+
+| Option | Description |
+|---|---|
+| `--port=N` | TCP port to listen on (default: `9876`) |
+| `--bind=localhost\|tailscale\|all` | Bind only localhost, the first Tailscale `100.x.x.x` address, or all interfaces |
+| `--data-dir=PATH` | Override the persistent state directory |
+| `--token=HEX` | Use a fixed connection token instead of the persisted/random token |
+| `--debug` | Enable debug logging |
+
+Environment variables mirror the flags: `BAT_DATA_DIR`, `BAT_TAURI_DATA_DIR`, `BAT_PORT`, `BAT_BIND`, `BAT_TOKEN`, and `BAT_DEBUG`.
+
+On startup, the server prints the `wss://` URL, token, certificate fingerprint, data directory, and a one-shot `connect` URL that can be pasted into a Remote Profile.
 
 ## Configuration
 
