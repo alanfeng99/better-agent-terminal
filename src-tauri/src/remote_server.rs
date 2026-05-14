@@ -1,6 +1,6 @@
 use crate::commands::{
     agent as agent_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd, image as image_cmd,
-    openai as openai_cmd, profile as profile_cmd, settings as settings_cmd, snippet as snippet_cmd,
+    profile as profile_cmd, settings as settings_cmd, snippet as snippet_cmd,
     worktree as worktree_cmd,
 };
 use crate::electron_safe_storage::{
@@ -1038,22 +1038,6 @@ fn invoke_rust_for_remote(
                     .map(Value::String)
                     .map_err(|err| err.to_string())
             }),
-        "openai:get-api-key-status" => {
-            tauri::async_runtime::block_on(openai_cmd::openai_get_api_key_status(app.clone()))
-                .map_err(bridge_error_message)
-        }
-        "openai:set-api-key" => {
-            string_param_any(params, &["apiKey", "key"], channel).and_then(|api_key| {
-                tauri::async_runtime::block_on(openai_cmd::openai_set_api_key(app.clone(), api_key))
-                    .map_err(bridge_error_message)
-            })
-        }
-        "openai:clear-api-key" => {
-            tauri::async_runtime::block_on(openai_cmd::openai_clear_api_key(app.clone()))
-                .map_err(bridge_error_message)
-        }
-        "openai:list-sessions" => Ok(Value::Array(Vec::new())),
-        "openai:compact-now" => Ok(Value::Bool(false)),
         "snippet:getAll" => to_json_value(
             channel,
             snippet_cmd::snippet_get_all(app.clone(), app.state::<snippet_cmd::SnippetState>()),

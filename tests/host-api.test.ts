@@ -194,9 +194,6 @@ async function run() {
       if (cmd === 'claude_get_session_meta') return null as unknown as T
       if (cmd === 'claude_get_context_usage') return null as unknown as T
       if (cmd === 'claude_get_worktree_status') return null as unknown as T
-      if (cmd === 'openai_get_api_key_status') return { hasKey: false } as unknown as T
-      if (cmd === 'openai_set_api_key') return true as unknown as T
-      if (cmd === 'openai_clear_api_key') return true as unknown as T
       if (cmd === 'worktree_create') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'worktree_remove') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'worktree_status') return null as unknown as T
@@ -556,15 +553,6 @@ async function run() {
     assert.equal(await mod.host.claude.getContextUsage('s-1'), null)
     assert.equal(await mod.host.claude.getWorktreeStatus('s-1'), null)
 
-    // openai.* — API key storage is still sidecar-routed as a Codex auth
-    // fallback. OpenAI Direct session runtime is retired, so deprecated
-    // list/compact methods are host-level no-ops and do not invoke Tauri.
-    assert.deepEqual(await mod.host.openai.getApiKeyStatus(), { hasKey: false })
-    assert.equal(await mod.host.openai.setApiKey('sk-x'), true)
-    assert.equal(await mod.host.openai.clearApiKey(), true)
-    assert.deepEqual(await mod.host.openai.listSessions('/cwd'), [])
-    assert.equal(await mod.host.openai.compactNow('s-1'), false)
-
     // worktree.* — sidecar-routed. The fixture returns shaped failures so
     // this adapter test can focus on command names + payloads.
     assert.deepEqual(await mod.host.worktree.create('s-1', '/cwd'), {
@@ -625,7 +613,6 @@ async function run() {
       'pty_restart',
       'pty_get_cwd',
       'debug_open_logs_folder',
-      'openai_set_api_key',
       'worktree_create',
       'worktree_rehydrate',
     ]) {
@@ -807,9 +794,6 @@ async function run() {
       { cmd: 'claude_get_session_meta', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_context_usage', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_worktree_status', args: { sessionId: 's-1' } },
-      { cmd: 'openai_get_api_key_status', args: undefined },
-      { cmd: 'openai_set_api_key', args: { apiKey: 'sk-x' } },
-      { cmd: 'openai_clear_api_key', args: undefined },
       { cmd: 'worktree_create', args: { sessionId: 's-1', cwd: '/cwd' } },
       { cmd: 'worktree_remove', args: { sessionId: 's-1', deleteBranch: true } },
       { cmd: 'worktree_status', args: { sessionId: 's-1' } },
@@ -846,13 +830,15 @@ async function run() {
     // claude.* unported methods used to throw, but the surface is too
     // large for that to be useful — unrecognized keys now return
     // Promise.resolve(null) with a one-time console.warn so panel
-    // mounts don't crash. Same applies to openai.* / worktree.* keys
-    // that aren't in the explicit map. claude.setAutoContinue is now
+    // mounts don't crash. Same applies to worktree.* keys that aren't
+    // in the explicit map. claude.setAutoContinue is now
     // explicitly routed (see scenario 3), so use a synthetic key here.
     const setRes = await (mod.host as { claude: { unknownMethodXyz: () => Promise<unknown> } }).claude.unknownMethodXyz()
     assert.equal(setRes, null)
-    const oxRes = await (mod.host as { openai: { unknownMethod: () => Promise<unknown> } }).openai.unknownMethod()
-    assert.equal(oxRes, null)
+    assert.throws(
+      () => (mod.host as { openai: { unknownMethod: unknown } }).openai.unknownMethod,
+      /host-api: openai\.unknownMethod is not yet implemented under Tauri/,
+    )
   }
 
   // 5) Legacy __TAURI__ marker still works (detection only — invoke can't be

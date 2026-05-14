@@ -30,7 +30,7 @@ function collectMatches(source: string, pattern: RegExp): Set<string> {
 
 function extractClaudeAdapterBlock(hostSource: string): string {
   const start = hostSource.indexOf('claude: new Proxy')
-  const end = hostSource.indexOf('openai: new Proxy', start)
+  const end = hostSource.indexOf('worktree: new Proxy', start)
   assert.ok(start >= 0, 'Could not find Tauri claude adapter block')
   assert.ok(end > start, 'Could not find end of Tauri claude adapter block')
   return hostSource.slice(start, end)

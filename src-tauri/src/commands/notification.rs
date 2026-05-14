@@ -1,7 +1,7 @@
 // notification:* — in-memory notification center.
 //
 // The Electron host pumps notifications in from the agent managers
-// (claude/codex/openai). Tauri keeps the same renderer-facing API and
+// (claude/codex). Tauri keeps the same renderer-facing API and
 // records agent sessions at the command boundary; when the Rust event
 // hub sees a completed `claude:turn-end`, it inserts an entry here.
 //
@@ -591,7 +591,7 @@ fn emit_update(app: &AppHandle, state: &State<'_, NotificationState>) {
 
 // Helper used by the (future) agent sidecar to push a new entry.
 // We expose it on `NotificationState` so the eventual claude/codex/
-// openai modules can call it directly without re-parsing JSON.
+// runtime modules can call it directly without re-parsing JSON.
 #[allow(dead_code)]
 pub fn add_entry(app: &AppHandle, state: &NotificationState, entry: NotificationEntry) {
     {
@@ -647,7 +647,7 @@ fn effective_notification_cwd(options: Option<&Value>) -> Option<String> {
 
 fn agent_kind_from_options(options: &Value) -> Option<String> {
     match options.get("agentPreset").and_then(Value::as_str) {
-        Some("codex-agent" | "codex-agent-worktree" | "openai-agent") => Some("codex".into()),
+        Some("codex-agent" | "codex-agent-worktree") => Some("codex".into()),
         Some("claude-code" | "claude-code-v2" | "claude-code-worktree") | None => {
             Some("claude".into())
         }

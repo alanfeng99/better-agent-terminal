@@ -110,7 +110,7 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
         "worktree:merge" => Some(&["sessionId", "strategy"]),
         "worktree:rehydrate" => Some(&["sessionId", "cwd", "worktreePath", "branchName"]),
         "git:get-github-url" => Some(&["folderPath"]),
-        "git:branch" | "git:status" | "git:getRoot" | "openai:list-sessions" => Some(&["cwd"]),
+        "git:branch" | "git:status" | "git:getRoot" => Some(&["cwd"]),
         "git:log" => Some(&["cwd", "count"]),
         "git:diff" => Some(&["cwd", "commitHash", "filePath"]),
         "git:diff-files" => Some(&["cwd", "commitHash"]),
@@ -126,8 +126,6 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
         "github:pr-list" | "github:issue-list" => Some(&["cwd"]),
         "github:pr-view" | "github:issue-view" => Some(&["cwd", "number"]),
         "github:pr-comment" | "github:issue-comment" => Some(&["cwd", "number", "body"]),
-        "openai:set-api-key" => Some(&["key"]),
-        "openai:compact-now" => Some(&["sessionId"]),
         "profile:load" | "profile:load-snapshot" | "profile:activate" | "profile:deactivate" => {
             Some(&["profileId"])
         }

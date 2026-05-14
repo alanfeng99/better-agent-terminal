@@ -108,6 +108,7 @@ async function main() {
     'electron/openai-agent/skills-scanner.ts',
     'electron/openai-agent/compaction.ts',
     'electron/openai-tools/registry.ts',
+    'src-tauri/src/commands/openai.rs',
   ]) {
     await assert.rejects(
       readFile(removedFile, 'utf8'),
@@ -119,6 +120,7 @@ async function main() {
     '### OpenAI Direct (debug)',
     'openai-agent-manager.ts',
     'OpenAIAgentPanel.tsx',
+    'host.openai',
     '@ai-sdk/openai',
   ]) {
     assert.equal(

@@ -8,6 +8,7 @@
 mod account_store;
 mod app_data;
 mod codex_app_server;
+mod codex_auth;
 mod commands;
 mod electron_safe_storage;
 mod event_hub;
@@ -24,10 +25,10 @@ mod window_registry;
 use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
     debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd,
-    image as image_cmd, notification as notification_cmd, openai as openai_cmd,
-    profile as profile_cmd, pty as pty_cmd, remote as remote_cmd, settings, shell as shell_cmd,
-    snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
-    worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
+    image as image_cmd, notification as notification_cmd, profile as profile_cmd, pty as pty_cmd,
+    remote as remote_cmd, settings, shell as shell_cmd, snippet as snippet_cmd,
+    tunnel as tunnel_cmd, update as update_cmd, worker_buffer as worker_buffer_cmd,
+    workspace as workspace_cmd, worktree as worktree_cmd,
 };
 use tauri::{Emitter, Manager};
 
@@ -213,9 +214,6 @@ pub fn run() {
             claude_cmd::claude_resolve_ask_user,
             claude_cmd::claude_check_mcp_json_status,
             claude_cmd::claude_enable_all_project_mcp,
-            openai_cmd::openai_get_api_key_status,
-            openai_cmd::openai_set_api_key,
-            openai_cmd::openai_clear_api_key,
             worktree_cmd::worktree_create,
             worktree_cmd::worktree_remove,
             worktree_cmd::worktree_status,

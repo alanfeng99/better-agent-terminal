@@ -12,7 +12,7 @@ export interface NotificationEntry {
   error?: string
   timestamp: number
   read: boolean
-  agentKind?: 'claude' | 'codex' | 'openai'
+  agentKind?: 'claude' | 'codex'
 }
 
 type Listener = () => void

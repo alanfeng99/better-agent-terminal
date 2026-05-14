@@ -319,7 +319,7 @@ type NotificationEntry = {
   error?: string
   timestamp: number
   read: boolean
-  agentKind?: 'claude' | 'codex' | 'openai'
+  agentKind?: 'claude' | 'codex'
 }
 
 function createTauriHost(): BatAppAPI {
@@ -970,32 +970,6 @@ function createTauriHost(): BatAppAPI {
         return permissiveValueFor(`claude.${key}`)
       },
     }),
-    openai: new Proxy({}, {
-      // OpenAI Direct runtime is retired. Keep the renderer-facing methods
-      // for renderer compatibility, but only API-key storage still
-      // routes to the sidecar as a Codex auth fallback.
-      get(_t, prop) {
-        const key = String(prop)
-        const map: Record<string, string> = {
-          getApiKeyStatus: 'openai_get_api_key_status',
-          setApiKey: 'openai_set_api_key',
-          clearApiKey: 'openai_clear_api_key',
-        }
-        if (key === 'setApiKey') {
-          return (apiKey: string) => getInvoke()<unknown>('openai_set_api_key', { apiKey })
-        }
-        if (key === 'listSessions') {
-          return async () => []
-        }
-        if (key === 'compactNow') {
-          return async () => false
-        }
-        if (map[key]) {
-          return () => getInvoke()<unknown>(map[key])
-        }
-        return permissiveValueFor(`openai.${key}`)
-      },
-    }),
     worktree: new Proxy({}, {
       // worktree.* — agent-tied. Sidecar handlers mirror the host
       // WorktreeManager while keeping the renderer-facing shape stable.
@@ -1169,7 +1143,7 @@ const PORTED_NAMESPACES = new Set([
   'settings', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
   'notification', 'system', 'github', 'snippet', 'profile',
-  'claude', 'openai', 'worktree', 'agent', 'workerBuffer',
+  'claude', 'worktree', 'agent', 'workerBuffer',
   'remote', 'tunnel',
 ])
 

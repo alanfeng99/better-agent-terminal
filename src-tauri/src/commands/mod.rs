@@ -17,7 +17,6 @@ pub mod git;
 pub mod github;
 pub mod image;
 pub mod notification;
-pub mod openai;
 pub mod profile;
 pub mod pty;
 pub mod remote;

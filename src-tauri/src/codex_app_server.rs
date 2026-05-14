@@ -5,13 +5,14 @@
 // thread/turn/item notifications back into the existing claude:* event shape
 // consumed by the renderer.
 
-use crate::commands::{app as app_cmd, openai};
+use crate::codex_auth;
+use crate::commands::app as app_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::sidecar::BridgeError;
+use crate::subprocess::hide_console_window;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use crate::subprocess::hide_console_window;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -449,7 +450,7 @@ fn build_codex_command(app: &AppHandle) -> Command {
             }
         }
     };
-    if let Some(api_key) = openai::configured_openai_key_for_runtime(app) {
+    if let Some(api_key) = codex_auth::configured_openai_key_for_runtime(app) {
         command.env("OPENAI_API_KEY", api_key);
     }
     // The `codex` CLI is a Node script (`#!/usr/bin/env node`) and codex
