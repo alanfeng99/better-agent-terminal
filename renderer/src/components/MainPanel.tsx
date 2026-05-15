@@ -31,6 +31,7 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
   const isClaudeCli = terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree'
   const isCodexAgent = terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree'
   const isClaudeCode = isSdkManaged
+  const hasRuntimeError = !!terminal.runtimeError
   const agentConfig = isAgent ? getAgentPreset(terminal.agentPreset!) : null
   const displayTitle = terminal.alias || terminal.title
   const { t } = useTranslation()
@@ -90,6 +91,9 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
           )}
           {terminal.worktreeBranch && terminal.worktreeMergedKind && terminal.worktreeMergedKind !== 'unknown' && (
             <WorktreeMergedChip kind={terminal.worktreeMergedKind} />
+          )}
+          {hasRuntimeError && (
+            <span className="terminal-runtime-error-chip">Error</span>
           )}
         </div>
         {isClaudeCode && !isWorker && (
@@ -160,7 +164,15 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
         </div>
       </div>
       <div className="main-panel-content">
-        {isWorker ? (
+        {hasRuntimeError ? (
+          <div className="terminal-runtime-error-panel">
+            <div className="terminal-runtime-error-title">Terminal failed to start</div>
+            <div className="terminal-runtime-error-message">{terminal.runtimeError}</div>
+            <button className="terminal-runtime-error-retry" onClick={() => onRestart(terminal.id)}>
+              Restart
+            </button>
+          </div>
+        ) : isWorker ? (
           <Suspense fallback={<div className="loading-panel" />}>
             <WorkerPanel
               terminalId={terminal.id}

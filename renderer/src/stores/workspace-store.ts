@@ -374,6 +374,17 @@ class WorkspaceStore {
     this.notify()
   }
 
+  setTerminalRuntimeError(id: string, runtimeError?: string): void {
+    this.state = {
+      ...this.state,
+      terminals: this.state.terminals.map(t =>
+        t.id === id ? { ...t, runtimeError } : t
+      )
+    }
+
+    this.notify()
+  }
+
   setFocusedTerminal(id: string | null): void {
     if (this.state.focusedTerminalId === id) return
 

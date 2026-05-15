@@ -79,6 +79,7 @@ export interface TerminalInstance {
   worktreeMergedKind?: 'ancestor' | 'patch-equivalent' | 'ahead' | 'diverged' | 'unknown';
   historyKey?: string;            // Stable key for per-terminal HISTFILE (persisted across restarts)
   procfilePath?: string;          // If set, this terminal is a Worker panel running processes from this Procfile
+  runtimeError?: string;           // Non-persisted startup/runtime error for this terminal panel
 }
 
 export interface AppState {

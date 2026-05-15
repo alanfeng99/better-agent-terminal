@@ -282,7 +282,7 @@ fn read_profile_snapshot(app: &AppHandle, profile_id: &str) -> Vec<WindowSnapsho
             Vec::new()
         };
     }
-    value
+    let snapshots = value
         .get("windows")
         .and_then(Value::as_array)
         .map(|windows| {
@@ -293,7 +293,8 @@ fn read_profile_snapshot(app: &AppHandle, profile_id: &str) -> Vec<WindowSnapsho
                 .filter(snapshot_has_content)
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    dedupe_snapshots_by_terminal_ids(snapshots)
 }
 
 fn write_profile_snapshot(app: &AppHandle, profile_id: &str, windows: &[WindowSnapshot]) {
@@ -304,6 +305,7 @@ fn write_profile_snapshot(app: &AppHandle, profile_id: &str, windows: &[WindowSn
         let _ = fs::create_dir_all(parent);
     }
     let name = profile_name(app, profile_id).unwrap_or_else(|| profile_id.to_string());
+    let windows = dedupe_snapshots_by_terminal_ids(windows.to_vec());
     let payload = json!({
         "id": profile_id,
         "name": name,
@@ -329,7 +331,7 @@ fn profile_name(app: &AppHandle, profile_id: &str) -> Option<String> {
 }
 
 fn profile_windows(entries: &[WindowEntry], profile_id: &str) -> Vec<WindowSnapshot> {
-    entries
+    let snapshots = entries
         .iter()
         .filter(|entry| {
             entry.profile_id == profile_id
@@ -337,7 +339,8 @@ fn profile_windows(entries: &[WindowEntry], profile_id: &str) -> Vec<WindowSnaps
                 && snapshot_has_content(&entry.snapshot)
         })
         .map(|entry| entry.snapshot.clone())
-        .collect()
+        .collect();
+    dedupe_snapshots_by_terminal_ids(snapshots)
 }
 
 fn snapshot_has_content(snapshot: &WindowSnapshot) -> bool {
@@ -346,6 +349,27 @@ fn snapshot_has_content(snapshot: &WindowSnapshot) -> bool {
         || snapshot.active_workspace_id.is_some()
         || snapshot.active_terminal_id.is_some()
         || snapshot.active_group.is_some()
+}
+
+fn snapshot_terminal_ids(snapshot: &WindowSnapshot) -> HashSet<String> {
+    value_array(&snapshot.terminals)
+        .into_iter()
+        .filter_map(|terminal| value_id(&terminal).map(str::to_string))
+        .collect()
+}
+
+fn dedupe_snapshots_by_terminal_ids(snapshots: Vec<WindowSnapshot>) -> Vec<WindowSnapshot> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for snapshot in snapshots {
+        let terminal_ids = snapshot_terminal_ids(&snapshot);
+        if !terminal_ids.is_empty() && terminal_ids.iter().any(|id| seen.contains(id)) {
+            continue;
+        }
+        seen.extend(terminal_ids);
+        deduped.push(snapshot);
+    }
+    deduped
 }
 
 fn best_existing_profile_entry(entries: &[WindowEntry]) -> Option<WindowEntry> {
@@ -978,6 +1002,53 @@ mod tests {
         ];
 
         assert_eq!(profile_windows(&entries, "default").len(), 1);
+    }
+
+    #[test]
+    fn profile_windows_dedupes_overlapping_terminal_snapshots() {
+        let first = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "w1"}],
+            "terminals": [{"id": "t1"}, {"id": "t2"}],
+        }));
+        let duplicate = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "w1-copy"}],
+            "terminals": [{"id": "t1"}, {"id": "t2"}],
+        }));
+        let second = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "w2"}],
+            "terminals": [{"id": "t3"}],
+        }));
+        let entries = vec![
+            WindowEntry {
+                id: "first".into(),
+                profile_id: "default".into(),
+                snapshot: first,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+            WindowEntry {
+                id: "duplicate".into(),
+                profile_id: "default".into(),
+                snapshot: duplicate,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+            WindowEntry {
+                id: "second".into(),
+                profile_id: "default".into(),
+                snapshot: second,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+        ];
+
+        let windows = profile_windows(&entries, "default");
+        assert_eq!(windows.len(), 2);
+        assert_eq!(value_id(&value_array(&windows[0].workspaces)[0]), Some("w1"));
+        assert_eq!(value_id(&value_array(&windows[1].workspaces)[0]), Some("w2"));
     }
 
     #[test]

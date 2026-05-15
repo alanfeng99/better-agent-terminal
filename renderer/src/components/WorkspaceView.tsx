@@ -1,7 +1,7 @@
 import { host } from '../host-api'
 import { useEffect, useCallback, useState, lazy, Suspense } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { Workspace, TerminalInstance, EnvVariable } from '../types'
+import type { Workspace, TerminalInstance, EnvVariable, CreatePtyOptions } from '../types'
 import { workspaceStore } from '../stores/workspace-store'
 import { settingsStore } from '../stores/settings-store'
 import { ThumbnailBar } from './ThumbnailBar'
@@ -119,18 +119,27 @@ function isPtyAlreadyExistsError(error: unknown): boolean {
   return message.includes('pty session') && message.includes('already exists')
 }
 
-async function createWorkspacePty(options: Parameters<typeof host.pty.create>[0], context: string): Promise<boolean> {
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+async function createWorkspacePty(options: CreatePtyOptions, context: string): Promise<boolean> {
   try {
     await host.pty.create(options)
+    workspaceStore.setTerminalRuntimeError(options.id, undefined)
     return true
   } catch (error) {
+    const message = errorMessage(error)
     if (isPtyAlreadyExistsError(error)) {
       if (host.debug.isDebugMode === true) {
         void host.debug.log(`[WorkspaceView] PTY already exists during ${context}; reusing existing session`)
       }
+      workspaceStore.setTerminalRuntimeError(options.id, undefined)
       return false
     }
-    throw error
+    workspaceStore.setTerminalRuntimeError(options.id, message)
+    void host.debug.log(`[WorkspaceView] PTY create failed during ${context}: ${message}`)
+    return false
   }
 }
 
@@ -365,7 +374,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             }
           }
           if (defaultAgent !== 'claude-cli' && defaultAgent !== 'claude-cli-worktree' && defaultAgent !== 'claude-code' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
-            host.pty.create({
+            const created = await createWorkspacePty({
               id: agentTerminal.id,
               cwd: workspace.folderPath,
               type: 'terminal',
@@ -374,8 +383,8 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
               customEnv,
               perTerminalHistory: settings.perTerminalHistory,
               historyKey: agentTerminal.historyKey,
-            })
-            if (settings.agentAutoCommand) {
+            }, `create default agent terminal ${agentTerminal.id}`)
+            if (created && settings.agentAutoCommand) {
               const command = buildAgentAutoCommand(defaultAgent, settings)
               if (command) {
                 setTimeout(() => {
@@ -388,7 +397,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
         for (let i = 0; i < terminalCount; i++) {
           const terminal = workspaceStore.addTerminal(workspace.id)
-          host.pty.create({
+          await createWorkspacePty({
             id: terminal.id,
             cwd: workspace.folderPath,
             type: 'terminal',
@@ -396,7 +405,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             customEnv,
             perTerminalHistory: settings.perTerminalHistory,
             historyKey: terminal.historyKey,
-          })
+          }, `create default terminal ${terminal.id}`)
         }
         // Persist newly created default terminals
         workspaceStore.save()
@@ -404,7 +413,10 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       dlog(`[init] initTerminals total: ${(performance.now() - t0).toFixed(0)}ms, terminals=${terminals.length}`)
       dlog(`[startup] initTerminals done: +${Date.now() - htmlT0}ms from HTML`)
     }
-    initTerminals()
+    void initTerminals().catch(error => {
+      initializedWorkspaces.delete(workspace.id)
+      void host.debug.log(`[WorkspaceView] initTerminals failed workspace=${workspace.id}: ${errorMessage(error)}`)
+    })
   }, [isActive, workspace.id, terminals.length, workspace.defaultAgent, workspace.folderPath, workspace.envVars])
 
   // Set default focus - only for active workspace
@@ -423,7 +435,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     const shell = await getShellFromSettings()
     const settings = settingsStore.getSettings()
     const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-    host.pty.create({
+    await createWorkspacePty({
       id: terminal.id,
       cwd: workspace.folderPath,
       type: 'terminal',
@@ -431,7 +443,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       customEnv,
       perTerminalHistory: settings.perTerminalHistory,
       historyKey: terminal.historyKey,
-    })
+    }, `add terminal ${terminal.id}`)
     // Focus the new terminal
     workspaceStore.setFocusedTerminal(terminal.id)
     workspaceStore.save()
@@ -456,7 +468,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     workspaceStore.setTerminalWorktreeInfo(terminal.id, wtResult.worktreePath, wtResult.branchName)
     workspaceStore.setTerminalGeneratedTitle(terminal.id, 'Terminal (worktree)')
 
-    host.pty.create({
+    await createWorkspacePty({
       id: terminal.id,
       cwd: wtResult.worktreePath,
       type: 'terminal',
@@ -464,7 +476,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       customEnv,
       perTerminalHistory: settings.perTerminalHistory,
       historyKey: terminal.historyKey,
-    })
+    }, `add worktree terminal ${terminal.id}`)
 
     workspaceStore.setFocusedTerminal(terminal.id)
     workspaceStore.save()
@@ -501,7 +513,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       const shell = await getShellFromSettings()
       const settings = settingsStore.getSettings()
       const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
-      host.pty.create({
+      const created = await createWorkspacePty({
         id: terminal.id,
         cwd: workspace.folderPath,
         type: 'terminal',
@@ -510,9 +522,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
         customEnv,
         perTerminalHistory: settings.perTerminalHistory,
         historyKey: terminal.historyKey,
-      })
+      }, `add agent terminal ${terminal.id}`)
       const command = buildAgentAutoCommand(presetId, settings)
-      if (command && settings.agentAutoCommand) {
+      if (created && command && settings.agentAutoCommand) {
         setTimeout(() => {
           host.pty.write(terminal.id, command + '\r')
         }, 500)
