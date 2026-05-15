@@ -1303,9 +1303,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         if (cancelled) return
         const existingState = await host.claude.getSessionState(sessionId).catch(() => null)
         if (cancelled || !existingState) return
+        const existingMessages = (existingState.messages || []) as MessageItem[]
         historyLoadedRef.current = true
         setIsResumingHistory(false)
-        setMessages((existingState.messages || []) as MessageItem[])
+        if (existingMessages.length > 0 || messageCountRef.current === 0) {
+          setMessages(existingMessages)
+        } else if (host.debug.isDebugMode === true) {
+          dlog(`${stag} skip empty getSessionState messages; preserving rendered history count=${messageCountRef.current}`)
+        }
         setIsStreaming(!!existingState.isStreaming)
         setStreamingText(existingState.streamingText || '')
         setStreamingThinking(existingState.streamingThinking || '')

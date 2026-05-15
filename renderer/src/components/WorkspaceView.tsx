@@ -114,6 +114,26 @@ function buildAgentAutoCommand(presetId: string, settings: ReturnType<typeof set
   return preset?.command || null
 }
 
+function isPtyAlreadyExistsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('pty session') && message.includes('already exists')
+}
+
+async function createWorkspacePty(options: Parameters<typeof host.pty.create>[0], context: string): Promise<boolean> {
+  try {
+    await host.pty.create(options)
+    return true
+  } catch (error) {
+    if (isPtyAlreadyExistsError(error)) {
+      if (host.debug.isDebugMode === true) {
+        void host.debug.log(`[WorkspaceView] PTY already exists during ${context}; reusing existing session`)
+      }
+      return false
+    }
+    throw error
+  }
+}
+
 // Track which workspaces have been initialized (outside component to persist across renders)
 const initializedWorkspaces = new Set<string>()
 
@@ -306,7 +326,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           if (terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree') continue
           // Claude CLI presets are started by ClaudeCliPanel so it can own session restore.
           if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') continue
-          host.pty.create({
+          const created = await createWorkspacePty({
             id: terminal.id,
             cwd: terminal.cwd || workspace.folderPath,
             type: 'terminal',
@@ -315,9 +335,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             customEnv,
             perTerminalHistory: settings.perTerminalHistory,
             historyKey: terminal.historyKey,
-          })
+          }, `restore terminal ${terminal.id}`)
           // Auto-run agent command for non-Claude agents
-          if (terminal.agentPreset && terminal.agentPreset !== 'none' && settings.agentAutoCommand) {
+          if (created && terminal.agentPreset && terminal.agentPreset !== 'none' && settings.agentAutoCommand) {
             const command = buildAgentAutoCommand(terminal.agentPreset, settings)
             if (command) {
               setTimeout(() => {
