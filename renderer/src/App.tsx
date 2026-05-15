@@ -294,13 +294,16 @@ export default function App() {
   }, [])
 
   // Keyboard shortcuts: Cmd+` on mac / Ctrl+` elsewhere (cycle BAT windows),
-  // Alt+` / Alt+Shift+` (cycle sessions in the current workspace),
+  // Ctrl+` on mac / Alt+` elsewhere (cycle sessions in the current workspace),
   // Cmd/Ctrl+Left/Right (cycle tabs), Cmd/Ctrl+Up/Down (switch workspace)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const isBackquote = isBackquoteShortcutEvent(e)
+      const isSessionCycleShortcut = host.platform === 'darwin'
+        ? e.ctrlKey && !e.metaKey && !e.altKey
+        : e.altKey && !e.metaKey && !e.ctrlKey
 
-      if (isBackquote && e.altKey && !e.metaKey && !e.ctrlKey) {
+      if (isBackquote && isSessionCycleShortcut) {
         const currentState = workspaceStore.getState()
         if (!currentState.activeWorkspaceId) return
         const terminals = workspaceStore.getWorkspaceTerminals(currentState.activeWorkspaceId)

@@ -45,7 +45,7 @@ export function ThumbnailBar({
   const { t } = useTranslation()
   const label = t('terminal.workspaceSessions')
   const switchWindowShortcut = host.platform === 'darwin' ? '⌘+`' : 'Ctrl+`'
-  const switchSessionShortcut = 'Alt+`'
+  const switchSessionShortcut = host.platform === 'darwin' ? 'Ctrl+`' : 'Alt+`'
   const presetGroups = groupAgentPresetsForMenu(agentPresets)
 
   // All hooks must be declared before any conditional return (React rules of hooks)
