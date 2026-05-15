@@ -120,7 +120,13 @@ function isPtyAlreadyExistsError(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
 }
 
 async function createWorkspacePty(options: CreatePtyOptions, context: string): Promise<boolean> {

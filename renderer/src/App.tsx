@@ -738,7 +738,7 @@ export default function App() {
       <main className="main-content">
         {visibleWorkspaces.length > 0 ? (
           // Only mount workspaces that have been visited (lazy mount)
-          visibleWorkspaces.filter(w => mountedWorkspaces.has(w.id)).map(workspace => (
+          visibleWorkspaces.filter(w => mountedWorkspaces.has(w.id) || w.id === state.activeWorkspaceId).map(workspace => (
             <div
               key={workspace.id}
               className={`workspace-container ${workspace.id === state.activeWorkspaceId ? 'active' : 'hidden'}`}

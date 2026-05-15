@@ -102,7 +102,7 @@ class WorkspaceStore {
     const savedFocus = targetWs?.focusedTerminalId
     const restoredFocus = savedFocus && this.state.terminals.find(t => t.id === savedFocus && t.workspaceId === id)
       ? savedFocus
-      : null
+      : (this.state.terminals.find(t => t.workspaceId === id)?.id ?? null)
 
     this.state = {
       ...this.state,
@@ -756,18 +756,18 @@ class WorkspaceStore {
       const activeWs = workspaces.find((w: Workspace) => w.id === activeWorkspaceId)
       const savedFocusId = activeWs?.focusedTerminalId
       const focusCandidate = shouldPreserveActive
-        ? this.state.focusedTerminalId || savedFocusId
-        : savedFocusId
+        ? this.state.focusedTerminalId || savedFocusId || parsed.activeTerminalId
+        : savedFocusId || parsed.activeTerminalId
       const restoredFocus = focusCandidate && terminals.find(
         (t: TerminalInstance) => t.id === focusCandidate && t.workspaceId === activeWorkspaceId
-      ) ? focusCandidate : null
+      ) ? focusCandidate : (terminals.find((t: TerminalInstance) => t.workspaceId === activeWorkspaceId)?.id ?? null)
 
       this.state = {
         ...this.state,
         workspaces,
         activeWorkspaceId,
         terminals,
-        activeTerminalId: parsed.activeTerminalId || null,
+        activeTerminalId: restoredFocus,
         focusedTerminalId: restoredFocus,
       }
       this.activeGroup = parsed.activeGroup || null
