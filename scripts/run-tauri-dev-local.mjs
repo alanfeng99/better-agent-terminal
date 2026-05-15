@@ -47,6 +47,10 @@ function readEnvLocal() {
   return env
 }
 
+const args = process.argv.slice(2)
+const stableMode = args.includes('--stable')
+const forwardedArgs = args.filter(arg => arg !== '--stable' && arg !== '--print-env')
+
 const env = {
   ...process.env,
   ...readEnvLocal(),
@@ -62,17 +66,37 @@ if (process.argv.includes('--print-env')) {
   process.exit(0)
 }
 
-const child = spawn('pnpm', ['run', 'tauri:dev:latest'], {
-  cwd: repoRoot,
-  env,
-  stdio: 'inherit',
-  shell: process.platform === 'win32',
-})
+function spawnProcess(command, commandArgs) {
+  return spawn(command, commandArgs, {
+    cwd: repoRoot,
+    env,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  })
+}
 
-child.on('exit', (code, signal) => {
+function exitFromChild(code, signal) {
   if (signal) {
     process.kill(process.pid, signal)
     return
   }
   process.exit(code ?? 1)
-})
+}
+
+if (stableMode) {
+  const build = spawnProcess('pnpm', ['run', 'tauri:build:debug'])
+  build.on('exit', (code, signal) => {
+    if (signal || code !== 0) {
+      exitFromChild(code, signal)
+      return
+    }
+    const exe = process.platform === 'win32'
+      ? join(repoRoot, 'src-tauri', 'target', 'debug', 'better-agent-terminal.exe')
+      : join(repoRoot, 'src-tauri', 'target', 'debug', 'better-agent-terminal')
+    const app = spawnProcess(exe, forwardedArgs)
+    app.on('exit', exitFromChild)
+  })
+} else {
+  const child = spawnProcess('pnpm', ['run', 'tauri:dev:latest', ...forwardedArgs])
+  child.on('exit', exitFromChild)
+}
