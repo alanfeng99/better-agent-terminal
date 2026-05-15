@@ -193,7 +193,6 @@ fn build_window_now(app: &AppHandle, window_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn active_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
     let windows = app.webview_windows();
     windows
@@ -204,13 +203,11 @@ fn active_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
         .or_else(|| windows.values().next().cloned())
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn app_new_window_for_active(app: &AppHandle) -> Option<String> {
     let window = active_webview_window(app)?;
     Some(app_new_window(app.clone(), window))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn app_focus_next_window_from_active(app: &AppHandle) -> bool {
     let Some(window) = active_webview_window(app) else {
         return false;

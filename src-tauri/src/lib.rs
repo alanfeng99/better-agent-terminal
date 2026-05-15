@@ -7,7 +7,6 @@
 
 mod account_store;
 mod app_data;
-#[cfg(target_os = "macos")]
 mod app_menu;
 mod codex_app_server;
 mod codex_auth;
@@ -87,13 +86,9 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 }
 
 fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
-    let builder = tauri::Builder::default();
-    #[cfg(target_os = "macos")]
-    let builder = builder
+    tauri::Builder::default()
         .menu(app_menu::build)
-        .on_menu_event(app_menu::handle_event);
-
-    builder
+        .on_menu_event(app_menu::handle_event)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())

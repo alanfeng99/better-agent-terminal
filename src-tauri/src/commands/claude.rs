@@ -561,8 +561,22 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn strip_windows_verbatim_prefix(value: &str) -> String {
+    let forward = value.replace('\\', "/");
+    if forward.len() >= 6
+        && forward[..4].eq_ignore_ascii_case("//?/")
+        && forward.as_bytes()[5] == b':'
+    {
+        return forward[4..].to_string();
+    }
+    if forward.len() >= 10 && forward[..8].eq_ignore_ascii_case("//?/UNC/") {
+        return format!("//{}", &forward[8..]);
+    }
+    forward
+}
+
 fn drive_letter_mount_path(windows_path: &str, mount_root: &str) -> Option<String> {
-    let forward = windows_path.replace('\\', "/");
+    let forward = strip_windows_verbatim_prefix(windows_path);
     let bytes = forward.as_bytes();
     if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'/' || !bytes[0].is_ascii_alphabetic() {
         return None;
@@ -586,7 +600,7 @@ fn build_claude_cli_hook_command(
     cwd: &str,
 ) -> String {
     let node_path_text = node_path.to_string_lossy().to_string();
-    let node_forward = node_path_text.replace('\\', "/");
+    let node_forward = strip_windows_verbatim_prefix(&node_path_text);
     let args = [
         hook_script_path.to_string_lossy().to_string(),
         "--events".into(),
@@ -3686,6 +3700,18 @@ mod tests {
     }
 
     #[test]
+    fn windows_verbatim_paths_are_normalized_for_bash() {
+        assert_eq!(
+            strip_windows_verbatim_prefix(r"\\?\C:\Users\User\node.exe"),
+            "C:/Users/User/node.exe"
+        );
+        assert_eq!(
+            drive_letter_mount_path(r"\\?\C:\Users\User\node.exe", "/mnt").as_deref(),
+            Some("/mnt/c/Users/User/node.exe")
+        );
+    }
+
+    #[test]
     fn claude_cli_hook_command_uses_bash_mounts_for_windows_node() {
         let command = build_claude_cli_hook_command(
             Path::new(
@@ -3714,6 +3740,31 @@ mod tests {
         ));
         assert!(command.contains("'C:\\workspaces\\tools\\better-terminal'"));
         assert!(!command.contains("C:Users"));
+    }
+
+    #[test]
+    fn claude_cli_hook_command_handles_verbatim_windows_node_path() {
+        let command = build_claude_cli_hook_command(
+            Path::new(
+                r"\\?\C:\Users\User\AppData\Local\Programs\BetterAgentTerminal\node-runtime\windows-x86_64\node.exe",
+            ),
+            Path::new(
+                r"C:\Users\User\AppData\Roaming\better-agent-terminal\claude-cli\hook-session-start.mjs",
+            ),
+            Path::new(
+                r"C:\Users\User\AppData\Roaming\better-agent-terminal\claude-cli\session-events.jsonl",
+            ),
+            "term-1",
+            "ws-1",
+            "claude-cli",
+            r"C:\workspaces\tools\better-terminal",
+        );
+
+        assert!(command.contains(
+            "'/mnt/c/Users/User/AppData/Local/Programs/BetterAgentTerminal/node-runtime/windows-x86_64/node.exe'"
+        ));
+        assert!(!command.contains(r"\?\C:"));
+        assert!(!command.contains("//?/C:"));
     }
 
     #[test]
