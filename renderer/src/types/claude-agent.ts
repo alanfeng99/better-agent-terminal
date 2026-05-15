@@ -36,6 +36,18 @@ export interface ClaudeSessionState {
 }
 
 // Discriminator helper
-export function isToolCall(item: ClaudeMessage | ClaudeToolCall): item is ClaudeToolCall {
-  return 'toolName' in item
+function isRecord(item: unknown): item is Record<string, unknown> {
+  return item !== null && typeof item === 'object'
+}
+
+export function isToolCall(item: unknown): item is ClaudeToolCall {
+  return isRecord(item) && typeof item.toolName === 'string'
+}
+
+export function isClaudeMessage(item: unknown): item is ClaudeMessage {
+  return isRecord(item) && !isToolCall(item) && typeof item.role === 'string' && 'content' in item
+}
+
+export function isMessageItem(item: unknown): item is ClaudeMessage | ClaudeToolCall {
+  return isToolCall(item) || isClaudeMessage(item)
 }

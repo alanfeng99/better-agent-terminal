@@ -689,17 +689,20 @@ pub fn profile_load(app: AppHandle, window: WebviewWindow, profile_id: String) -
         return Value::Null;
     };
     let index = read_index_at(&dir);
-    if !index
+    let Some(profile) = index
         .profiles
         .iter()
-        .any(|profile| profile.id == profile_id && profile.kind == "local")
-    {
-        return Value::Null;
-    }
-    let Some(snapshot) = read_snapshot_at(&dir, &profile_id) else {
+        .find(|profile| profile.id == profile_id && profile.kind == "local")
+        .cloned()
+    else {
         return Value::Null;
     };
-    if let Some(workspace) = workspace_from_first_snapshot_window(&snapshot) {
+    let snapshot = read_snapshot_at(&dir, &profile_id);
+    let workspace = snapshot
+        .as_ref()
+        .and_then(workspace_from_first_snapshot_window)
+        .or_else(|| window_registry::profile_workspace_from_existing_window(&app, &profile_id));
+    if let Some(workspace) = workspace {
         if let Some(path) = workspace_path(&app) {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
@@ -709,6 +712,8 @@ pub fn profile_load(app: AppHandle, window: WebviewWindow, profile_id: String) -
                 serde_json::to_string_pretty(&workspace).unwrap_or_else(|_| "{}".into()),
             );
         }
+        let snapshot = snapshot_from_workspace(&profile, workspace.clone());
+        let _ = write_snapshot_at(&dir, &profile_id, &snapshot);
         let _ = window_registry::load_profile_workspace_into_window(
             &app,
             window.label(),
@@ -720,7 +725,7 @@ pub fn profile_load(app: AppHandle, window: WebviewWindow, profile_id: String) -
     if activate_profile_in_index(&mut index, &profile_id) {
         let _ = write_index_at(&dir, index);
     }
-    snapshot
+    snapshot.unwrap_or_else(|| empty_snapshot(&profile))
 }
 
 pub fn activate_profile_id(app: &AppHandle, profile_id: &str) -> bool {

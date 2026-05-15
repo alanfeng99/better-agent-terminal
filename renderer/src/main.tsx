@@ -76,6 +76,57 @@ window.addEventListener('unhandledrejection', (ev) => {
   console.error('[unhandledrejection]', r, '→', detail)
 })
 
+window.addEventListener('error', (ev) => {
+  const detail = JSON.stringify({
+    message: ev.message,
+    filename: ev.filename,
+    lineno: ev.lineno,
+    colno: ev.colno,
+    stack: ev.error instanceof Error ? ev.error.stack?.split('\n').slice(0, 8).join(' | ') : undefined,
+  })
+  dlog(`[window.error] ${detail}`)
+})
+
+class RootErrorBoundary extends React.Component<
+  Readonly<{ children: React.ReactNode }>,
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    dlog(`[react-error] ${JSON.stringify({
+      message: error.message,
+      stack: error.stack?.split('\n').slice(0, 8).join(' | '),
+      componentStack: info.componentStack?.split('\n').slice(0, 8).join(' | '),
+    })}`)
+  }
+
+  render(): React.ReactNode {
+    if (this.state.error) {
+      return (
+        <div style={{
+          height: '100vh',
+          padding: 24,
+          background: '#1e1e1e',
+          color: '#cccccc',
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+          overflow: 'auto',
+        }}>
+          <h1 style={{ fontSize: 18, marginBottom: 12 }}>Renderer failed</h1>
+          <pre style={{ whiteSpace: 'pre-wrap', color: '#fca5a5' }}>
+            {this.state.error.stack || this.state.error.message}
+          </pre>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 // Keep splash visible — React root is hidden behind it.
 // Splash will be removed once React has painted (see rAF below).
 const splash = document.getElementById('splash')
@@ -84,7 +135,11 @@ root.style.display = ''
 
 dlog(`[startup] before createRoot: +${Date.now() - t0}ms`)
 
-ReactDOM.createRoot(root).render(<App />)
+ReactDOM.createRoot(root).render(
+  <RootErrorBoundary>
+    <App />
+  </RootErrorBoundary>
+)
 
 dlog(`[startup] after render() queued: +${Date.now() - t0}ms`)
 

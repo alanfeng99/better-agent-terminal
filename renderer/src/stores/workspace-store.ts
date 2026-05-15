@@ -52,6 +52,20 @@ class WorkspaceStore {
     this.listeners.forEach(listener => listener())
   }
 
+  private restoredFocusForWorkspace(
+    workspaceId: string | null,
+    workspaces = this.state.workspaces,
+    terminals = this.state.terminals,
+  ): string | null {
+    if (!workspaceId) return null
+    const workspace = workspaces.find(w => w.id === workspaceId)
+    const savedFocus = workspace?.focusedTerminalId
+    if (savedFocus && terminals.some(t => t.id === savedFocus && t.workspaceId === workspaceId)) {
+      return savedFocus
+    }
+    return terminals.find(t => t.workspaceId === workspaceId)?.id ?? null
+  }
+
   // Workspace actions
   addWorkspace(name: string, folderPath: string): Workspace {
     const workspace: Workspace = {
@@ -74,14 +88,18 @@ class WorkspaceStore {
   removeWorkspace(id: string): void {
     const terminals = this.state.terminals.filter(t => t.workspaceId !== id)
     const workspaces = this.state.workspaces.filter(w => w.id !== id)
+    const activeWorkspaceId = this.state.activeWorkspaceId === id
+      ? (workspaces[0]?.id ?? null)
+      : this.state.activeWorkspaceId
+    const restoredFocus = this.restoredFocusForWorkspace(activeWorkspaceId, workspaces, terminals)
 
     this.state = {
       ...this.state,
       workspaces,
       terminals,
-      activeWorkspaceId: this.state.activeWorkspaceId === id
-        ? (workspaces[0]?.id ?? null)
-        : this.state.activeWorkspaceId
+      activeWorkspaceId,
+      activeTerminalId: restoredFocus,
+      focusedTerminalId: restoredFocus,
     }
 
     this.notify()
@@ -97,17 +115,13 @@ class WorkspaceStore {
       w.id === currentWsId ? { ...w, focusedTerminalId: currentFocus ?? undefined } : w
     )
 
-    // Restore focus for the target workspace (verify terminal still exists)
-    const targetWs = updatedWorkspaces.find(w => w.id === id)
-    const savedFocus = targetWs?.focusedTerminalId
-    const restoredFocus = savedFocus && this.state.terminals.find(t => t.id === savedFocus && t.workspaceId === id)
-      ? savedFocus
-      : (this.state.terminals.find(t => t.workspaceId === id)?.id ?? null)
+    const restoredFocus = this.restoredFocusForWorkspace(id, updatedWorkspaces)
 
     this.state = {
       ...this.state,
       workspaces: updatedWorkspaces,
       activeWorkspaceId: id,
+      activeTerminalId: restoredFocus,
       focusedTerminalId: restoredFocus
     }
 
@@ -314,6 +328,8 @@ class WorkspaceStore {
     this.state = {
       ...this.state,
       terminals: [...this.state.terminals, terminal],
+      activeWorkspaceId: shouldFocus ? workspaceId : this.state.activeWorkspaceId,
+      activeTerminalId: shouldFocus ? terminal.id : this.state.activeTerminalId,
       focusedTerminalId: shouldFocus ? terminal.id : this.state.focusedTerminalId
     }
 
@@ -323,14 +339,21 @@ class WorkspaceStore {
 
   removeTerminal(id: string): void {
     clearPreviewCache(id)
+    const removedTerminal = this.state.terminals.find(t => t.id === id)
     const terminals = this.state.terminals.filter(t => t.id !== id)
+    const fallbackFocus = this.restoredFocusForWorkspace(removedTerminal?.workspaceId ?? this.state.activeWorkspaceId, this.state.workspaces, terminals)
+    const focusedTerminalId = this.state.focusedTerminalId === id
+      ? fallbackFocus
+      : this.state.focusedTerminalId
+    const activeTerminalId = this.state.activeTerminalId === id
+      ? fallbackFocus
+      : this.state.activeTerminalId
 
     this.state = {
       ...this.state,
       terminals,
-      focusedTerminalId: this.state.focusedTerminalId === id
-        ? (terminals[0]?.id ?? null)
-        : this.state.focusedTerminalId
+      activeTerminalId,
+      focusedTerminalId
     }
 
     this.notify()
@@ -386,10 +409,18 @@ class WorkspaceStore {
   }
 
   setFocusedTerminal(id: string | null): void {
-    if (this.state.focusedTerminalId === id) return
+    const terminal = id ? this.state.terminals.find(t => t.id === id) : null
+    const activeWorkspaceId = terminal?.workspaceId ?? this.state.activeWorkspaceId
+    if (
+      this.state.focusedTerminalId === id
+      && this.state.activeTerminalId === id
+      && this.state.activeWorkspaceId === activeWorkspaceId
+    ) return
 
     this.state = {
       ...this.state,
+      activeWorkspaceId,
+      activeTerminalId: id,
       focusedTerminalId: id
     }
 
@@ -535,10 +566,13 @@ class WorkspaceStore {
       const visibleWorkspaces = this.state.workspaces.filter(w => w.group === group)
       const currentVisible = visibleWorkspaces.some(w => w.id === this.state.activeWorkspaceId)
       if (!currentVisible && visibleWorkspaces.length > 0) {
+        const activeWorkspaceId = visibleWorkspaces[0].id
+        const restoredFocus = this.restoredFocusForWorkspace(activeWorkspaceId)
         this.state = {
           ...this.state,
-          activeWorkspaceId: visibleWorkspaces[0].id,
-          focusedTerminalId: null
+          activeWorkspaceId,
+          activeTerminalId: restoredFocus,
+          focusedTerminalId: restoredFocus
         }
       } else {
         // Force new reference so React re-renders the sidebar filter
@@ -748,9 +782,12 @@ class WorkspaceStore {
       const shouldPreserveActive = !!options?.preserveActiveSelection
         && !!currentActiveWorkspaceId
         && workspaces.some((w: Workspace) => w.id === currentActiveWorkspaceId)
-      const activeWorkspaceId = shouldPreserveActive
+      const requestedActiveWorkspaceId = shouldPreserveActive
         ? currentActiveWorkspaceId
         : parsed.activeWorkspaceId || null
+      const activeWorkspaceId = requestedActiveWorkspaceId && workspaces.some((w: Workspace) => w.id === requestedActiveWorkspaceId)
+        ? requestedActiveWorkspaceId
+        : (workspaces.find((w: Workspace) => terminals.some((t: TerminalInstance) => t.workspaceId === w.id))?.id ?? workspaces[0]?.id ?? null)
 
       // Restore last focused terminal for the active workspace
       const activeWs = workspaces.find((w: Workspace) => w.id === activeWorkspaceId)
@@ -760,7 +797,7 @@ class WorkspaceStore {
         : savedFocusId || parsed.activeTerminalId
       const restoredFocus = focusCandidate && terminals.find(
         (t: TerminalInstance) => t.id === focusCandidate && t.workspaceId === activeWorkspaceId
-      ) ? focusCandidate : (terminals.find((t: TerminalInstance) => t.workspaceId === activeWorkspaceId)?.id ?? null)
+      ) ? focusCandidate : this.restoredFocusForWorkspace(activeWorkspaceId, workspaces, terminals)
 
       this.state = {
         ...this.state,

@@ -1,5 +1,5 @@
 import { host } from '../host-api'
-import { useEffect, useCallback, useState, lazy, Suspense } from 'react'
+import { useEffect, useCallback, useState, lazy, Suspense, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { Workspace, TerminalInstance, EnvVariable, CreatePtyOptions } from '../types'
 import { workspaceStore } from '../stores/workspace-store'
@@ -167,6 +167,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   const [detectedProcfiles, setDetectedProcfiles] = useState<string[]>([])
   const [showProcfilePicker, setShowProcfilePicker] = useState(false)
   const [showQuickPick, setShowQuickPick] = useState(false)
+  const lastRenderSummaryRef = useRef<string>('')
   // Preset IDs the host knows how to start. `null` until fetched — fall back
   // to the local list so menus aren't empty during the brief load window.
   const [supportedPresetIds, setSupportedPresetIds] = useState<string[] | null>(null)
@@ -693,6 +694,21 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   // Determine what to show
   // mainTerminal: the currently focused or first available terminal
   const mainTerminal = focusedTerminal || agentTerminal || terminals[0]
+
+  useEffect(() => {
+    if (host.debug.isDebugMode !== true) return
+    const summary = [
+      `workspace=${workspace.id}`,
+      `active=${isActive ? 'yes' : 'no'}`,
+      `tab=${activeTab}`,
+      `focused=${focusedTerminalId || 'none'}`,
+      `main=${mainTerminal ? `${mainTerminal.id.slice(0, 8)}:${mainTerminal.title || mainTerminal.agentPreset || 'terminal'}` : 'none'}`,
+      `terminals=[${terminals.map(term => `${term.id.slice(0, 8)}:${term.title || term.agentPreset || 'terminal'}`).join(',')}]`,
+    ].join(' ')
+    if (summary === lastRenderSummaryRef.current) return
+    lastRenderSummaryRef.current = summary
+    void host.debug.log(`[WorkspaceView] render ${summary}`)
+  }, [workspace.id, isActive, activeTab, focusedTerminalId, mainTerminal, terminals])
 
   // Send content to the active Claude agent session
   const handleSendToClaude = useCallback(async (content: string) => {

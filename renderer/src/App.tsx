@@ -152,6 +152,7 @@ export default function App() {
   const [detachedIds, setDetachedIds] = useState<Set<string>>(new Set())
   // Track workspaces that have been visited (for lazy mounting)
   const [mountedWorkspaces, setMountedWorkspaces] = useState<Set<string>>(new Set())
+  const lastRenderSummaryRef = useRef<string>('')
 
   // Sync window title with active profile, window index, and account info
   const [windowIndex, setWindowIndex] = useState<number>(1)
@@ -435,6 +436,10 @@ export default function App() {
           }
         }
 
+        if (host.debug.isDebugMode === true) {
+          dlog(`[init] profile selection launch=${launchProfileId || 'none'} window=${windowProfileId || 'none'} firstActive=${result.activeProfileIds[0] || 'none'} selected=${profileId || 'none'} active=${active ? `${active.id}/${active.name}/${active.type}` : 'none'}`)
+        }
+
         if (active?.type === 'remote' && active.remoteHost && active.remoteToken && active.remoteFingerprint) {
           // Try connecting to remote
           const tRemote = performance.now()
@@ -483,7 +488,10 @@ export default function App() {
         } else if (active) {
           // For local profiles opened in a new window, load the profile snapshot
           // so workspaces.json reflects this profile's data (not the previous profile's)
-          if (launchProfileId) {
+          if (launchProfileId || windowProfileId) {
+            if (host.debug.isDebugMode === true) {
+              dlog(`[init] profile.load local id=${active.id} reason=${launchProfileId ? 'launch' : 'window'}`)
+            }
             await host.profile.load(active.id)
           }
           const winIdx = await host.app.getWindowIndex()
@@ -522,6 +530,16 @@ export default function App() {
         const tWs = performance.now()
         await workspaceStore.load()
         dlog(`[init] workspaceStore.load: ${(performance.now() - tWs).toFixed(0)}ms`)
+        if (host.debug.isDebugMode === true) {
+          const loaded = workspaceStore.getState()
+          const activeTerms = loaded.activeWorkspaceId
+            ? loaded.terminals
+              .filter(term => term.workspaceId === loaded.activeWorkspaceId)
+              .map(term => `${term.id.slice(0, 8)}:${term.title || term.agentPreset || 'terminal'}`)
+              .join(',')
+            : ''
+          dlog(`[init] workspace state workspaces=${loaded.workspaces.length} terminals=${loaded.terminals.length} activeWs=${loaded.activeWorkspaceId || 'none'} focused=${loaded.focusedTerminalId || 'none'} activeTerm=${loaded.activeTerminalId || 'none'} activeTerms=[${activeTerms}]`)
+        }
       } catch (e) {
         console.error('Failed to initialize profile:', e)
         // Ensure workspaces still load even if profile init fails
@@ -664,6 +682,31 @@ export default function App() {
     ? state.workspaces.find(w => w.id === envDialogWorkspaceId)
     : null
 
+  // Filter out detached workspaces from main window
+  const visibleWorkspaces = state.workspaces.filter(w => !detachedIds.has(w.id))
+
+  useEffect(() => {
+    if (host.debug.isDebugMode !== true) return
+    const mounted = Array.from(mountedWorkspaces).join(',')
+    const activeTerms = state.activeWorkspaceId
+      ? state.terminals
+        .filter(term => term.workspaceId === state.activeWorkspaceId)
+        .map(term => `${term.id.slice(0, 8)}:${term.title || term.agentPreset || 'terminal'}`)
+        .join(',')
+      : ''
+    const summary = [
+      `visible=${visibleWorkspaces.length}`,
+      `mounted=${mounted || 'none'}`,
+      `activeWs=${state.activeWorkspaceId || 'none'}`,
+      `focused=${state.focusedTerminalId || 'none'}`,
+      `activeTerm=${state.activeTerminalId || 'none'}`,
+      `terms=[${activeTerms}]`,
+    ].join(' ')
+    if (summary === lastRenderSummaryRef.current) return
+    lastRenderSummaryRef.current = summary
+    void host.debug.log(`[App] render ${summary}`)
+  }, [visibleWorkspaces.length, mountedWorkspaces, state.activeWorkspaceId, state.activeTerminalId, state.focusedTerminalId, state.terminals])
+
   // Detached window mode — render only that workspace, no sidebar
   if (detachedWorkspaceId) {
     const ws = state.workspaces.find(w => w.id === detachedWorkspaceId)
@@ -695,9 +738,6 @@ export default function App() {
       </div>
     )
   }
-
-  // Filter out detached workspaces from main window
-  const visibleWorkspaces = state.workspaces.filter(w => !detachedIds.has(w.id))
 
   return (
     <div className="app">

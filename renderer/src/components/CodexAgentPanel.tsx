@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, Fragment, cloneEleme
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ClaudeMessage, ClaudeToolCall } from '../types/claude-agent'
-import { isToolCall } from '../types/claude-agent'
+import { isMessageItem, isToolCall } from '../types/claude-agent'
 import type { CodexEffortLevel, EffortLevel } from '../types'
 import { CODEX_EFFORT_LEVELS, EFFORT_LEVELS } from '../types'
 import { normalizeAgentParams } from '../types/agent-profiles'
@@ -615,12 +615,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     host.claude.loadArchived(sessionId, 0, INITIAL_ARCHIVE_LOAD)
       .then((result: { messages: unknown[]; total: number; hasMore: boolean }) => {
         if (cancelled) return
-        const archived = (result.messages || []) as MessageItem[]
+        const rawMessages = result.messages || []
+        const archived = rawMessages.filter(isMessageItem)
         archiveDlog(
-          `[Codex:${sessionId.slice(0, 8)}] auto-load archived result messages=${archived.length} total=${result.total || 0} hasMore=${result.hasMore} live=${messages.length}`
+          `[Codex:${sessionId.slice(0, 8)}] auto-load archived result messages=${archived.length}/${rawMessages.length} total=${result.total || 0} hasMore=${result.hasMore} live=${messages.length}`
         )
         archivedCountRef.current = result.total || archived.length
-        loadedFromArchiveRef.current = archived.length
+        loadedFromArchiveRef.current = rawMessages.length
         setLoadedArchive(archived)
         setHasMoreArchived(result.hasMore)
       })
@@ -756,8 +757,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     try {
       const result = await host.claude.loadArchived(sessionId, loadedFromArchiveRef.current, LOAD_BATCH)
       if (result.messages.length > 0) {
+        const archived = result.messages.filter(isMessageItem)
         loadedFromArchiveRef.current += result.messages.length
-        setLoadedArchive(prev => [...(result.messages as MessageItem[]), ...prev])
+        setLoadedArchive(prev => [...archived, ...prev])
         setHasMoreArchived(result.hasMore)
         // Preserve scroll position after prepending
         requestAnimationFrame(() => {

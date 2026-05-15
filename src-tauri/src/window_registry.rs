@@ -343,6 +343,18 @@ fn profile_windows(entries: &[WindowEntry], profile_id: &str) -> Vec<WindowSnaps
     dedupe_snapshots_by_terminal_ids(snapshots)
 }
 
+fn latest_profile_workspace_value(entries: &[WindowEntry], profile_id: &str) -> Option<Value> {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.profile_id == profile_id
+                && entry.detached_workspace_id.is_none()
+                && snapshot_has_content(&entry.snapshot)
+        })
+        .max_by_key(|entry| entry.last_active_at)
+        .map(|entry| workspace_value_from_snapshot(&entry.snapshot))
+}
+
 fn snapshot_has_content(snapshot: &WindowSnapshot) -> bool {
     !value_array(&snapshot.workspaces).is_empty()
         || !value_array(&snapshot.terminals).is_empty()
@@ -703,6 +715,15 @@ pub fn load_profile_workspace_into_window(
     true
 }
 
+pub fn profile_workspace_from_existing_window(app: &AppHandle, profile_id: &str) -> Option<Value> {
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    latest_profile_workspace_value(&entries, profile_id)
+}
+
 pub fn move_workspace(
     app: &AppHandle,
     source_window_id: &str,
@@ -851,19 +872,25 @@ pub fn entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry
 }
 
 pub fn create_entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
-    let snapshots = {
-        let loaded = read_profile_snapshot(app, profile_id);
-        if loaded.is_empty() {
-            vec![empty_snapshot()]
-        } else {
-            loaded
-        }
-    };
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
     if entries.is_empty() {
         *entries = load_entries(app);
     }
+    let snapshots = {
+        let loaded = read_profile_snapshot(app, profile_id);
+        if !loaded.is_empty() {
+            loaded
+        } else {
+            let existing = profile_windows(&entries, profile_id);
+            if !existing.is_empty() {
+                write_profile_snapshot(app, profile_id, &existing);
+                existing
+            } else {
+                vec![empty_snapshot()]
+            }
+        }
+    };
     remove_profile_window_entries(&mut entries, profile_id);
     let mut created = Vec::new();
     for (idx, snapshot) in snapshots.into_iter().enumerate() {
@@ -1047,8 +1074,80 @@ mod tests {
 
         let windows = profile_windows(&entries, "default");
         assert_eq!(windows.len(), 2);
-        assert_eq!(value_id(&value_array(&windows[0].workspaces)[0]), Some("w1"));
-        assert_eq!(value_id(&value_array(&windows[1].workspaces)[0]), Some("w2"));
+        assert_eq!(
+            value_id(&value_array(&windows[0].workspaces)[0]),
+            Some("w1")
+        );
+        assert_eq!(
+            value_id(&value_array(&windows[1].workspaces)[0]),
+            Some("w2")
+        );
+    }
+
+    #[test]
+    fn latest_profile_workspace_value_uses_matching_recent_non_empty_window() {
+        let older = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "older"}],
+            "activeWorkspaceId": "older",
+            "terminals": [{"id": "old-term", "workspaceId": "older"}],
+            "activeTerminalId": "old-term",
+        }));
+        let latest = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "latest"}],
+            "activeWorkspaceId": "latest",
+            "terminals": [{"id": "new-term", "workspaceId": "latest"}],
+            "activeTerminalId": "new-term",
+        }));
+        let other_profile = snapshot_from_workspace_value(json!({
+            "workspaces": [{"id": "other"}],
+            "terminals": [{"id": "other-term", "workspaceId": "other"}],
+        }));
+        let entries = vec![
+            WindowEntry {
+                id: "older".into(),
+                profile_id: "n".into(),
+                snapshot: older,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 100,
+            },
+            WindowEntry {
+                id: "latest-detached".into(),
+                profile_id: "n".into(),
+                snapshot: snapshot_from_workspace_value(
+                    json!({"workspaces": [{"id": "detached"}]}),
+                ),
+                detached_workspace_id: Some("detached".into()),
+                detached_parent_window_id: Some("older".into()),
+                last_active_at: 300,
+            },
+            WindowEntry {
+                id: "other".into(),
+                profile_id: "default".into(),
+                snapshot: other_profile,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 400,
+            },
+            WindowEntry {
+                id: "latest".into(),
+                profile_id: "n".into(),
+                snapshot: latest,
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 200,
+            },
+        ];
+
+        let workspace = latest_profile_workspace_value(&entries, "n").unwrap();
+        assert_eq!(
+            workspace.get("activeWorkspaceId").and_then(Value::as_str),
+            Some("latest")
+        );
+        assert_eq!(
+            workspace.get("activeTerminalId").and_then(Value::as_str),
+            Some("new-term")
+        );
     }
 
     #[test]
