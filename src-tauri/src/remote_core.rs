@@ -61,6 +61,11 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
         "image:read-as-data-url" => Some(&["filePath"]),
+        "pty:create" => Some(&["options"]),
+        "pty:write" => Some(&["id", "data"]),
+        "pty:resize" => Some(&["id", "cols", "rows"]),
+        "pty:kill" | "pty:get-cwd" => Some(&["id"]),
+        "pty:restart" => Some(&["id", "cwd", "shell"]),
         "claude:send-message" => Some(&[
             "sessionId",
             "prompt",
@@ -412,6 +417,18 @@ mod tests {
                 "displayPrompt": "hi",
                 "suppressUserEcho": true,
             })
+        );
+    }
+
+    #[test]
+    fn maps_legacy_pty_args_to_named_params() {
+        assert_eq!(
+            legacy_v1_args_to_params("pty:write", &[json!("term-1"), json!("hello")]),
+            json!({ "id": "term-1", "data": "hello" })
+        );
+        assert_eq!(
+            legacy_v1_args_to_params("pty:resize", &[json!("term-1"), json!(120), json!(36)]),
+            json!({ "id": "term-1", "cols": 120, "rows": 36 })
         );
     }
 

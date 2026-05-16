@@ -29,6 +29,7 @@ const TURN_START_TIMEOUT: Duration = Duration::from_secs(60);
 const MSG_BUFFER_CAP: usize = 300;
 const DEFAULT_CODEX_CONTEXT_WINDOW: u64 = 1_000_000;
 const DEFAULT_CODEX_REASONING_SUMMARY: &str = "auto";
+const COMMAND_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 static CODEX_TEMP_IMAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 type ReplySender = Sender<Result<Value, String>>;
@@ -149,6 +150,7 @@ struct CodexSession {
     messages: Vec<Value>,
     temporary_image_paths: Vec<PathBuf>,
     command_outputs: HashMap<String, String>,
+    command_output_last_emit: HashMap<String, Instant>,
     runtime_status: Option<String>,
     runtime_message: Option<String>,
     runtime_status_started_at: Option<u128>,
@@ -447,8 +449,10 @@ fn resolve_codex_binary(app: &AppHandle) -> CodexBinary {
 }
 
 fn build_codex_command(app: &AppHandle) -> Command {
+    let mut codex_path_dir: Option<PathBuf> = None;
     let mut command = match resolve_codex_binary(app) {
         CodexBinary::Native(path) => {
+            codex_path_dir = codex_path_dir_for_binary(&path);
             let mut command = Command::new(path);
             command.arg("app-server");
             command
@@ -476,9 +480,10 @@ fn build_codex_command(app: &AppHandle) -> Command {
     // launched from Finder/Spotlight, the inherited PATH does not include
     // common Node install locations like `/opt/homebrew/bin`, so `env` fails
     // with exit 127. Augment PATH with the resolved node directory plus
-    // well-known fallbacks so both the immediate spawn and its descendants
-    // can find `node`.
-    if let Some(path) = augmented_path_with_node() {
+    // well-known fallbacks. Also prepend Codex's bundled `path/` directory so
+    // descendant shell commands can find vendored tools such as `rg`.
+    let extra_path_dirs = codex_path_dir.into_iter().collect::<Vec<_>>();
+    if let Some(path) = augmented_path_with_runtime_dirs(&extra_path_dirs) {
         command.env("PATH", path);
     }
     // Avoid launching codex app-server with cwd `/` (the default when a macOS
@@ -493,13 +498,36 @@ fn build_codex_command(app: &AppHandle) -> Command {
     command
 }
 
-fn augmented_path_with_node() -> Option<std::ffi::OsString> {
+fn codex_path_dir_for_binary(binary: &Path) -> Option<PathBuf> {
+    let parent = binary.parent()?;
+    let mut candidates = vec![parent.join("path")];
+    if let Some(grandparent) = parent.parent() {
+        candidates.push(grandparent.join("path"));
+    }
+    for candidate in candidates {
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn augmented_path_with_runtime_dirs(extra_dirs: &[PathBuf]) -> Option<std::ffi::OsString> {
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs: Vec<PathBuf> = Vec::new();
 
+    for dir in extra_dirs {
+        if dir.is_dir() && !dirs.iter().any(|d| d == dir) {
+            dirs.push(dir.clone());
+        }
+    }
+
     if let Some(node) = find_node_on_path(&existing) {
         if let Some(parent) = node.parent() {
-            dirs.push(parent.to_path_buf());
+            let dir = parent.to_path_buf();
+            if !dirs.iter().any(|d| d == &dir) {
+                dirs.push(dir);
+            }
         }
     }
 
@@ -1218,6 +1246,7 @@ impl CodexAppServerState {
             messages: Vec::new(),
             temporary_image_paths: Vec::new(),
             command_outputs: HashMap::new(),
+            command_output_last_emit: HashMap::new(),
             runtime_status: None,
             runtime_message: None,
             runtime_status_started_at: None,
@@ -1370,6 +1399,7 @@ impl CodexAppServerState {
             messages: Vec::new(),
             temporary_image_paths: Vec::new(),
             command_outputs: HashMap::new(),
+            command_output_last_emit: HashMap::new(),
             runtime_status: None,
             runtime_message: None,
             runtime_status_started_at: None,
@@ -1498,6 +1528,7 @@ impl CodexAppServerState {
             session.assistant_text.clear();
             session.thinking_text.clear();
             session.command_outputs.clear();
+            session.command_output_last_emit.clear();
             set_runtime_status(
                 session,
                 "waiting_for_api",
@@ -1669,6 +1700,7 @@ impl CodexAppServerState {
                 }
                 cleanup_session_temp_images(session);
                 session.command_outputs.clear();
+                session.command_output_last_emit.clear();
                 session.metadata()
             })
         };
@@ -1709,6 +1741,7 @@ impl CodexAppServerState {
             session.active_turn_id = None;
             cleanup_session_temp_images(session);
             session.command_outputs.clear();
+            session.command_output_last_emit.clear();
             (thread_id, turn_id)
         };
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
@@ -1821,6 +1854,7 @@ impl CodexAppServerState {
             session.messages.clear();
             cleanup_session_temp_images(session);
             session.command_outputs.clear();
+            session.command_output_last_emit.clear();
             session.is_running = false;
             session.is_resting = false;
             session.start_time = Instant::now();
@@ -2323,6 +2357,17 @@ fn handle_command_execution_output_delta(
             .entry(item_id.to_string())
             .or_default();
         output.push_str(&delta);
+        let now = Instant::now();
+        let should_emit = match session.command_output_last_emit.get(item_id) {
+            Some(prev) => now.duration_since(*prev) >= COMMAND_OUTPUT_EMIT_INTERVAL,
+            None => true,
+        };
+        if !should_emit {
+            return;
+        }
+        session
+            .command_output_last_emit
+            .insert(item_id.to_string(), now);
         output.clone()
     };
     emit(
@@ -2352,9 +2397,10 @@ fn completed_command_execution_result(
         .map(str::to_string);
     let accumulated = {
         let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
-        sessions
-            .get_mut(session_id)
-            .and_then(|session| session.command_outputs.remove(&item_id))
+        sessions.get_mut(session_id).and_then(|session| {
+            session.command_output_last_emit.remove(&item_id);
+            session.command_outputs.remove(&item_id)
+        })
     };
     raw.or(accumulated)
         .map(|value| sanitize_terminal_output(&value))
@@ -2864,6 +2910,65 @@ mod tests {
     }
 
     #[test]
+    fn codex_path_dir_detects_packaged_runtime_tools() {
+        let root = env::temp_dir().join(format!(
+            "bat-codex-runtime-path-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let runtime = root.join("codex-runtime");
+        let path_dir = runtime.join("path");
+        fs::create_dir_all(&path_dir).expect("create codex path dir");
+        let binary = runtime.join(codex_exe_name());
+        fs::write(&binary, "").expect("write fake codex binary");
+
+        assert_eq!(
+            codex_path_dir_for_binary(&binary).as_deref(),
+            Some(path_dir.as_path())
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn codex_path_dir_detects_vendor_runtime_tools() {
+        let root = env::temp_dir().join(format!(
+            "bat-codex-vendor-path-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let triple = root.join("vendor").join("x86_64-pc-windows-msvc");
+        let codex_dir = triple.join("codex");
+        let path_dir = triple.join("path");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+        fs::create_dir_all(&path_dir).expect("create codex path dir");
+        let binary = codex_dir.join(codex_exe_name());
+        fs::write(&binary, "").expect("write fake codex binary");
+
+        assert_eq!(
+            codex_path_dir_for_binary(&binary).as_deref(),
+            Some(path_dir.as_path())
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn codex_augmented_path_prepends_runtime_tools() {
+        let root = env::temp_dir().join(format!(
+            "bat-codex-augmented-path-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let path_dir = root.join("path");
+        fs::create_dir_all(&path_dir).expect("create path dir");
+
+        let path = augmented_path_with_runtime_dirs(&[path_dir.clone()]).expect("augmented PATH");
+        let first = std::env::split_paths(&path).next();
+
+        assert_eq!(first.as_deref(), Some(path_dir.as_path()));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn codex_web_search_input_reads_nested_action_query() {
         let input = web_search_input(&json!({
             "type": "webSearch",
@@ -2934,6 +3039,7 @@ mod tests {
             messages: Vec::new(),
             temporary_image_paths: Vec::new(),
             command_outputs: HashMap::new(),
+            command_output_last_emit: HashMap::new(),
             runtime_status: None,
             runtime_message: None,
             runtime_status_started_at: None,
@@ -2978,6 +3084,7 @@ mod tests {
                     messages: Vec::new(),
                     temporary_image_paths: Vec::new(),
                     command_outputs: HashMap::new(),
+                    command_output_last_emit: HashMap::new(),
                     runtime_status: None,
                     runtime_message: None,
                     runtime_status_started_at: None,

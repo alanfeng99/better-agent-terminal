@@ -120,6 +120,10 @@ export async function collectTauriPreviewReadiness(options = {}) {
   const codexBinary = join(codexRuntimeRoot, codexExeName)
   const codexBinaryBytes = await fileSize(codexBinary)
   add(`codex-runtime:binary:${key}`, codexBinaryBytes > 0, `${codexBinary} (${codexBinaryBytes} bytes)`)
+  const rgName = platform === 'win32' ? 'rg.exe' : 'rg'
+  const codexRipgrep = join(codexRuntimeRoot, 'path', rgName)
+  const codexRipgrepBytes = await fileSize(codexRipgrep)
+  add(`codex-runtime:ripgrep:${key}`, codexRipgrepBytes > 0, `${codexRipgrep} (${codexRipgrepBytes} bytes)`)
 
   const runtimeRoot = join(sidecarRoot, 'runtime')
   add('runtime:root', await dirExists(runtimeRoot), runtimeRoot)

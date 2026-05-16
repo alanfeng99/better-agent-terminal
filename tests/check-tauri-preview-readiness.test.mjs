@@ -30,6 +30,8 @@ try {
   await writeFile(join(root, 'node-sidecar', 'package.json'), '{"type":"module"}')
   await writeFile(join(root, 'node-sidecar', 'dist-node_modules', '@anthropic-ai', 'claude-agent-sdk-win32-x64', 'claude.exe'), 'claude')
   await writeFile(join(root, 'codex-runtime', 'codex.exe'), 'codex')
+  await mkdir(join(root, 'codex-runtime', 'path'), { recursive: true })
+  await writeFile(join(root, 'codex-runtime', 'path', 'rg.exe'), 'rg')
   await writeFile(join(root, 'node-sidecar', 'runtime', 'windows-x86_64', 'node.exe'), 'node')
 
   const ready = await collectTauriPreviewReadiness({

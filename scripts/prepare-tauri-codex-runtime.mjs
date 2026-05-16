@@ -56,6 +56,16 @@ async function assertFile(path, label) {
   }
 }
 
+async function firstExistingFile(candidates, label) {
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate)
+      if (info.isFile()) return candidate
+    } catch { /* try next candidate */ }
+  }
+  throw new Error(`${label} missing; tried:\n${candidates.map(path => `  - ${path}`).join('\n')}`)
+}
+
 export async function prepareTauriCodexRuntime(options = {}) {
   const platform = options.platform || process.platform
   const arch = options.arch || process.arch
@@ -80,18 +90,28 @@ export async function prepareTauriCodexRuntime(options = {}) {
   const exeName = platform === 'win32' ? 'codex.exe' : 'codex'
   const sourceBinary = join(codexSource, 'vendor', codexTriple, 'codex', exeName)
   await assertFile(sourceBinary, '@openai Codex native binary')
+  const rgName = platform === 'win32' ? 'rg.exe' : 'rg'
+  const sourceRipgrep = await firstExistingFile([
+    join(codexSource, 'vendor', codexTriple, 'path', rgName),
+  ], '@openai Codex vendored ripgrep')
 
   await rm(outputRoot, { recursive: true, force: true })
   await mkdir(outputRoot, { recursive: true })
   const targetBinary = join(outputRoot, exeName)
   await copyFile(sourceBinary, targetBinary)
+  const targetPathDir = join(outputRoot, 'path')
+  await mkdir(targetPathDir, { recursive: true })
+  const targetRipgrep = join(targetPathDir, rgName)
+  await copyFile(sourceRipgrep, targetRipgrep)
   if (platform !== 'win32') {
     await chmod(targetBinary, 0o755)
+    await chmod(targetRipgrep, 0o755)
   }
 
   return {
     outputRoot,
     binary: targetBinary,
+    ripgrep: targetRipgrep,
     sourcePackage: `@openai/${codexPackage}`,
   }
 }
@@ -99,6 +119,7 @@ export async function prepareTauriCodexRuntime(options = {}) {
 async function main() {
   const result = await prepareTauriCodexRuntime()
   console.log(`[prepare-tauri-codex-runtime] wrote ${result.binary}`)
+  console.log(`[prepare-tauri-codex-runtime] wrote ${result.ripgrep}`)
   console.log(`[prepare-tauri-codex-runtime] source ${result.sourcePackage}`)
 }
 

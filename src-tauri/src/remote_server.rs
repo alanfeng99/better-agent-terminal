@@ -1,7 +1,7 @@
 use crate::commands::{
     agent as agent_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd, image as image_cmd,
-    profile as profile_cmd, settings as settings_cmd, snippet as snippet_cmd,
-    worktree as worktree_cmd,
+    profile as profile_cmd, pty as pty_cmd, settings as settings_cmd, snippet as snippet_cmd,
+    worker_buffer::WorkerBufferState, worktree as worktree_cmd,
 };
 use crate::electron_safe_storage::{
     read_secret_json, read_secret_string, write_secret_json, write_secret_string, SecretJsonRead,
@@ -835,6 +835,11 @@ fn i64_param(params: &Value, key: &str, method: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("{method}: missing {key}"))
 }
 
+fn u16_param(params: &Value, key: &str, method: &str) -> Result<u16, String> {
+    let value = i64_param(params, key, method)?;
+    u16::try_from(value).map_err(|_| format!("{method}: invalid {key}"))
+}
+
 fn bool_param(params: &Value, key: &str, default: bool) -> bool {
     params.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
@@ -889,6 +894,74 @@ fn invoke_rust_for_remote(
                 .map_err(|err| err.to_string())
                 .and_then(|value| to_json_value(channel, value))
         }
+        "pty:create" => {
+            let options_value = params
+                .get("options")
+                .cloned()
+                .unwrap_or_else(|| params.clone());
+            deserialize_param::<pty_cmd::CreatePtyOptions>(options_value, channel, "options")
+                .and_then(|options| {
+                    let app_handle = app.clone();
+                    let pty_handle = app.state::<pty_cmd::PtyState>().handle();
+                    let worker_buffer_handle = app.state::<WorkerBufferState>().handle();
+                    let id = tauri::async_runtime::block_on(async move {
+                        tauri::async_runtime::spawn_blocking(move || {
+                            pty_cmd::start_pty_session(
+                                &app_handle,
+                                pty_handle,
+                                Some(worker_buffer_handle),
+                                options,
+                            )
+                        })
+                        .await
+                        .map_err(|err| format!("pty.create worker failed: {err}"))?
+                        .map_err(|err| format!("{err:?}"))
+                    })?;
+                    Ok(Value::String(id))
+                })
+        }
+        "pty:write" => string_param(params, "id", channel).and_then(|id| {
+            string_param(params, "data", channel).and_then(|data| {
+                let state = app.state::<pty_cmd::PtyState>();
+                pty_cmd::write_pty_session(&state, &id, &data)
+                    .map(|_| Value::Bool(true))
+                    .map_err(|err| format!("{err:?}"))
+            })
+        }),
+        "pty:resize" => string_param(params, "id", channel).and_then(|id| {
+            u16_param(params, "cols", channel).and_then(|cols| {
+                u16_param(params, "rows", channel).and_then(|rows| {
+                    pty_cmd::pty_resize(app.state::<pty_cmd::PtyState>(), id, cols, rows)
+                        .map(|_| Value::Bool(true))
+                        .map_err(|err| format!("{err:?}"))
+                })
+            })
+        }),
+        "pty:kill" => string_param(params, "id", channel).and_then(|id| {
+            let state = app.state::<pty_cmd::PtyState>();
+            pty_cmd::kill_pty_session(&state, &id)
+                .map(|_| Value::Bool(true))
+                .map_err(|err| format!("{err:?}"))
+        }),
+        "pty:restart" => string_param(params, "id", channel).and_then(|id| {
+            string_param(params, "cwd", channel).and_then(|cwd| {
+                let shell = optional_string_param(params, "shell");
+                tauri::async_runtime::block_on(pty_cmd::pty_restart(
+                    app.clone(),
+                    app.state::<pty_cmd::PtyState>(),
+                    id,
+                    cwd,
+                    shell,
+                ))
+                .map(Value::Bool)
+                .map_err(|err| format!("{err:?}"))
+            })
+        }),
+        "pty:get-cwd" => string_param(params, "id", channel).and_then(|id| {
+            pty_cmd::pty_get_cwd(app.state::<pty_cmd::PtyState>(), id)
+                .map(|cwd| cwd.map(Value::String).unwrap_or(Value::Null))
+                .map_err(|err| format!("{err:?}"))
+        }),
         "fs:home" => to_json_value(channel, fs_cmd::fs_home(app.clone())),
         "fs:readdir" => {
             string_param_any(params, &["dirPath", "path"], channel).and_then(|dir_path| {
