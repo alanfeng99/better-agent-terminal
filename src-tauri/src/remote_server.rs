@@ -886,6 +886,22 @@ fn bridge_error_message(err: crate::sidecar::BridgeError) -> String {
     err.message
 }
 
+fn codex_for_remote_session(
+    app: &AppHandle,
+    channel: &str,
+    params: &Value,
+) -> Option<Result<(CodexAppServerState, String), String>> {
+    let session_id = match string_param(params, "sessionId", channel) {
+        Ok(value) => value,
+        Err(err) => return Some(Err(err)),
+    };
+    let codex = app.state::<CodexAppServerState>().inner().clone();
+    if !codex.is_owned(&session_id) {
+        return None;
+    }
+    Some(Ok((codex, session_id)))
+}
+
 fn invoke_rust_for_remote(
     app: &AppHandle,
     channel: &str,
@@ -922,15 +938,11 @@ fn invoke_rust_for_remote(
             })
         }
         "claude:send-message" => {
-            let session_id = match string_param(params, "sessionId", channel) {
-                Ok(value) => value,
-                Err(err) => return Some(Err(err)),
-            };
-            let codex = app.state::<CodexAppServerState>().inner().clone();
-            if !codex.is_owned(&session_id) {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
                 return None;
-            }
-            string_param(params, "prompt", channel).and_then(|prompt| {
+            };
+            route.and_then(|(codex, session_id)| {
+                let prompt = string_param(params, "prompt", channel)?;
                 let images = optional_string_vec_param(params, "images");
                 codex
                     .send_message(app, session_id, prompt, images)
@@ -938,28 +950,174 @@ fn invoke_rust_for_remote(
             })
         }
         "claude:abort-session" => {
-            let session_id = match string_param(params, "sessionId", channel) {
-                Ok(value) => value,
-                Err(err) => return Some(Err(err)),
-            };
-            let codex = app.state::<CodexAppServerState>().inner().clone();
-            if !codex.is_owned(&session_id) {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
                 return None;
-            }
-            codex
-                .abort_session(app, session_id)
-                .map_err(bridge_error_message)
+            };
+            route.and_then(|(codex, session_id)| {
+                codex
+                    .abort_session(app, session_id)
+                    .map_err(bridge_error_message)
+            })
         }
         "claude:stop-session" => {
-            let session_id = match string_param(params, "sessionId", channel) {
-                Ok(value) => value,
-                Err(err) => return Some(Err(err)),
-            };
-            let codex = app.state::<CodexAppServerState>().inner().clone();
-            if !codex.is_owned(&session_id) {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
                 return None;
-            }
-            Ok(codex.stop_session(session_id))
+            };
+            route.map(|(codex, session_id)| codex.stop_session(session_id))
+        }
+        "claude:get-supported-models" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, _)| codex.supported_models())
+        }
+        "claude:get-supported-commands" | "claude:get-supported-agents" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| json!([]))
+        }
+        "claude:get-account-info" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| Value::Null)
+        }
+        "claude:get-session-state" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, session_id)| {
+                codex.get_session_state(&session_id).unwrap_or(Value::Null)
+            })
+        }
+        "claude:get-session-meta" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, session_id)| {
+                codex.get_session_meta(&session_id).unwrap_or(Value::Null)
+            })
+        }
+        "claude:get-context-usage" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, session_id)| {
+                codex.get_context_usage(&session_id).unwrap_or(Value::Null)
+            })
+        }
+        "claude:set-auto-continue" | "claude:set-permission-mode" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| json!(false))
+        }
+        "claude:get-auto-continue" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| Value::Null)
+        }
+        "claude:set-codex-sandbox-mode" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.and_then(|(codex, session_id)| {
+                let mode = string_param(params, "mode", channel)?;
+                let _ = codex.set_sandbox_mode(app, &session_id, mode);
+                codex
+                    .reconfigure_session(app, &session_id)
+                    .map_err(bridge_error_message)
+            })
+        }
+        "claude:set-codex-approval-policy" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.and_then(|(codex, session_id)| {
+                let policy = string_param(params, "policy", channel)?;
+                let _ = codex.set_approval_policy(app, &session_id, policy);
+                codex
+                    .reconfigure_session(app, &session_id)
+                    .map_err(bridge_error_message)
+            })
+        }
+        "claude:set-model" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.and_then(|(codex, session_id)| {
+                let model = string_param(params, "model", channel)?;
+                Ok(codex
+                    .set_model(app, &session_id, model)
+                    .unwrap_or_else(|| json!(false)))
+            })
+        }
+        "claude:set-effort" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.and_then(|(codex, session_id)| {
+                let effort = string_param(params, "effort", channel)?;
+                Ok(codex
+                    .set_effort(app, &session_id, effort)
+                    .unwrap_or_else(|| json!(false)))
+            })
+        }
+        "claude:reset-session" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.and_then(|(codex, session_id)| {
+                codex
+                    .reset_session(app, session_id)
+                    .map_err(bridge_error_message)
+            })
+        }
+        "claude:rest-session" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, session_id)| {
+                codex.rest_session(app, &session_id).unwrap_or(Value::Null)
+            })
+        }
+        "claude:wake-session" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, session_id)| codex.wake_session(&session_id).unwrap_or(Value::Null))
+        }
+        "claude:is-resting" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|(codex, session_id)| codex.is_resting(&session_id).unwrap_or(Value::Null))
+        }
+        "claude:fork-session" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| Value::Null)
+        }
+        "claude:fetch-subagent-messages" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| json!([]))
+        }
+        "claude:rewind-to-prompt" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| json!({ "error": "Rewind not supported for this session type" }))
+        }
+        "claude:resolve-permission" | "claude:resolve-ask-user" | "claude:stop-task" => {
+            let Some(route) = codex_for_remote_session(app, channel, params) else {
+                return None;
+            };
+            route.map(|_| json!(false))
         }
         "settings:load" => tauri::async_runtime::block_on(settings_cmd::settings_load(app.clone()))
             .map_err(|err| err.to_string())
