@@ -1431,46 +1431,30 @@ fn invoke_rust_for_remote(
                 .map(|cwd| cwd.map(Value::String).unwrap_or(Value::Null))
                 .map_err(|err| format!("{err:?}"))
         }),
-        "fs:home" => to_json_value(channel, fs_cmd::fs_home(app.clone())),
-        "fs:readdir" => {
-            string_param_any(params, &["dirPath", "path"], channel).and_then(|dir_path| {
-                let value = tauri::async_runtime::block_on(fs_cmd::fs_readdir(dir_path));
-                to_json_value(channel, value)
-            })
-        }
-        "fs:readFile" => {
-            string_param_any(params, &["path", "filePath"], channel).and_then(|path| {
-                let value = tauri::async_runtime::block_on(fs_cmd::fs_read_file(path));
-                to_json_value(channel, value)
-            })
-        }
+        "fs:home" => to_json_value(channel, fs_cmd::fs_home_native(app)),
+        "fs:readdir" => string_param_any(params, &["dirPath", "path"], channel)
+            .and_then(|dir_path| to_json_value(channel, fs_cmd::fs_readdir_impl(dir_path))),
+        "fs:readFile" => string_param_any(params, &["path", "filePath"], channel)
+            .and_then(|path| to_json_value(channel, fs_cmd::fs_read_file_impl(path))),
+        "fs:isDirectory" => string_param_any(params, &["path", "dirPath"], channel)
+            .map(|path| Value::Bool(fs_cmd::fs_is_directory_impl(path))),
         "fs:list-dirs" => {
             string_param_any(params, &["dirPath", "path"], channel).and_then(|dir_path| {
                 let include_hidden = bool_param(params, "includeHidden", false);
-                let value = tauri::async_runtime::block_on(fs_cmd::fs_list_dirs(
-                    app.clone(),
-                    dir_path,
-                    include_hidden,
-                ));
+                let value = fs_cmd::fs_list_dirs_native(app, dir_path, include_hidden);
                 to_json_value(channel, value)
             })
         }
         "fs:mkdir" => string_param(params, "parentPath", channel).and_then(|parent_path| {
-            string_param(params, "name", channel).and_then(|name| {
-                let value = tauri::async_runtime::block_on(fs_cmd::fs_mkdir(parent_path, name));
-                to_json_value(channel, value)
-            })
+            string_param(params, "name", channel)
+                .and_then(|name| to_json_value(channel, fs_cmd::fs_mkdir_impl(parent_path, name)))
         }),
         "fs:delete-path" => {
             string_param_any(params, &["targetPath", "path"], channel).and_then(|target_path| {
-                let value = tauri::async_runtime::block_on(fs_cmd::fs_delete_path(target_path));
-                to_json_value(channel, value)
+                to_json_value(channel, fs_cmd::fs_delete_path_impl(target_path))
             })
         }
-        "fs:quick-locations" => {
-            let value = tauri::async_runtime::block_on(fs_cmd::fs_quick_locations(app.clone()));
-            to_json_value(channel, value)
-        }
+        "fs:quick-locations" => to_json_value(channel, fs_cmd::fs_quick_locations_native(app)),
         "fs:search" => {
             let dir_path = match string_param_any(params, &["dirPath", "path"], channel) {
                 Ok(value) => value,
@@ -1480,26 +1464,23 @@ fn invoke_rust_for_remote(
                 Ok(value) => value,
                 Err(_) => return Some(Ok(Value::Array(Vec::new()))),
             };
-            let value = tauri::async_runtime::block_on(fs_cmd::fs_search(dir_path, query));
-            to_json_value(channel, value)
+            to_json_value(channel, fs_cmd::fs_search_impl(dir_path, query))
         }
         "fs:resolve-path-links" => string_param(params, "cwd", channel).and_then(|cwd| {
             string_vec_param(params, "rawPaths", channel).and_then(|raw_paths| {
-                let value =
-                    tauri::async_runtime::block_on(fs_cmd::fs_resolve_path_links(cwd, raw_paths));
-                to_json_value(channel, value)
+                to_json_value(channel, fs_cmd::fs_resolve_path_links_impl(cwd, raw_paths))
             })
         }),
         "fs:watch" => string_param_any(params, &["dirPath", "path"], channel).map(|dir_path| {
-            Value::Bool(fs_cmd::fs_watch(
+            Value::Bool(fs_cmd::fs_watch_native(
                 app.clone(),
-                app.state::<fs_cmd::FsWatcherState>(),
+                app.state::<fs_cmd::FsWatcherState>().inner(),
                 dir_path,
             ))
         }),
         "fs:unwatch" => string_param_any(params, &["dirPath", "path"], channel).map(|dir_path| {
-            Value::Bool(fs_cmd::fs_unwatch(
-                app.state::<fs_cmd::FsWatcherState>(),
+            Value::Bool(fs_cmd::fs_unwatch_native(
+                app.state::<fs_cmd::FsWatcherState>().inner(),
                 dir_path,
             ))
         }),

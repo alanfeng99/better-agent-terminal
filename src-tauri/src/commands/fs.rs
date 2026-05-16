@@ -10,10 +10,14 @@
 // have to branch on host kind. The deny-list logic lives in
 // crate::path_guard so we can unit-test it independently of Tauri.
 
+use crate::commands::profile as profile_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::path_guard::is_sensitive_path;
+use crate::remote_client::RustRemoteClientState;
+use crate::window_registry;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +26,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 const MAX_READ_BYTES: u64 = 512 * 1024;
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -50,6 +54,58 @@ const RESOLVE_TEXT_EXTS: &[&str] = &[
     "sql", "graphql", "log",
 ];
 
+const REMOTE_FS_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let Some(profile_id) = window_registry::profile_id_for_window(app, window.label()) else {
+        return false;
+    };
+    profile_cmd::profile_get(app.clone(), profile_id)
+        .map(|profile| profile.kind == "remote")
+        .unwrap_or(false)
+}
+
+async fn remote_invoke_for_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    channel: &'static str,
+    args: Vec<Value>,
+) -> Option<Result<Value, String>> {
+    if !is_remote_profile_window(app, window) {
+        return None;
+    }
+    let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        remote_client.invoke(channel, args, REMOTE_FS_TIMEOUT)
+    })
+    .await
+    .map_err(|err| format!("remote.invoke {channel} worker failed: {err}"));
+    Some(match result {
+        Ok(value) => value,
+        Err(err) => Err(err),
+    })
+}
+
+fn remote_invoke_for_window_blocking(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    channel: &str,
+    args: Vec<Value>,
+) -> Option<Result<Value, String>> {
+    if !is_remote_profile_window(app, window) {
+        return None;
+    }
+    let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    Some(remote_client.invoke(channel, args, REMOTE_FS_TIMEOUT))
+}
+
+fn from_remote_value<T>(value: Value) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(value).map_err(|err| err.to_string())
+}
+
 fn is_ignored_name(name: &str) -> bool {
     IGNORED_DIR_NAMES.iter().any(|n| *n == name)
 }
@@ -68,7 +124,7 @@ fn expand_tilde(p: &str, home: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct FsReadResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -78,7 +134,7 @@ pub struct FsReadResult {
     pub size: Option<u64>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PathLinkResult {
     pub raw_path: String,
@@ -99,8 +155,7 @@ pub struct FsWatcherState {
     watchers: Arc<Mutex<HashMap<String, FsWatchEntry>>>,
 }
 
-#[tauri::command]
-pub async fn fs_read_file(path: String) -> FsReadResult {
+pub(crate) fn fs_read_file_impl(path: String) -> FsReadResult {
     let abs = match PathBuf::from(&path).canonicalize() {
         // canonicalize fails for non-existent paths; fall back to a
         // best-effort absolute resolution against cwd so the deny-list
@@ -146,7 +201,27 @@ pub async fn fs_read_file(path: String) -> FsReadResult {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[tauri::command]
+pub async fn fs_read_file(app: AppHandle, window: WebviewWindow, path: String) -> FsReadResult {
+    if let Some(result) =
+        remote_invoke_for_window(&app, &window, "fs:readFile", vec![json!(path.clone())]).await
+    {
+        return result
+            .and_then(from_remote_value)
+            .unwrap_or_else(|err| FsReadResult {
+                error: Some(err),
+                ..Default::default()
+            });
+    }
+    tauri::async_runtime::spawn_blocking(move || fs_read_file_impl(path))
+        .await
+        .unwrap_or_else(|err| FsReadResult {
+            error: Some(err.to_string()),
+            ..Default::default()
+        })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FsEntry {
     pub name: String,
@@ -166,28 +241,47 @@ fn entry_sort_key(a: &FsEntry, b: &FsEntry) -> std::cmp::Ordering {
     a.name.to_lowercase().cmp(&b.name.to_lowercase())
 }
 
-#[tauri::command]
-pub fn fs_home(app: tauri::AppHandle) -> String {
-    home_string(&app)
+pub(crate) fn fs_home_native(app: &AppHandle) -> String {
+    home_string(app)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| String::from("/"))
 }
 
 #[tauri::command]
-pub async fn fs_readdir(dir_path: String) -> Vec<FsEntry> {
+pub async fn fs_home(app: AppHandle, window: WebviewWindow) -> String {
+    if let Some(result) = remote_invoke_for_window(&app, &window, "fs:home", vec![]).await {
+        return result
+            .and_then(from_remote_value)
+            .unwrap_or_else(|_| String::from("/"));
+    }
+    fs_home_native(&app)
+}
+
+#[tauri::command]
+pub async fn fs_readdir(app: AppHandle, window: WebviewWindow, dir_path: String) -> Vec<FsEntry> {
+    if let Some(result) =
+        remote_invoke_for_window(&app, &window, "fs:readdir", vec![json!(dir_path.clone())]).await
+    {
+        return result.and_then(from_remote_value).unwrap_or_default();
+    }
     tauri::async_runtime::spawn_blocking(move || fs_readdir_impl(dir_path))
         .await
         .unwrap_or_default()
 }
 
 #[tauri::command]
-pub async fn fs_is_directory(path: String) -> bool {
+pub async fn fs_is_directory(app: AppHandle, window: WebviewWindow, path: String) -> bool {
+    if let Some(result) =
+        remote_invoke_for_window(&app, &window, "fs:isDirectory", vec![json!(path.clone())]).await
+    {
+        return result.and_then(from_remote_value).unwrap_or(false);
+    }
     tauri::async_runtime::spawn_blocking(move || fs_is_directory_impl(path))
         .await
         .unwrap_or(false)
 }
 
-fn fs_is_directory_impl(path: String) -> bool {
+pub(crate) fn fs_is_directory_impl(path: String) -> bool {
     let abs = match std::path::absolute(&path) {
         Ok(p) => p,
         Err(_) => return false,
@@ -201,7 +295,7 @@ fn fs_is_directory_impl(path: String) -> bool {
         .unwrap_or(false)
 }
 
-fn fs_readdir_impl(dir_path: String) -> Vec<FsEntry> {
+pub(crate) fn fs_readdir_impl(dir_path: String) -> Vec<FsEntry> {
     let abs = match std::path::absolute(&dir_path) {
         Ok(p) => p,
         Err(_) => return vec![],
@@ -236,7 +330,7 @@ fn fs_readdir_impl(dir_path: String) -> Vec<FsEntry> {
     out
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListDirsItem {
     pub name: String,
@@ -247,7 +341,7 @@ pub struct ListDirsItem {
 // We model the success and error variants as two structs sharing
 // Option fields and serialize via skip_serializing_if so the JS side sees
 // exactly the Electron shape.
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ListDirsResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<String>,
@@ -265,10 +359,26 @@ pub struct ListDirsResult {
 
 #[tauri::command]
 pub async fn fs_list_dirs(
-    app: tauri::AppHandle,
+    app: AppHandle,
+    window: WebviewWindow,
     dir_path: String,
     include_hidden: bool,
 ) -> ListDirsResult {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &window,
+        "fs:list-dirs",
+        vec![json!(dir_path.clone()), json!(include_hidden)],
+    )
+    .await
+    {
+        return result
+            .and_then(from_remote_value)
+            .unwrap_or_else(|err| ListDirsResult {
+                error: Some(err),
+                ..Default::default()
+            });
+    }
     let home = home_string(&app).unwrap_or_else(|| PathBuf::from("/"));
     tauri::async_runtime::spawn_blocking(move || fs_list_dirs_impl(home, dir_path, include_hidden))
         .await
@@ -278,7 +388,11 @@ pub async fn fs_list_dirs(
         })
 }
 
-fn fs_list_dirs_impl(home: PathBuf, dir_path: String, include_hidden: bool) -> ListDirsResult {
+pub(crate) fn fs_list_dirs_impl(
+    home: PathBuf,
+    dir_path: String,
+    include_hidden: bool,
+) -> ListDirsResult {
     let expanded = expand_tilde(&dir_path, &home);
     let abs = match std::path::absolute(&expanded) {
         Ok(p) => p,
@@ -341,7 +455,16 @@ fn fs_list_dirs_impl(home: PathBuf, dir_path: String, include_hidden: bool) -> L
     }
 }
 
-#[derive(Debug, Serialize, Default)]
+pub(crate) fn fs_list_dirs_native(
+    app: &AppHandle,
+    dir_path: String,
+    include_hidden: bool,
+) -> ListDirsResult {
+    let home = home_string(app).unwrap_or_else(|| PathBuf::from("/"));
+    fs_list_dirs_impl(home, dir_path, include_hidden)
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct PathOrError {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -363,7 +486,27 @@ fn validate_dir_name(name: &str) -> Result<(), &'static str> {
 }
 
 #[tauri::command]
-pub async fn fs_mkdir(parent_path: String, name: String) -> PathOrError {
+pub async fn fs_mkdir(
+    app: AppHandle,
+    window: WebviewWindow,
+    parent_path: String,
+    name: String,
+) -> PathOrError {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &window,
+        "fs:mkdir",
+        vec![json!(parent_path.clone()), json!(name.clone())],
+    )
+    .await
+    {
+        return result
+            .and_then(from_remote_value)
+            .unwrap_or_else(|err| PathOrError {
+                error: Some(err),
+                ..Default::default()
+            });
+    }
     tauri::async_runtime::spawn_blocking(move || fs_mkdir_impl(parent_path, name))
         .await
         .unwrap_or_else(|e| PathOrError {
@@ -372,7 +515,7 @@ pub async fn fs_mkdir(parent_path: String, name: String) -> PathOrError {
         })
 }
 
-fn fs_mkdir_impl(parent_path: String, name: String) -> PathOrError {
+pub(crate) fn fs_mkdir_impl(parent_path: String, name: String) -> PathOrError {
     let trimmed = name.trim();
     if let Err(msg) = validate_dir_name(&name) {
         return PathOrError {
@@ -409,7 +552,26 @@ fn fs_mkdir_impl(parent_path: String, name: String) -> PathOrError {
 }
 
 #[tauri::command]
-pub async fn fs_delete_path(target_path: String) -> PathOrError {
+pub async fn fs_delete_path(
+    app: AppHandle,
+    window: WebviewWindow,
+    target_path: String,
+) -> PathOrError {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &window,
+        "fs:delete-path",
+        vec![json!(target_path.clone())],
+    )
+    .await
+    {
+        return result
+            .and_then(from_remote_value)
+            .unwrap_or_else(|err| PathOrError {
+                error: Some(err),
+                ..Default::default()
+            });
+    }
     tauri::async_runtime::spawn_blocking(move || fs_delete_path_impl(target_path))
         .await
         .unwrap_or_else(|e| PathOrError {
@@ -418,7 +580,7 @@ pub async fn fs_delete_path(target_path: String) -> PathOrError {
         })
 }
 
-fn fs_delete_path_impl(target_path: String) -> PathOrError {
+pub(crate) fn fs_delete_path_impl(target_path: String) -> PathOrError {
     let abs = match std::path::absolute(&target_path) {
         Ok(p) => p,
         Err(e) => {
@@ -461,7 +623,7 @@ fn fs_delete_path_impl(target_path: String) -> PathOrError {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuickLocation {
     pub name: String,
@@ -488,14 +650,19 @@ fn windows_logical_drive_roots() -> Vec<String> {
 }
 
 #[tauri::command]
-pub async fn fs_quick_locations(app: tauri::AppHandle) -> Vec<QuickLocation> {
+pub async fn fs_quick_locations(app: AppHandle, window: WebviewWindow) -> Vec<QuickLocation> {
+    if let Some(result) =
+        remote_invoke_for_window(&app, &window, "fs:quick-locations", vec![]).await
+    {
+        return result.and_then(from_remote_value).unwrap_or_default();
+    }
     let home = home_string(&app);
     tauri::async_runtime::spawn_blocking(move || fs_quick_locations_impl(home))
         .await
         .unwrap_or_default()
 }
 
-fn fs_quick_locations_impl(home: Option<PathBuf>) -> Vec<QuickLocation> {
+pub(crate) fn fs_quick_locations_impl(home: Option<PathBuf>) -> Vec<QuickLocation> {
     let mut out: Vec<QuickLocation> = Vec::new();
     if let Some(home) = home {
         out.push(QuickLocation {
@@ -543,6 +710,10 @@ fn fs_quick_locations_impl(home: Option<PathBuf>) -> Vec<QuickLocation> {
     out
 }
 
+pub(crate) fn fs_quick_locations_native(app: &AppHandle) -> Vec<QuickLocation> {
+    fs_quick_locations_impl(home_string(app))
+}
+
 const SEARCH_MAX_DEPTH: usize = 8;
 const SEARCH_MAX_RESULTS: usize = 100;
 
@@ -584,7 +755,7 @@ fn search_walk(dir: &Path, lower_query: &str, depth: usize, results: &mut Vec<Fs
     }
 }
 
-fn fs_search_impl(dir_path: String, query: String) -> Vec<FsEntry> {
+pub(crate) fn fs_search_impl(dir_path: String, query: String) -> Vec<FsEntry> {
     let abs = match std::path::absolute(&dir_path) {
         Ok(p) => p,
         Err(_) => return vec![],
@@ -597,7 +768,22 @@ fn fs_search_impl(dir_path: String, query: String) -> Vec<FsEntry> {
 }
 
 #[tauri::command]
-pub async fn fs_search(dir_path: String, query: String) -> Vec<FsEntry> {
+pub async fn fs_search(
+    app: AppHandle,
+    window: WebviewWindow,
+    dir_path: String,
+    query: String,
+) -> Vec<FsEntry> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &window,
+        "fs:search",
+        vec![json!(dir_path.clone()), json!(query.clone())],
+    )
+    .await
+    {
+        return result.and_then(from_remote_value).unwrap_or_default();
+    }
     tauri::async_runtime::spawn_blocking(move || fs_search_impl(dir_path, query))
         .await
         .unwrap_or_default()
@@ -712,7 +898,10 @@ fn resolve_path_link_candidate(
     })
 }
 
-fn fs_resolve_path_links_impl(cwd: String, raw_paths: Vec<String>) -> Vec<PathLinkResult> {
+pub(crate) fn fs_resolve_path_links_impl(
+    cwd: String,
+    raw_paths: Vec<String>,
+) -> Vec<PathLinkResult> {
     let cwd_abs = if cwd.trim().is_empty() {
         None
     } else {
@@ -736,7 +925,22 @@ fn fs_resolve_path_links_impl(cwd: String, raw_paths: Vec<String>) -> Vec<PathLi
 }
 
 #[tauri::command]
-pub async fn fs_resolve_path_links(cwd: String, raw_paths: Vec<String>) -> Vec<PathLinkResult> {
+pub async fn fs_resolve_path_links(
+    app: AppHandle,
+    window: WebviewWindow,
+    cwd: String,
+    raw_paths: Vec<String>,
+) -> Vec<PathLinkResult> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &window,
+        "fs:resolve-path-links",
+        vec![json!(cwd.clone()), json!(raw_paths.clone())],
+    )
+    .await
+    {
+        return result.and_then(from_remote_value).unwrap_or_default();
+    }
     tauri::async_runtime::spawn_blocking(move || fs_resolve_path_links_impl(cwd, raw_paths))
         .await
         .unwrap_or_default()
@@ -751,7 +955,21 @@ fn remove_watcher(state: &FsWatcherState, dir_path: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn fs_watch(app: AppHandle, state: State<'_, FsWatcherState>, dir_path: String) -> bool {
+pub fn fs_watch(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, FsWatcherState>,
+    dir_path: String,
+) -> bool {
+    if let Some(result) =
+        remote_invoke_for_window_blocking(&app, &window, "fs:watch", vec![json!(dir_path.clone())])
+    {
+        return result.and_then(from_remote_value).unwrap_or(false);
+    }
+    fs_watch_native(app, &state, dir_path)
+}
+
+pub(crate) fn fs_watch_native(app: AppHandle, state: &FsWatcherState, dir_path: String) -> bool {
     if dir_path.trim().is_empty() {
         return false;
     }
@@ -825,7 +1043,24 @@ pub fn fs_watch(app: AppHandle, state: State<'_, FsWatcherState>, dir_path: Stri
 }
 
 #[tauri::command]
-pub fn fs_unwatch(state: State<'_, FsWatcherState>, dir_path: String) -> bool {
+pub fn fs_unwatch(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, FsWatcherState>,
+    dir_path: String,
+) -> bool {
+    if let Some(result) = remote_invoke_for_window_blocking(
+        &app,
+        &window,
+        "fs:unwatch",
+        vec![json!(dir_path.clone())],
+    ) {
+        return result.and_then(from_remote_value).unwrap_or(false);
+    }
+    fs_unwatch_native(&state, dir_path)
+}
+
+pub(crate) fn fs_unwatch_native(state: &FsWatcherState, dir_path: String) -> bool {
     remove_watcher(&state, &dir_path)
 }
 
@@ -842,7 +1077,7 @@ mod tests {
             let mut f = fs::File::create(&path).unwrap();
             f.write_all(b"hello world").unwrap();
         }
-        let result = tauri::async_runtime::block_on(fs_read_file(path.to_string_lossy().into()));
+        let result = fs_read_file_impl(path.to_string_lossy().into());
         assert_eq!(result.content.as_deref(), Some("hello world"));
         assert!(result.error.is_none());
         let _ = fs::remove_file(path);
@@ -907,7 +1142,7 @@ mod tests {
                 f.write_all(&chunk).unwrap();
             }
         }
-        let result = tauri::async_runtime::block_on(fs_read_file(path.to_string_lossy().into()));
+        let result = fs_read_file_impl(path.to_string_lossy().into());
         assert!(result.content.is_none());
         assert_eq!(result.error.as_deref(), Some("File too large"));
         assert_eq!(result.size, Some(513 * 1024));
@@ -916,8 +1151,7 @@ mod tests {
 
     #[test]
     fn rejects_nonexistent_paths() {
-        let result =
-            tauri::async_runtime::block_on(fs_read_file("/this/path/does/not/exist/xyz".into()));
+        let result = fs_read_file_impl("/this/path/does/not/exist/xyz".into());
         assert!(result.content.is_none());
         assert_eq!(result.error.as_deref(), Some("Failed to read file"));
     }
@@ -994,7 +1228,7 @@ mod tests {
         fs::create_dir_all(dir.join("node_modules")).unwrap();
         fs::create_dir_all(dir.join(".git")).unwrap();
         fs::write(dir.join("README.md"), b"hi").unwrap();
-        let result = tauri::async_runtime::block_on(fs_readdir(dir.to_string_lossy().into()));
+        let result = fs_readdir_impl(dir.to_string_lossy().into());
         let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"src"));
         assert!(names.contains(&"README.md"));
@@ -1013,15 +1247,11 @@ mod tests {
         let file = dir.join("file.txt");
         fs::write(&file, b"hi").unwrap();
 
-        assert!(tauri::async_runtime::block_on(fs_is_directory(
-            dir.to_string_lossy().into()
-        )));
-        assert!(!tauri::async_runtime::block_on(fs_is_directory(
-            file.to_string_lossy().into()
-        )));
-        assert!(!tauri::async_runtime::block_on(fs_is_directory(
+        assert!(fs_is_directory_impl(dir.to_string_lossy().into()));
+        assert!(!fs_is_directory_impl(file.to_string_lossy().into()));
+        assert!(!fs_is_directory_impl(
             dir.join("missing").to_string_lossy().into()
-        )));
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1083,8 +1313,7 @@ mod tests {
         let nested = dir.join("a/b/c/hello-deep.txt");
         fs::create_dir_all(nested.parent().unwrap()).unwrap();
         fs::write(&nested, b"x").unwrap();
-        let result =
-            tauri::async_runtime::block_on(fs_search(dir.to_string_lossy().into(), "hello".into()));
+        let result = fs_search_impl(dir.to_string_lossy().into(), "hello".into());
         let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
         assert!(names.iter().any(|n| n.contains("hello-deep.txt")));
         assert!(result.len() >= 4);
@@ -1095,11 +1324,9 @@ mod tests {
     #[test]
     fn mkdir_rejects_invalid_names() {
         let parent = std::env::temp_dir();
-        let r =
-            tauri::async_runtime::block_on(fs_mkdir(parent.to_string_lossy().into(), "..".into()));
+        let r = fs_mkdir_impl(parent.to_string_lossy().into(), "..".into());
         assert_eq!(r.error.as_deref(), Some("Invalid folder name"));
-        let r =
-            tauri::async_runtime::block_on(fs_mkdir(parent.to_string_lossy().into(), "a/b".into()));
+        let r = fs_mkdir_impl(parent.to_string_lossy().into(), "a/b".into());
         assert_eq!(r.error.as_deref(), Some("Invalid folder name"));
     }
 
@@ -1111,13 +1338,13 @@ mod tests {
         let file = dir.join("a.txt");
         fs::write(&file, b"x").unwrap();
         // File deletion should be refused.
-        let r = tauri::async_runtime::block_on(fs_delete_path(file.to_string_lossy().into()));
+        let r = fs_delete_path_impl(file.to_string_lossy().into());
         assert_eq!(
             r.error.as_deref(),
             Some("Only directories can be deleted here")
         );
         // Directory deletion succeeds.
-        let r = tauri::async_runtime::block_on(fs_delete_path(dir.to_string_lossy().into()));
+        let r = fs_delete_path_impl(dir.to_string_lossy().into());
         assert!(r.error.is_none());
         assert_eq!(r.path.as_deref(), Some(dir.to_string_lossy().as_ref()));
     }

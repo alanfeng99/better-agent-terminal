@@ -137,9 +137,11 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
         "git:log" => Some(&["cwd", "count"]),
         "git:diff" => Some(&["cwd", "commitHash", "filePath"]),
         "git:diff-files" => Some(&["cwd", "commitHash"]),
-        "fs:readdir" | "fs:search" | "fs:watch" | "fs:unwatch" | "fs:list-dirs" => match channel {
+        "fs:readdir" | "fs:isDirectory" | "fs:search" | "fs:watch" | "fs:unwatch"
+        | "fs:list-dirs" => match channel {
             "fs:search" => Some(&["dirPath", "query"]),
             "fs:list-dirs" => Some(&["dirPath", "includeHidden"]),
+            "fs:isDirectory" => Some(&["path"]),
             _ => Some(&["dirPath"]),
         },
         "fs:readFile" => Some(&["filePath"]),

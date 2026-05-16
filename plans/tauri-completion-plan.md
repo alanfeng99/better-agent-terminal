@@ -5,6 +5,7 @@
 ## 進度紀錄
 
 - 2026-05-16：補 remote profile 的 Claude/Codex metadata/history Rust routing。Tauri remote 視窗的 `listSessions`、archive page/clear、skills/MCP scan、CLI prepare/path、account list/switch/remove、session meta/state/context、worktree status/cleanup 與 Codex/Claude control metadata 會先透過 remote server Rust bridge 處理；本機已 Rust native 的路徑不再因 remote profile 落回 Node sidecar 或 client 本機空狀態，Claude SDK turn streaming 仍保留 sidecar ownership。
+- 2026-05-16：補 remote profile 的 Files/FS routing。Tauri `host.fs.*` command 會在 remote profile window 下轉發到 Rust remote server 的 `fs:*` bridge，涵蓋 Files tab 的 `readdir/readFile/search`、FolderPicker 的 `home/listDirs/quickLocations/mkdir/delete`、path-link resolve 與 watcher；避免 remote workspace 路徑被拿到 client 本機讀取而顯示空白或錯誤。
 - 2026-05-10：開始 M1/P0 補 adapter 斷線。已接上 `fs.resolvePathLinks` 與 `fs.watch/unwatch/onChanged` 的 Tauri 路徑；`fs.resolvePathLinks` 與 `fs.watch/unwatch` 後續已搬到 Rust native，`fs:changed` 事件由 Rust watcher emit 回 renderer。這讓 ChatMarkdown path link resolution 與 FileTree watcher 不再在 Tauri 下 throw/no-op。
 - 2026-05-10：接上 `claude.stopTask` 的 Tauri 路徑：renderer `host.claude.stopTask()` → Rust `claude_stop_task` → Node sidecar `claude.stopTask`。Rust command 會把 sidecar `{ok:boolean}` 正規化成 Electron preload 相容的 `boolean`，讓 Agent/Task 停止按鈕不因 host kind 拿到不同回傳 shape。
 - 2026-05-10：把 `setCodexSandboxMode` / `setCodexApprovalPolicy` 從 Tauri permissive `null` shim 拉成明確 Rust command route；目前因 CodexAgentManager 尚未 port 到 sidecar，兩者回 Electron-shaped `false` 表示 unsupported。完整 Codex sandbox/approval 生效仍歸 M3 Codex parity。
