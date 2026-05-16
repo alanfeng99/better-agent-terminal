@@ -894,6 +894,28 @@ fn invoke_rust_for_remote(
                 .map_err(|err| err.to_string())
                 .and_then(|value| to_json_value(channel, value))
         }
+        "workspace:load" => {
+            let profile_id = optional_string_param(params, "profileId")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "default".to_string());
+            Ok(
+                profile_cmd::profile_workspace_json_for_remote(app, &profile_id)
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            )
+        }
+        "workspace:save" => {
+            let profile_id = optional_string_param(params, "profileId")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "default".to_string());
+            string_param(params, "data", channel).map(|data| {
+                Value::Bool(profile_cmd::profile_save_workspace_for_remote(
+                    app,
+                    &profile_id,
+                    &data,
+                ))
+            })
+        }
         "pty:create" => {
             let options_value = params
                 .get("options")

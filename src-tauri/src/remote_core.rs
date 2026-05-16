@@ -60,6 +60,8 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
     match channel {
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
+        "workspace:load" => Some(&["profileId"]),
+        "workspace:save" => Some(&["profileId", "data"]),
         "image:read-as-data-url" => Some(&["filePath"]),
         "pty:create" => Some(&["options"]),
         "pty:write" => Some(&["id", "data"]),
@@ -426,6 +428,21 @@ mod tests {
                 "displayPrompt": "hi",
                 "suppressUserEcho": true,
             })
+        );
+    }
+
+    #[test]
+    fn maps_legacy_workspace_args_to_named_params() {
+        assert_eq!(
+            legacy_v1_args_to_params("workspace:load", &[json!("hyper")]),
+            json!({ "profileId": "hyper" })
+        );
+        assert_eq!(
+            legacy_v1_args_to_params(
+                "workspace:save",
+                &[json!("hyper"), json!("{\"workspaces\":[]}")]
+            ),
+            json!({ "profileId": "hyper", "data": "{\"workspaces\":[]}" })
         );
     }
 

@@ -631,6 +631,38 @@ pub fn profile_load_for_remote(app: &AppHandle, profile_id: &str) -> Option<Valu
     load_profile_snapshot_at(&dir, profile_id, true)
 }
 
+pub fn profile_workspace_json_for_remote(app: &AppHandle, profile_id: &str) -> Option<String> {
+    let dir = profiles_dir(app)?;
+    let snapshot = load_profile_snapshot_at(&dir, profile_id, false)?;
+    let workspace = workspace_from_first_snapshot_window(&snapshot)?;
+    serde_json::to_string_pretty(&workspace).ok()
+}
+
+pub fn profile_save_workspace_for_remote(app: &AppHandle, profile_id: &str, data: &str) -> bool {
+    let Some(dir) = profiles_dir(app) else {
+        return false;
+    };
+    let mut index = read_index_at(&dir);
+    let Some(profile) = index
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id && profile.kind == "local")
+        .cloned()
+    else {
+        return false;
+    };
+    let Ok(workspace) = serde_json::from_str::<Value>(data) else {
+        return false;
+    };
+    let snapshot = snapshot_from_workspace(&profile, workspace);
+    let wrote = write_snapshot_at(&dir, profile_id, &snapshot).is_ok();
+    if wrote {
+        let _ = activate_profile_in_index(&mut index, profile_id);
+        let _ = write_index_at(&dir, index);
+    }
+    wrote
+}
+
 #[tauri::command]
 pub fn profile_create(
     app: AppHandle,

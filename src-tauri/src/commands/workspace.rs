@@ -16,11 +16,15 @@
 
 use super::app::{log_tauri, renderer_url};
 use crate::app_data;
+use crate::commands::profile as profile_cmd;
+use crate::remote_client::RustRemoteClientState;
 use crate::window_registry;
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
 use tauri::{Emitter, Manager, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use thiserror::Error;
 
@@ -78,12 +82,58 @@ fn workspace_load_impl(
     Ok(Some(text))
 }
 
+fn remote_profile_target_id(app: &tauri::AppHandle, window_label: &str) -> Option<String> {
+    let profile_id = window_registry::profile_id_for_window(app, window_label)?;
+    let profile = profile_cmd::profile_get(app.clone(), profile_id)?;
+    if profile.kind != "remote" {
+        return None;
+    }
+    Some(
+        profile
+            .remote_profile_id
+            .unwrap_or_else(|| "default".to_string()),
+    )
+}
+
+async fn remote_workspace_invoke(
+    app: &tauri::AppHandle,
+    window_label: &str,
+    channel: &'static str,
+    args: Vec<Value>,
+) -> Option<Result<Value, CommandError>> {
+    let target_profile_id = remote_profile_target_id(app, window_label)?;
+    let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let mut invoke_args = Vec::with_capacity(args.len() + 1);
+    invoke_args.push(json!(target_profile_id));
+    invoke_args.extend(args);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        remote_client.invoke(channel, invoke_args, Duration::from_secs(30))
+    })
+    .await
+    .map_err(|err| CommandError {
+        message: format!("remote.invoke {channel} worker failed: {err}"),
+    });
+    Some(match result {
+        Ok(value) => value.map_err(|err| CommandError { message: err }),
+        Err(err) => Err(err),
+    })
+}
+
 #[tauri::command]
 pub async fn workspace_load(
     app: tauri::AppHandle,
     window: WebviewWindow,
 ) -> Result<Option<String>, CommandError> {
     let window_label = window.label().to_string();
+    if let Some(remote_result) =
+        remote_workspace_invoke(&app, &window_label, "workspace:load", Vec::new()).await
+    {
+        return remote_result.map(|value| match value {
+            Value::String(text) => Some(text),
+            Value::Null => None,
+            other => Some(other.to_string()),
+        });
+    }
     tauri::async_runtime::spawn_blocking(move || workspace_load_impl(app, window_label))
         .await
         .map_err(|err| CommandError {
@@ -114,6 +164,11 @@ pub async fn workspace_save(
     data: String,
 ) -> Result<bool, CommandError> {
     let window_label = window.label().to_string();
+    if let Some(remote_result) =
+        remote_workspace_invoke(&app, &window_label, "workspace:save", vec![json!(data)]).await
+    {
+        return remote_result.map(|value| value.as_bool().unwrap_or(false));
+    }
     tauri::async_runtime::spawn_blocking(move || workspace_save_impl(app, window_label, data))
         .await
         .map_err(|err| CommandError {
