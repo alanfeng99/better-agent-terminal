@@ -114,11 +114,6 @@ function buildAgentAutoCommand(presetId: string, settings: ReturnType<typeof set
   return preset?.command || null
 }
 
-function isPtyAlreadyExistsError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return message.includes('pty session') && message.includes('already exists')
-}
-
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error
@@ -127,6 +122,11 @@ function errorMessage(error: unknown): string {
   } catch {
     return String(error)
   }
+}
+
+function isPtyAlreadyExistsError(error: unknown): boolean {
+  const message = errorMessage(error)
+  return message.includes('pty session') && message.includes('already exists')
 }
 
 async function createWorkspacePty(options: CreatePtyOptions, context: string): Promise<boolean> {
@@ -639,7 +639,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
   const handleRestart = useCallback(async (id: string) => {
     const terminal = terminals.find(t => t.id === id)
-    if (terminal) {
+    if (!terminal) return
+    workspaceStore.setTerminalRuntimeError(id, undefined)
+    try {
       if (terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree') {
         // Stop and restart Claude session
         await host.claude.stopSession(id)
@@ -654,9 +656,29 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       } else {
         const cwd = await host.pty.getCwd(id) || terminal.cwd
         const shell = await getShellFromSettings()
-        await host.pty.restart(id, cwd, shell)
+        // pty_restart returns false when no live session exists for `id`,
+        // which is exactly the state the user lands in after the startup
+        // restore failure. Fall back to a clean create so Restart actually
+        // brings the terminal back instead of silently no-oping.
+        const restarted = await host.pty.restart(id, cwd, shell)
+        if (!restarted) {
+          const settings = settingsStore.getSettings()
+          const customEnv = mergeEnvVars(settings.globalEnvVars, workspace.envVars)
+          await createWorkspacePty({
+            id,
+            cwd,
+            type: 'terminal',
+            agentPreset: terminal.agentPreset,
+            shell,
+            customEnv,
+            perTerminalHistory: settings.perTerminalHistory,
+            historyKey: terminal.historyKey,
+          }, 'manual-restart')
+        }
         workspaceStore.updateTerminalCwd(id, cwd)
       }
+    } catch (error) {
+      workspaceStore.setTerminalRuntimeError(id, errorMessage(error))
     }
   }, [terminals])
 
