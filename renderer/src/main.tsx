@@ -25,6 +25,33 @@ import './styles/skills-panel.css'
 const dlog = (...args: unknown[]) => host.debug.log(...args)
 const t0 = (window as unknown as { __t0?: number }).__t0 || Date.now()
 const tauriSmokeWindowTokens = new Set<string>()
+
+function installVisualViewportVars(): void {
+  const root = document.documentElement
+  let frame = 0
+  const update = () => {
+    frame = 0
+    const viewport = window.visualViewport
+    const height = Math.max(1, Math.floor(viewport?.height ?? window.innerHeight))
+    const offsetTop = Math.max(0, Math.floor(viewport?.offsetTop ?? 0))
+    const keyboardBottom = Math.max(0, Math.floor(window.innerHeight - height - offsetTop))
+    root.style.setProperty('--bat-viewport-height', `${height}px`)
+    root.style.setProperty('--bat-viewport-offset-top', `${offsetTop}px`)
+    root.style.setProperty('--bat-keyboard-bottom-offset', `${keyboardBottom}px`)
+  }
+  const schedule = () => {
+    if (frame) return
+    frame = window.requestAnimationFrame(update)
+  }
+
+  update()
+  window.visualViewport?.addEventListener('resize', schedule)
+  window.visualViewport?.addEventListener('scroll', schedule)
+  window.addEventListener('resize', schedule)
+  window.addEventListener('orientationchange', schedule)
+}
+
+installVisualViewportVars()
 dlog(`[startup] ── renderer ──────────────────────────────`)
 dlog(`[startup] host kind: ${getHostKind()}`)
 dlog(`[startup] location: ${window.location.href}`)

@@ -436,6 +436,18 @@
 
   "claude": {
     "thinking": "思考中",
+    "filterUser": "你",
+    "filterMessage": "訊息",
+    "filterTool": "工具",
+    "filterThinking": "思考",
+    "hideUserMessages": "隱藏使用者訊息",
+    "showUserMessages": "顯示使用者訊息",
+    "hideAssistantMessages": "隱藏回覆訊息",
+    "showAssistantMessages": "顯示回覆訊息",
+    "hideToolMessages": "隱藏工具訊息",
+    "showToolMessages": "顯示工具訊息",
+    "hideThinkingMessages": "隱藏思考訊息",
+    "showThinkingMessages": "顯示思考訊息",
     "loadOlderMessages": "載入較舊的訊息（{{count}} 則已封存）",
     "resumingHistory": "正在載入工作階段歷史…",
     "allowThisCall": "允許此 <strong>{{toolName}}</strong> 呼叫？",

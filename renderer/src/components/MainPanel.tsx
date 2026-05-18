@@ -104,7 +104,7 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
               title={showUserMsg ? t('claude.hideUserMessages') : t('claude.showUserMessages')}
             >
               <span className="msg-filter-dot" style={{ background: 'var(--accent-color)' }} />
-              You
+              {t('claude.filterUser')}
             </button>
             <button
               className={`msg-filter-btn${showAssistantMsg ? ' active' : ''}`}
@@ -112,7 +112,7 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
               title={showAssistantMsg ? t('claude.hideAssistantMessages') : t('claude.showAssistantMessages')}
             >
               <span className="msg-filter-dot" style={{ background: 'var(--text-secondary)' }} />
-              Message
+              {t('claude.filterMessage')}
             </button>
             <button
               className={`msg-filter-btn${showToolMsg ? ' active' : ''}`}
@@ -120,7 +120,7 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
               title={showToolMsg ? t('claude.hideToolMessages') : t('claude.showToolMessages')}
             >
               <span className="msg-filter-dot" style={{ background: '#10b981' }} />
-              Tool
+              {t('claude.filterTool')}
             </button>
             <button
               className={`msg-filter-btn${showThinkingMsg ? ' active' : ''}`}
@@ -128,7 +128,7 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
               title={showThinkingMsg ? t('claude.hideThinkingMessages') : t('claude.showThinkingMessages')}
             >
               <span className="msg-filter-dot" style={{ background: 'var(--claude-accent)' }} />
-              Thinking
+              {t('claude.filterThinking')}
             </button>
           </div>
         )}

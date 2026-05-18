@@ -436,6 +436,18 @@
 
   "claude": {
     "thinking": "Thinking",
+    "filterUser": "You",
+    "filterMessage": "Message",
+    "filterTool": "Tool",
+    "filterThinking": "Thinking",
+    "hideUserMessages": "Hide user messages",
+    "showUserMessages": "Show user messages",
+    "hideAssistantMessages": "Hide assistant messages",
+    "showAssistantMessages": "Show assistant messages",
+    "hideToolMessages": "Hide tool messages",
+    "showToolMessages": "Show tool messages",
+    "hideThinkingMessages": "Hide thinking messages",
+    "showThinkingMessages": "Show thinking messages",
     "loadOlderMessages": "Load older messages ({{count}} archived)",
     "resumingHistory": "Loading session history…",
     "allowThisCall": "Allow this <strong>{{toolName}}</strong> call?",

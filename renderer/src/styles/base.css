@@ -16,6 +16,9 @@
   --accent-hover: #1084d8;
   --claude-accent: #d97706;
   --danger-color: #f44336;
+  --bat-viewport-height: 100vh;
+  --bat-viewport-offset-top: 0px;
+  --bat-keyboard-bottom-offset: 0px;
 
   /* Glass effect variables */
   --glass-bg: rgba(31, 29, 26, 0.85);
@@ -82,7 +85,8 @@ body {
 
 .app {
   display: flex;
-  height: 100vh;
+  height: var(--bat-viewport-height, 100vh);
+  max-height: var(--bat-viewport-height, 100vh);
 }
 
 /* Sidebar */

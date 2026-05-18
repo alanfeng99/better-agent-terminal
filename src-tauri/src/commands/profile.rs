@@ -632,6 +632,11 @@ pub fn profile_load_for_remote(app: &AppHandle, profile_id: &str) -> Option<Valu
 }
 
 pub fn profile_workspace_json_for_remote(app: &AppHandle, profile_id: &str) -> Option<String> {
+    if let Some(workspace) =
+        window_registry::profile_workspace_from_existing_window(app, profile_id)
+    {
+        return serde_json::to_string_pretty(&workspace).ok();
+    }
     let dir = profiles_dir(app)?;
     let snapshot = load_profile_snapshot_at(&dir, profile_id, false)?;
     let workspace = workspace_from_first_snapshot_window(&snapshot)?;

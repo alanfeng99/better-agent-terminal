@@ -4,14 +4,16 @@
 
 <img src="assets/icon.png" width="128" height="128" alt="Better Agent Terminal">
 
-![Version](https://img.shields.io/badge/version-2.2.27-blue.svg)
+![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20|%20macOS%20|%20Linux-lightgrey.svg)
 ![Tauri](https://img.shields.io/badge/tauri-2.x-24C8DB.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-**A cross-platform terminal aggregator with multi-workspace support and built-in AI agent integration**
+**A Tauri-powered terminal aggregator with multi-workspace support and built-in AI agent integration**
 
 Manage multiple project terminals in one window, with built-in Claude Code and Codex agent panels, file browser, git viewer, snippet manager, and remote access — all in a single Tauri app.
+
+Version 3.0 is the Tauri-only release. The Electron runtime has been removed; the app now uses a Rust/Tauri host, a React renderer, and a small bundled Node sidecar only where JavaScript SDK/runtime support is still required.
 
 [Download Latest Release](https://github.com/tony1223/better-agent-terminal/releases/latest)
 
@@ -263,6 +265,8 @@ Download from [Releases](https://github.com/tony1223/better-agent-terminal/relea
 
 **Prerequisites:**
 - [Node.js](https://nodejs.org/) 18+
+- [Rust](https://www.rust-lang.org/tools/install) stable toolchain
+- Platform build tools for Tauri 2: Xcode Command Line Tools on macOS, Microsoft C++ Build Tools/WebView2 on Windows, or the standard Tauri Linux WebKitGTK dependencies
 - A Claude account (sign in via `/login` inside the app, or pre-authenticate the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — the binary is bundled, no separate global install required)
 
 ```bash
@@ -280,6 +284,12 @@ pnpm run dev
 **Build for production:**
 ```bash
 pnpm run build
+```
+
+For an unsigned local installer/package check, use:
+
+```bash
+pnpm run tauri:build:debug
 ```
 
 ### Option 5: Quick Install (Script)
@@ -306,7 +316,8 @@ Then:
 corepack enable
 pnpm install
 pnpm run dev      # Development
-pnpm run build    # Build .dmg
+pnpm run build    # Build signed/release package when signing env is configured
+pnpm run tauri:build:debug  # Local unsigned package
 ```
 
 ---
@@ -315,7 +326,7 @@ pnpm run build    # Build .dmg
 
 ```
 better-agent-terminal/
-├── renderer/                          # Renderer process (React)
+├── renderer/                          # React renderer running inside the Tauri webview
 │   └── src/
 │       ├── App.tsx                    # Root component, layout, profile orchestration
 │       ├── components/                # Workspace, terminal, agent, file, git, settings UI
@@ -329,7 +340,7 @@ better-agent-terminal/
 │   ├── capabilities/                  # Tauri IPC capability declarations
 │   ├── windows/                       # Windows installer hooks
 │   └── tauri.conf.json                # Tauri app and bundle configuration
-├── node-sidecar/                      # Agent SDK sidecar used by the Tauri host
+├── node-sidecar/                      # Bundled Node sidecar for SDK/runtime pieces not yet native Rust
 ├── assets/                            # App icons and screenshots
 ├── scripts/
 │   └── build-version.js               # Version string generator
@@ -339,11 +350,11 @@ better-agent-terminal/
 ### Tech Stack
 - **Frontend:** React 18 + TypeScript + i18next (EN / zh-TW / zh-CN)
 - **Terminal:** xterm.js + node-pty
-- **Framework:** Tauri 2
+- **Framework:** Tauri 2, with Rust as the host/runtime layer
 - **AI:** `@anthropic-ai/claude-agent-sdk` + bundled `@anthropic-ai/claude-code` binary (Claude); `@openai/codex-sdk` (Codex Agent)
 - **Build:** Vite + Tauri
 - **Storage:** better-sqlite3 (snippets, session data)
-- **Remote:** ws (WebSocket) + qrcode
+- **Remote:** Rust WebSocket server/client + QR code connection flow
 - **Syntax Highlighting:** highlight.js
 
 ---

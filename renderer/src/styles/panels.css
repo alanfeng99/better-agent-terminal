@@ -131,6 +131,52 @@
   overflow: hidden;
 }
 
+@media (max-width: 700px), (pointer: coarse) and (max-width: 900px) {
+  .main-panel-header {
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 6px;
+    padding: 7px 8px;
+  }
+
+  .main-panel-title {
+    min-width: 0;
+    flex: 1 1 calc(100% - 96px);
+  }
+
+  .main-panel-title > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .main-panel-actions {
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+
+  .msg-filter-bar {
+    order: 3;
+    flex: 1 0 100%;
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 1px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .msg-filter-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .msg-filter-btn {
+    flex: 0 0 auto;
+    min-height: 24px;
+    padding: 3px 8px;
+  }
+}
+
 .terminal-runtime-error-chip {
   color: var(--danger-color);
   border: 1px solid color-mix(in srgb, var(--danger-color) 55%, transparent);
