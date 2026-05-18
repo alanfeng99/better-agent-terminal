@@ -171,6 +171,17 @@ jobs:
             sudo apt-get install -y libfuse2
           fi
 
+      - name: Configure Linux AppImage tooling
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
+        shell: bash
+        run: |
+          # Tauri shells out to linuxdeploy AppImages. GitHub runners can be
+          # unreliable for FUSE-backed AppImage execution, and linuxdeploy's
+          # bundled strip can fail on newer ELF sections from system libraries.
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          echo "NO_STRIP=true" >> "$GITHUB_ENV"
+          dpkg-query -W libfuse2 libfuse2t64 2>/dev/null || true
+
       - name: Compute Rust base cache key
         if: env.BUILD_MATRIX_ENTRY == 'true'
         id: rust-base-cache-key
@@ -342,8 +353,22 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: bash scripts/sign-macos-resource-binaries.sh
 
+      - name: Build Linux Tauri release bundle
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: "true"
+        run: pnpm exec tauri build --bundles ${{ matrix.bundle }} --verbose
+
       - name: Build Tauri release bundle
-        if: env.BUILD_MATRIX_ENTRY == 'true'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform != 'linux'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
