@@ -24,7 +24,7 @@ import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } f
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
-import { buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
+import { buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, stringifyToolResult, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
 
@@ -2969,7 +2969,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                 <div className="claude-tool-blocks">
                   <div className="claude-tool-row">
                     <span className="claude-tool-row-label">{item.status === 'running' ? 'RUN' : t('claude.out')}</span>
-                    <span className="claude-tool-row-content">{item.status === 'running' ? 'Generating image...' : String(item.result || '')}</span>
+                    <span className="claude-tool-row-content">{item.status === 'running' ? 'Generating image...' : stringifyToolResult(item.result)}</span>
                   </div>
                 </div>
               )}
@@ -2988,7 +2988,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
       // ExitPlanMode / EnterPlanMode: show plan content in readable view
       if (item.toolName === 'ExitPlanMode' || item.toolName === 'EnterPlanMode') {
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
         const planPath = item.input.planFilePath ? String(item.input.planFilePath) : ''
         return (
@@ -3050,7 +3050,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         const model = item.input.model ? String(item.input.model) : null
         const maxTurns = item.input.max_turns ? String(item.input.max_turns) : null
         const runBg = item.input.run_in_background ? true : false
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultTextRaw, reminders: resultReminders, errors: resultErrors } = splitSystemReminders(resultRaw)
         const resultText = parseContentBlocks(resultTextRaw)
         const resultLines = resultText.split('\n')
@@ -3168,7 +3168,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         const newLines = newStr.split('\n')
         const totalLines = oldLines.length + newLines.length
         const isLongDiff = totalLines > 12
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
         return (
           <div key={item.id || index} className="tl-item">
@@ -3232,7 +3232,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         const isContentExpanded = expandedTools.has(`write-${item.id}`)
         const contentLines = content.split('\n')
         const isLong = contentLines.length > 8
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
         return (
           <div key={item.id || index} className="tl-item">
@@ -3289,7 +3289,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         const parentTask = taskId
           ? allMessages.find(m => isToolCall(m) && m.toolName === 'Task' && m.id === taskId) as ClaudeToolCall | undefined
           : null
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultTextRaw, errors: resultErrors } = splitSystemReminders(resultRaw)
         const resultText = parseContentBlocks(resultTextRaw)
         const resultLines = resultText.split('\n')
@@ -3411,7 +3411,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                   item.id,
                   item.result,
                   () => {
-                    const raw = typeof item.result === 'string' ? item.result : String(item.result)
+                    const raw = stringifyToolResult(item.result)
                     const normalizedRaw = parseContentBlocks(raw)
                     const split = splitSystemReminders(normalizedRaw)
                     return {

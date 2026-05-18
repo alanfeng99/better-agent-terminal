@@ -9,6 +9,12 @@ const MENU_NEW_WINDOW: &str = "app.new-window";
 const MENU_NEXT_WINDOW: &str = "app.next-window";
 const MENU_OPEN_LOGS: &str = "app.open-logs";
 
+#[cfg(target_os = "macos")]
+const NEXT_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+Backquote";
+
+#[cfg(not(target_os = "macos"))]
+const NEXT_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+Tab";
+
 pub(crate) fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let about_metadata = AboutMetadata {
         name: Some(APP_LABEL.to_string()),
@@ -30,7 +36,7 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         MENU_NEXT_WINDOW,
         "Next Window",
         true,
-        Some("CmdOrCtrl+Tab"),
+        Some(NEXT_WINDOW_ACCELERATOR),
     )?;
     let open_logs = MenuItem::with_id(app, MENU_OPEN_LOGS, "Open Logs Folder", true, None::<&str>)?;
 

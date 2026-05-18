@@ -2,6 +2,7 @@ import * as assert from 'assert'
 import {
   buildCollapsedOutputPreview,
   shouldAutoContinueAfterTurnEnd,
+  stringifyToolResult,
   summarizeShellCommand,
 } from '../renderer/src/components/CodexAgentPanel.helpers.ts'
 
@@ -45,6 +46,12 @@ assert.deepStrictEqual(
   buildCollapsedOutputPreview('\n\nimport a\nconst b = 1\n\nfunction c() {}\nexport default c\nignored\n'),
   ['import a', 'const b = 1', 'function c() {}', 'export default c'],
   'collapsed output preview should show multiple meaningful lines'
+)
+
+assert.strictEqual(
+  stringifyToolResult({ status: 'ok', count: 2 }),
+  '{\n  "status": "ok",\n  "count": 2\n}',
+  'object tool results should render as JSON instead of [object Object]'
 )
 
 console.log('Codex auto-continue timeout support: passed')

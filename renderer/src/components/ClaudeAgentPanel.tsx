@@ -22,7 +22,7 @@ import { buildSnippetContextPrompt, parseSnippetSlashCommand, type SnippetForCon
 import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } from '../utils/tool-result-cache'
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
-import { buildCollapsedOutputPreview, formatContentSize, parseShellInvocation, summarizeToolCommandInput, truncateMiddle } from './CodexAgentPanel.helpers'
+import { buildCollapsedOutputPreview, formatContentSize, parseShellInvocation, stringifyToolResult, summarizeToolCommandInput, truncateMiddle } from './CodexAgentPanel.helpers'
 import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
 
 interface SessionMeta {
@@ -3088,7 +3088,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       // ExitPlanMode / EnterPlanMode: show plan content in readable view
       if (item.toolName === 'ExitPlanMode' || item.toolName === 'EnterPlanMode') {
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
         const planPath = item.input.planFilePath ? String(item.input.planFilePath) : ''
         return (
@@ -3150,7 +3150,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const model = item.input.model ? String(item.input.model) : null
         const maxTurns = item.input.max_turns ? String(item.input.max_turns) : null
         const runBg = item.input.run_in_background ? true : false
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultTextRaw, reminders: resultReminders, errors: resultErrors } = splitSystemReminders(resultRaw)
         const resultText = parseContentBlocks(resultTextRaw)
         const resultLines = resultText.split('\n')
@@ -3268,7 +3268,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const newLines = newStr.split('\n')
         const totalLines = oldLines.length + newLines.length
         const isLongDiff = totalLines > 12
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
         return (
           <div key={item.id || index} className="tl-item">
@@ -3332,7 +3332,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const isContentExpanded = expandedTools.has(`write-${item.id}`)
         const contentLines = content.split('\n')
         const isLong = contentLines.length > 8
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
         return (
           <div key={item.id || index} className="tl-item">
@@ -3389,7 +3389,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const parentTask = taskId
           ? allMessages.find(m => isToolCall(m) && m.toolName === 'Task' && m.id === taskId) as ClaudeToolCall | undefined
           : null
-        const resultRaw = item.result ? (typeof item.result === 'string' ? item.result : String(item.result)) : ''
+        const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultTextRaw, errors: resultErrors } = splitSystemReminders(resultRaw)
         const resultText = parseContentBlocks(resultTextRaw)
         const resultLines = resultText.split('\n')
@@ -3505,7 +3505,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                   item.id,
                   item.result,
                   () => {
-                    const raw = typeof item.result === 'string' ? item.result : String(item.result)
+                    const raw = stringifyToolResult(item.result)
                     const normalizedRaw = parseContentBlocks(raw)
                     const split = splitSystemReminders(normalizedRaw)
                     return {

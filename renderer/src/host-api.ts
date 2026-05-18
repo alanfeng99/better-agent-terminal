@@ -178,6 +178,16 @@ function tauriDebugLog(...args: unknown[]): void {
   }
 }
 
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
+
 function refreshTauriDebugMode(): void {
   try {
     void getInvoke()<boolean>('debug_is_debug_mode')
@@ -721,7 +731,7 @@ function createTauriHost(): BatAppAPI {
                 sessionId,
                 ok: false,
                 elapsedMs: Math.round(performance.now() - startedAt),
-                error: err instanceof Error ? err.message : String(err),
+                error: formatUnknownError(err),
               })
               throw err
             }

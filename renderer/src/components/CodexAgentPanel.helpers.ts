@@ -180,6 +180,16 @@ export function parseContentBlocks(text: string): string {
   }
 }
 
+export function stringifyToolResult(result: unknown): string {
+  if (typeof result === 'string') return result
+  if (result == null) return ''
+  try {
+    return JSON.stringify(result, null, 2)
+  } catch {
+    return String(result)
+  }
+}
+
 export function formatTimestamp(ts: number): string {
   const d = new Date(ts)
   const now = new Date()

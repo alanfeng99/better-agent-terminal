@@ -516,6 +516,13 @@ export const TerminalPanel = memo(function TerminalPanel({
       // Only handle keydown events to prevent duplicate actions
       if (event.type !== 'keydown') return true
 
+      const isPlainBackspace = !event.ctrlKey && !event.metaKey && !event.altKey && (
+        event.key === 'Backspace' ||
+        event.code === 'Backspace' ||
+        event.keyCode === 8 ||
+        event.which === 8
+      )
+
       // During IME composition, block non-composition key events
       // to prevent CAPS LOCK etc. from committing partial input
       if (imeComposing || event.isComposing) {
@@ -524,6 +531,15 @@ export const TerminalPanel = memo(function TerminalPanel({
         // delete composing text and recover if compositionend was missed.
         // Everything else (CAPS LOCK, modifiers, etc.) should be blocked.
         return event.keyCode === 229 || IME_SAFE_EDIT_KEYS.has(event.key)
+      }
+
+      if (isPlainBackspace) {
+        event.preventDefault()
+        host.pty.write(terminalId, '\x7f')
+        if (terminalType === 'code-agent') {
+          workspaceStore.markHasUserInput(terminalId)
+        }
+        return false
       }
 
       // Shift+Enter for newline (multiline input)
