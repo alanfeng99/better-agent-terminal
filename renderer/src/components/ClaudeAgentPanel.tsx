@@ -18,6 +18,7 @@ import { filenameForPastedImage, readFileAsDataUrl } from '../utils/file-data-ur
 import { extractInterruptedContinuation } from '../utils/interrupted-prompt'
 import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
 import { autoCompactWindowForClaudeSelection, displayNameForClaudeSelection, normalizeClaudeModelSelection, sdkModelForClaudeSelection } from '../utils/claude-model-presets'
+import { shouldNavigateInputHistoryFromTextarea } from '../utils/input-history-navigation'
 import { buildSnippetContextPrompt, parseSnippetSlashCommand, type SnippetForContext } from '../utils/snippet-command'
 import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } from '../utils/tool-result-cache'
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
@@ -2377,6 +2378,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     if (e.key === 'ArrowUp' && !e.shiftKey && !e.nativeEvent.isComposing) {
       const history = inputHistoryRef.current
       if (history.length === 0) return
+      if (!shouldNavigateInputHistoryFromTextarea('previous', textareaRef.current, inputValueRef.current)) return
       e.preventDefault()
       if (inputHistoryIndexRef.current === -1) {
         inputDraftRef.current = inputValueRef.current
@@ -2389,6 +2391,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     }
     if (e.key === 'ArrowDown' && !e.shiftKey && !e.nativeEvent.isComposing) {
       if (inputHistoryIndexRef.current === -1) return
+      if (!shouldNavigateInputHistoryFromTextarea('next', textareaRef.current, inputValueRef.current)) return
       e.preventDefault()
       const history = inputHistoryRef.current
       if (inputHistoryIndexRef.current < history.length - 1) {
