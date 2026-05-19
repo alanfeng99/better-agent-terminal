@@ -3896,6 +3896,8 @@ pub async fn claude_resume_session(
             option_field(&options, "codexApprovalPolicy"),
             option_field(&options, "permissionMode"),
             option_field(&options, "effort"),
+            option_field(&options, "workspaceId"),
+            option_field(&options, "workspaceName"),
         ],
         SESSION_TIMEOUT,
     )
@@ -4441,6 +4443,8 @@ mod tests {
         let session = notification_cmd::AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "C:/repo".into(),
             agent_kind: Some("claude".into()),
             model: Some("claude-opus-4-7:auto-compact-300k".into()),
@@ -4476,6 +4480,8 @@ mod tests {
         let session = notification_cmd::AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "C:/repo".into(),
             agent_kind: Some("claude".into()),
             model: Some("claude-sonnet-4-6".into()),
@@ -4518,6 +4524,8 @@ mod tests {
         let session = notification_cmd::AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "C:/repo".into(),
             agent_kind: Some("claude".into()),
             model: Some("claude-sonnet-4-6".into()),
@@ -4561,6 +4569,8 @@ mod tests {
         let session = notification_cmd::AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "C:/repo".into(),
             agent_kind: Some("claude".into()),
             model: Some("claude-sonnet-4-6".into()),
@@ -4593,6 +4603,8 @@ mod tests {
         let session = notification_cmd::AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "C:/repo".into(),
             agent_kind: Some("claude".into()),
             model: Some("claude-sonnet-4-6".into()),
@@ -4627,6 +4639,8 @@ mod tests {
         let session = notification_cmd::AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "C:/repo".into(),
             agent_kind: Some("claude".into()),
             model: None,

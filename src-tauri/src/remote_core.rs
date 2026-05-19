@@ -191,6 +191,8 @@ pub fn legacy_v1_args_to_params(channel: &str, args: &[Value]) -> Value {
                 "codexApprovalPolicy": args.get(10).cloned().unwrap_or(Value::Null),
                 "permissionMode": args.get(11).cloned().unwrap_or(Value::Null),
                 "effort": args.get(12).cloned().unwrap_or(Value::Null),
+                "workspaceId": args.get(13).cloned().unwrap_or(Value::Null),
+                "workspaceName": args.get(14).cloned().unwrap_or(Value::Null),
             })),
         }),
         _ => legacy_v1_param_keys(channel)
@@ -457,6 +459,39 @@ mod tests {
                 "clientMessageId": "user-1",
                 "displayPrompt": "hi",
                 "suppressUserEcho": true,
+            })
+        );
+        // resume-session carries workspace identity in trailing positional
+        // args (13/14); they must land in the rebuilt options object.
+        assert_eq!(
+            legacy_v1_args_to_params(
+                "claude:resume-session",
+                &[
+                    json!("s1"),
+                    json!("sdk1"),
+                    json!("/repo"),
+                    Value::Null, // model
+                    Value::Null, // apiVersion
+                    Value::Null, // useWorktree
+                    Value::Null, // worktreePath
+                    Value::Null, // worktreeBranch
+                    Value::Null, // agentPreset
+                    Value::Null, // codexSandboxMode
+                    Value::Null, // codexApprovalPolicy
+                    Value::Null, // permissionMode
+                    Value::Null, // effort
+                    json!("ws-7"),
+                    json!("Plan 5.3.7"),
+                ]
+            ),
+            json!({
+                "sessionId": "s1",
+                "sdkSessionId": "sdk1",
+                "options": {
+                    "cwd": "/repo",
+                    "workspaceId": "ws-7",
+                    "workspaceName": "Plan 5.3.7",
+                },
             })
         );
     }

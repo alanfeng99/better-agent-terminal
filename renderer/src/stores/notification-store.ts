@@ -1,10 +1,12 @@
 import { host } from '../host-api'
+import { workspaceStore } from './workspace-store'
 
 export interface NotificationEntry {
   id: string
   sessionId: string
   windowId: string | null
   profileId: string | null
+  workspaceId?: string
   workspaceName: string
   cwd: string
   reason: 'completed' | 'error' | 'aborted'
@@ -22,6 +24,7 @@ class NotificationStore {
   private listeners: Set<Listener> = new Set()
   private subscribed = false
   private unsubscribePush?: () => void
+  private unsubscribeActivate?: () => void
 
   getEntries(): NotificationEntry[] {
     return this.entries
@@ -51,11 +54,22 @@ class NotificationStore {
       this.entries = entries
       this.emit()
     })
+    // When a notification is focused, the host targets this window with
+    // the agent's workspace id. Switch to that workspace tab — focusing
+    // the OS window alone leaves the user on whatever tab was active.
+    this.unsubscribeActivate = host.notification.onActivateWorkspace((workspaceId) => {
+      if (!workspaceId) return
+      if (workspaceStore.getState().workspaces.some((w) => w.id === workspaceId)) {
+        workspaceStore.setActiveWorkspace(workspaceId)
+      }
+    })
   }
 
   dispose(): void {
     this.unsubscribePush?.()
     this.unsubscribePush = undefined
+    this.unsubscribeActivate?.()
+    this.unsubscribeActivate = undefined
     this.subscribed = false
   }
 

@@ -997,6 +997,37 @@ async function run() {
     assert.equal(win?.batAppAPI?.foo, 1)
   }
 
+  // 9) startSession/resumeSession stamp workspace identity onto the
+  //    options when the session's terminal maps to a workspace. The
+  //    no-mapping case is covered by scenario 2 (payloads unchanged).
+  {
+    const invokeCalls: { cmd: string; args?: Record<string, unknown> }[] = []
+    const invoke: TauriInvoke = async <T>(cmd: string, args?: Record<string, unknown>) => {
+      invokeCalls.push({ cmd, args })
+      return { ok: true } as unknown as T
+    }
+    setWindow({ __TAURI_INTERNALS__: { invoke } })
+    const mod = await loadFreshAdapter()
+    const { workspaceStore } = await import('../renderer/src/stores/workspace-store')
+    const ws = workspaceStore.addWorkspace('Plan workspace', 'C:/repo')
+    const term = workspaceStore.addTerminal(ws.id, 'claude-code')
+    // alias takes priority over name in the stamped workspaceName.
+    workspaceStore.renameWorkspace(ws.id, 'Renamed workspace')
+
+    await mod.host.claude.startSession(term.id, { cwd: 'C:/repo' })
+    await mod.host.claude.resumeSession(term.id, 'sdk-1', 'C:/repo')
+
+    const startOptions = invokeCalls.find(c => c.cmd === 'claude_start_session')
+      ?.args?.options as { workspaceId?: string; workspaceName?: string } | undefined
+    assert.equal(startOptions?.workspaceId, ws.id)
+    assert.equal(startOptions?.workspaceName, 'Renamed workspace')
+
+    const resumeOptions = invokeCalls.find(c => c.cmd === 'claude_resume_session')
+      ?.args?.options as { workspaceId?: string; workspaceName?: string } | undefined
+    assert.equal(resumeOptions?.workspaceId, ws.id)
+    assert.equal(resumeOptions?.workspaceName, 'Renamed workspace')
+  }
+
   console.log('host-api: passed')
 }
 

@@ -35,6 +35,8 @@ pub struct NotificationEntry {
     pub window_id: Option<String>,
     #[serde(rename = "profileId")]
     pub profile_id: Option<String>,
+    #[serde(rename = "workspaceId", skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(rename = "workspaceName")]
     pub workspace_name: String,
     pub cwd: String,
@@ -58,6 +60,8 @@ pub struct NotificationState {
 pub struct AgentNotificationSession {
     pub window_id: Option<String>,
     pub profile_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub workspace_name: Option<String>,
     pub cwd: String,
     pub agent_kind: Option<String>,
     pub model: Option<String>,
@@ -196,14 +200,21 @@ pub fn notification_focus_latest_unread(
     app: AppHandle,
     state: State<'_, NotificationState>,
 ) -> Option<FocusResult> {
-    let (id, window_id) = {
+    let (id, window_id, workspace_id) = {
         let entries = state.lock();
         entries
             .iter()
             .find(|entry| !entry.read && entry.window_id.is_some())
-            .map(|entry| (entry.id.clone(), entry.window_id.clone().unwrap()))?
+            .map(|entry| {
+                (
+                    entry.id.clone(),
+                    entry.window_id.clone().unwrap(),
+                    entry.workspace_id.clone(),
+                )
+            })?
     };
     focus_notification_window(&app, &window_id)?;
+    activate_notification_workspace(&app, &window_id, workspace_id.as_deref());
     mark_entry_read_and_emit(&app, &state, &id);
     Some(FocusResult { id, window_id })
 }
@@ -214,14 +225,13 @@ pub fn notification_focus_entry(
     state: State<'_, NotificationState>,
     id: String,
 ) -> Option<FocusResult> {
-    let window_id = {
+    let (window_id, workspace_id) = {
         let entries = state.lock();
-        entries
-            .iter()
-            .find(|entry| entry.id == id)
-            .and_then(|entry| entry.window_id.clone())?
+        let entry = entries.iter().find(|entry| entry.id == id)?;
+        (entry.window_id.clone()?, entry.workspace_id.clone())
     };
     focus_notification_window(&app, &window_id)?;
+    activate_notification_workspace(&app, &window_id, workspace_id.as_deref());
     mark_entry_read_and_emit(&app, &state, &id);
     Some(FocusResult { id, window_id })
 }
@@ -240,6 +250,8 @@ pub fn register_agent_session_from_options(
         return;
     }
     let profile_id = Some(window_registry::get_entry(app, window_id).profile_id);
+    let workspace_id = options.and_then(|value| string_option(value, "workspaceId"));
+    let workspace_name = options.and_then(|value| string_option(value, "workspaceName"));
     let agent_kind = options.and_then(agent_kind_from_options);
     let model = options.and_then(|value| string_option(value, "model"));
     let permission_mode = options.and_then(|value| string_option(value, "permissionMode"));
@@ -268,6 +280,8 @@ pub fn register_agent_session_from_options(
         AgentNotificationSession {
             window_id: Some(window_id.to_string()),
             profile_id,
+            workspace_id,
+            workspace_name,
             cwd,
             agent_kind,
             model,
@@ -344,7 +358,10 @@ pub fn add_agent_completion_from_event(app: &AppHandle, topic: &str, payload: &V
             session_id: session_id.to_string(),
             window_id: session.window_id,
             profile_id: session.profile_id,
-            workspace_name: workspace_name(&session.cwd),
+            workspace_id: session.workspace_id,
+            workspace_name: session
+                .workspace_name
+                .unwrap_or_else(|| workspace_name(&session.cwd)),
             cwd: session.cwd,
             reason: "completed".into(),
             result,
@@ -563,6 +580,21 @@ fn focus_notification_window(app: &AppHandle, window_id: &str) -> Option<()> {
     Some(())
 }
 
+// Ask the focused window's renderer to switch to the workspace the agent
+// ran in. Focusing the OS window alone isn't enough — several workspaces
+// can live as tabs inside one window, so without this the user lands on
+// whichever workspace happened to be active. Targeted at the owning
+// window so other windows don't react to an id they don't have.
+fn activate_notification_workspace(app: &AppHandle, window_id: &str, workspace_id: Option<&str>) {
+    if let Some(workspace_id) = workspace_id.filter(|id| !id.is_empty()) {
+        let _ = app.emit_to(
+            window_id,
+            "notification:activate-workspace",
+            workspace_id.to_string(),
+        );
+    }
+}
+
 fn mark_entry_read_and_emit(app: &AppHandle, state: &State<'_, NotificationState>, id: &str) {
     let changed = {
         let mut entries = state.lock();
@@ -596,10 +628,12 @@ fn emit_update(app: &AppHandle, state: &State<'_, NotificationState>) {
 pub fn add_entry(app: &AppHandle, state: &NotificationState, entry: NotificationEntry) {
     {
         let mut entries = state.lock();
-        // Mirror the Electron behaviour: replace any existing entry
-        // for the same workspace key (lowercased path on Windows).
-        let key = normalize_workspace_key(&entry.cwd);
-        entries.retain(|e| normalize_workspace_key(&e.cwd) != key);
+        // One entry per workspace: a fresh completion replaces that
+        // workspace's previous entry. Keyed by workspace id when known,
+        // so sibling workspaces that share a cwd (and window) no longer
+        // collapse into a single notification.
+        let key = entry_dedup_key(&entry);
+        entries.retain(|e| entry_dedup_key(e) != key);
         entries.insert(0, entry);
         if entries.len() > MAX_ENTRIES {
             entries.truncate(MAX_ENTRIES);
@@ -673,6 +707,18 @@ fn default_auto_continue() -> Value {
     })
 }
 
+// Dedup key for the notification list — one entry per workspace.
+// Prefer the workspace id: sibling workspaces can share a cwd, so the
+// path alone would wrongly merge them. Falls back to the normalized cwd
+// for sessions registered without a workspace id (older renderer, or
+// non-workspace sessions).
+fn entry_dedup_key(entry: &NotificationEntry) -> String {
+    match entry.workspace_id.as_deref() {
+        Some(id) if !id.is_empty() => format!("ws:{id}"),
+        _ => format!("cwd:{}", normalize_workspace_key(&entry.cwd)),
+    }
+}
+
 pub fn normalize_workspace_key(cwd: &str) -> String {
     let normalized = cwd
         .trim()
@@ -698,6 +744,7 @@ mod tests {
             session_id: "s1".into(),
             window_id: Some("main".into()),
             profile_id: None,
+            workspace_id: None,
             workspace_name: "ws".into(),
             cwd: cwd.into(),
             reason: "completed".into(),
@@ -736,6 +783,8 @@ mod tests {
         let mut session = AgentNotificationSession {
             window_id: Some("main".into()),
             profile_id: Some("default".into()),
+            workspace_id: None,
+            workspace_name: None,
             cwd: "/repo".into(),
             agent_kind: Some("claude".into()),
             model: None,
@@ -845,6 +894,14 @@ mod tests {
         assert!(!json.contains("\"result\":"));
         assert!(!json.contains("\"error\":"));
         assert!(!json.contains("\"agentKind\":"));
+        assert!(!json.contains("\"workspaceId\":"));
+    }
+
+    #[test]
+    fn entry_serializes_workspace_id_when_present() {
+        let e = workspace_entry("n1", "ws-1", "/repo");
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"workspaceId\":\"ws-1\""));
     }
 
     // We can't construct an AppHandle in unit tests, so the state
@@ -898,12 +955,18 @@ mod tests {
 
     fn raw_add(state: &NotificationState, entry: NotificationEntry) {
         let mut entries = state.lock();
-        let key = normalize_workspace_key(&entry.cwd);
-        entries.retain(|e| normalize_workspace_key(&e.cwd) != key);
+        let key = entry_dedup_key(&entry);
+        entries.retain(|e| entry_dedup_key(e) != key);
         entries.insert(0, entry);
         if entries.len() > MAX_ENTRIES {
             entries.truncate(MAX_ENTRIES);
         }
+    }
+
+    fn workspace_entry(id: &str, workspace_id: &str, cwd: &str) -> NotificationEntry {
+        let mut entry = sample_entry(id, cwd, false);
+        entry.workspace_id = Some(workspace_id.into());
+        entry
     }
 
     #[test]
@@ -974,6 +1037,32 @@ mod tests {
         let entries = state.lock();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "b");
+    }
+
+    #[test]
+    fn entry_dedup_key_prefers_workspace_id() {
+        let with_id = workspace_entry("a", "ws-1", "C:/repo");
+        assert_eq!(entry_dedup_key(&with_id), "ws:ws-1");
+        // No workspace id — fall back to the normalized cwd path.
+        let without_id = sample_entry("b", "C:/repo", false);
+        assert_eq!(entry_dedup_key(&without_id), "cwd:c:/repo");
+    }
+
+    #[test]
+    fn add_keeps_sibling_workspaces_sharing_a_cwd() {
+        let state = NotificationState::default();
+        // Two workspaces opened on the same repo folder.
+        raw_add(&state, workspace_entry("a", "ws-1", "C:/repo"));
+        raw_add(&state, workspace_entry("b", "ws-2", "C:/repo"));
+        // Same cwd, distinct workspace ids — both must survive.
+        assert_eq!(state.lock().len(), 2);
+        // A newer completion for ws-1 replaces only ws-1's entry.
+        raw_add(&state, workspace_entry("c", "ws-1", "C:/repo"));
+        let entries = state.lock();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.id == "b"));
+        assert!(entries.iter().any(|e| e.id == "c"));
+        assert!(!entries.iter().any(|e| e.id == "a"));
     }
 
     #[test]

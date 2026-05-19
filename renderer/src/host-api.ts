@@ -267,6 +267,33 @@ function listenAdapter<T>(
   }
 }
 
+// Stamp the agent session's workspace identity onto the start/resume
+// options. The notification center needs this to label and route entries
+// by workspace — several workspaces can share one cwd and window, so the
+// path alone can't tell them apart. Best-effort: the session id is the
+// terminal id, but if the terminal/workspace can't be resolved we leave
+// the options untouched and the Rust side falls back to the cwd.
+async function attachWorkspaceIdentity(
+  sessionId: string,
+  options: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    const { workspaceStore } = await import('./stores/workspace-store')
+    const state = workspaceStore.getState()
+    const terminal = state.terminals.find(t => t.id === sessionId)
+    if (!terminal) return options
+    const workspace = state.workspaces.find(w => w.id === terminal.workspaceId)
+    if (!workspace) return options
+    return {
+      ...options,
+      workspaceId: workspace.id,
+      workspaceName: workspace.alias?.trim() || workspace.name,
+    }
+  } catch {
+    return options
+  }
+}
+
 const CLAUDE_EVENT_PAYLOAD_KEYS: Record<string, string> = {
   onMessage: 'message',
   onToolUse: 'toolCall',
@@ -337,6 +364,7 @@ type NotificationEntry = {
   sessionId: string
   windowId: string | null
   profileId: string | null
+  workspaceId?: string
   workspaceName: string
   cwd: string
   reason: 'completed' | 'error' | 'aborted'
@@ -566,6 +594,11 @@ function createTauriHost(): BatAppAPI {
         getInvoke()<{ id: string; windowId: string } | null>('notification_focus_entry', { id }),
       onUpdate: (cb: (entries: NotificationEntry[]) => void) =>
         listenAdapter<NotificationEntry[]>('notification:update', cb),
+      // Fired at this window after a notification is focused — payload is
+      // the workspace id the agent ran in, so the renderer can switch to
+      // that workspace tab (focusing the OS window alone isn't enough).
+      onActivateWorkspace: (cb: (workspaceId: string) => void) =>
+        listenAdapter<string>('notification:activate-workspace', cb),
     },
     system: {
       // Tauri does not expose a power-monitor resume event here.
@@ -692,8 +725,13 @@ function createTauriHost(): BatAppAPI {
           return () => getInvoke()<unknown>('claude_account_list')
         }
         if (key === 'startSession') {
-          return (sessionId: string, options: unknown) =>
-            getInvoke()<unknown>('claude_start_session', { sessionId, options })
+          return async (sessionId: string, options: unknown) =>
+            getInvoke()<unknown>('claude_start_session', {
+              sessionId,
+              options: options == null
+                ? options
+                : await attachWorkspaceIdentity(sessionId, options as Record<string, unknown>),
+            })
         }
         if (key === 'sendMessage') {
           return async (
@@ -812,7 +850,7 @@ function createTauriHost(): BatAppAPI {
         // fresh. Renderer panels call this on remount when they have a
         // savedSdkSessionId from a prior run.
         if (key === 'resumeSession') {
-          return (
+          return async (
             sessionId: string,
             sdkSessionId: string,
             cwd: string,
@@ -829,7 +867,7 @@ function createTauriHost(): BatAppAPI {
           ) => getInvoke()<unknown>('claude_resume_session', {
             sessionId,
             sdkSessionId,
-            options: {
+            options: await attachWorkspaceIdentity(sessionId, {
               cwd,
               model,
               apiVersion,
@@ -839,7 +877,7 @@ function createTauriHost(): BatAppAPI {
               ...(codexApprovalPolicy ? { codexApprovalPolicy } : {}),
               ...(permissionMode ? { permissionMode } : {}),
               ...(effort ? { effort } : {}),
-            },
+            }),
           })
         }
         // Account / auth ops.
