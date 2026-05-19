@@ -619,6 +619,31 @@ pub fn mark_window_active(app: &AppHandle, window_id: &str) {
     persist_entries(app, &entries);
 }
 
+pub fn latest_live_window_id(app: &AppHandle) -> Option<String> {
+    let live_window_ids = app
+        .webview_windows()
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    }
+    latest_live_window_id_for_entries(&entries, &live_window_ids)
+}
+
+fn latest_live_window_id_for_entries(
+    entries: &[WindowEntry],
+    live_window_ids: &HashSet<String>,
+) -> Option<String> {
+    entries
+        .iter()
+        .filter(|entry| live_window_ids.contains(&entry.id))
+        .max_by_key(|entry| entry.last_active_at)
+        .map(|entry| entry.id.clone())
+}
+
 pub fn window_index(app: &AppHandle, window_id: &str) -> u32 {
     let entry = ensure_entry(app, window_id);
     let live_window_ids = app
@@ -1326,6 +1351,44 @@ mod tests {
         assert_eq!(
             window_index_for_entries(&entries, &live_window_ids, &entries[2]),
             2
+        );
+    }
+
+    #[test]
+    fn latest_live_window_id_uses_most_recent_live_entry() {
+        let entries = vec![
+            WindowEntry {
+                id: "main".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 100,
+            },
+            WindowEntry {
+                id: "profile-default-live".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 300,
+            },
+            WindowEntry {
+                id: "profile-default-stale".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 900,
+            },
+        ];
+        let live_window_ids = ["main".to_string(), "profile-default-live".to_string()]
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            latest_live_window_id_for_entries(&entries, &live_window_ids).as_deref(),
+            Some("profile-default-live")
         );
     }
 

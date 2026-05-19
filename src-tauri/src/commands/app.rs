@@ -275,6 +275,10 @@ fn active_webview_window(app: &AppHandle) -> Option<WebviewWindow> {
         .values()
         .find(|window| window.is_focused().unwrap_or(false))
         .cloned()
+        .or_else(|| {
+            window_registry::latest_live_window_id(app)
+                .and_then(|window_id| app.get_webview_window(&window_id))
+        })
         .or_else(|| app.get_webview_window("main"))
         .or_else(|| windows.values().next().cloned())
 }
@@ -442,20 +446,26 @@ pub fn app_new_window(app: AppHandle, window: WebviewWindow) -> String {
     id
 }
 
+fn next_window_label(mut labels: Vec<String>, current: &str) -> Option<String> {
+    if labels.is_empty() {
+        return None;
+    }
+    labels.sort();
+    labels
+        .iter()
+        .position(|label| label == current)
+        .map(|idx| labels[(idx + 1) % labels.len()].clone())
+        .or_else(|| labels.first().cloned())
+}
+
 #[tauri::command]
 pub fn app_focus_next_window(app: AppHandle, window: WebviewWindow) -> bool {
     let windows = app.webview_windows();
     if windows.len() <= 1 {
         return false;
     }
-    let mut labels = windows.keys().cloned().collect::<Vec<_>>();
-    labels.sort();
     let current = window.label().to_string();
-    let next = labels
-        .iter()
-        .position(|label| label == &current)
-        .map(|idx| labels[(idx + 1) % labels.len()].clone())
-        .or_else(|| labels.first().cloned());
+    let next = next_window_label(windows.keys().cloned().collect(), &current);
     if let Some(label) = next {
         if let Some(win) = app.get_webview_window(&label) {
             raise_window(&win);
@@ -615,6 +625,25 @@ mod tests {
             Some("local-2".into())
         );
         assert_eq!(parse_launch_profile_args(["bat", "--profile="]), None);
+    }
+
+    #[test]
+    fn next_window_label_wraps_and_defaults_to_first_label() {
+        let labels = vec![
+            "profile-default-300-3".to_string(),
+            "main".to_string(),
+            "profile-default-100-1".to_string(),
+        ];
+
+        assert_eq!(
+            next_window_label(labels.clone(), "profile-default-300-3").as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            next_window_label(labels.clone(), "missing").as_deref(),
+            Some("main")
+        );
+        assert_eq!(next_window_label(Vec::new(), "main"), None);
     }
 
     #[test]
