@@ -724,6 +724,104 @@ fn now_millis() -> u128 {
         .unwrap_or(0)
 }
 
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = year - if month <= 2 { 1 } else { 0 };
+    let era = (if year >= 0 { year } else { year - 399 }) / 400;
+    let yoe = year - era * 400;
+    let month = month as i32;
+    let day = day as i32;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) as i64
+}
+
+fn parse_fixed_digits(text: &str, start: usize, len: usize) -> Option<u32> {
+    text.get(start..start + len)?.parse::<u32>().ok()
+}
+
+fn parse_rfc3339_timestamp_millis(text: &str) -> Option<u128> {
+    if text.len() < 20 {
+        return None;
+    }
+    if text.get(4..5) != Some("-")
+        || text.get(7..8) != Some("-")
+        || !matches!(text.get(10..11), Some("T" | "t" | " "))
+        || text.get(13..14) != Some(":")
+        || text.get(16..17) != Some(":")
+    {
+        return None;
+    }
+    let year = parse_fixed_digits(text, 0, 4)? as i32;
+    let month = parse_fixed_digits(text, 5, 2)?;
+    let day = parse_fixed_digits(text, 8, 2)?;
+    let hour = parse_fixed_digits(text, 11, 2)?;
+    let minute = parse_fixed_digits(text, 14, 2)?;
+    let second = parse_fixed_digits(text, 17, 2)?;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+
+    let mut idx = 19;
+    let bytes = text.as_bytes();
+    let mut millis = 0u32;
+    if bytes.get(idx) == Some(&b'.') {
+        idx += 1;
+        let start = idx;
+        while let Some(byte) = bytes.get(idx) {
+            if !byte.is_ascii_digit() {
+                break;
+            }
+            idx += 1;
+        }
+        if idx == start {
+            return None;
+        }
+        let fraction = &text[start..idx];
+        let ms_digits = format!("{:0<3}", &fraction[..fraction.len().min(3)]);
+        millis = ms_digits.parse::<u32>().ok()?;
+    }
+
+    let offset_seconds = match bytes.get(idx).copied() {
+        Some(b'Z' | b'z') => {
+            if idx + 1 != text.len() {
+                return None;
+            }
+            0i64
+        }
+        Some(sign @ (b'+' | b'-')) => {
+            if text.len() != idx + 6 || text.get(idx + 3..idx + 4) != Some(":") {
+                return None;
+            }
+            let offset_hour = parse_fixed_digits(text, idx + 1, 2)?;
+            let offset_minute = parse_fixed_digits(text, idx + 4, 2)?;
+            if offset_hour > 23 || offset_minute > 59 {
+                return None;
+            }
+            let seconds = (offset_hour as i64) * 3600 + (offset_minute as i64) * 60;
+            if sign == b'+' {
+                seconds
+            } else {
+                -seconds
+            }
+        }
+        _ => return None,
+    };
+
+    let days = days_from_civil(year, month, day);
+    let local_seconds =
+        days * 86_400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64);
+    let utc_seconds = local_seconds - offset_seconds;
+    if utc_seconds < 0 {
+        return None;
+    }
+    Some((utc_seconds as u128) * 1000 + millis as u128)
+}
+
 fn image_extension_for_mime(mime: &str) -> Option<&'static str> {
     match mime.to_ascii_lowercase().as_str() {
         "image/png" => Some("png"),
@@ -940,10 +1038,15 @@ fn find_codex_session_log_exact(
     None
 }
 
-fn timestamp_or_now(_value: Option<&Value>) -> u128 {
-    // Renderer only requires a stable numeric timestamp. Rust std has no
-    // RFC3339 parser; keep the compatibility loader dependency-free and use
-    // current time when replaying history from Codex JSONL.
+fn timestamp_or_now(value: Option<&Value>) -> u128 {
+    if let Some(value) = value {
+        if let Some(ms) = value.as_u64() {
+            return ms as u128;
+        }
+        if let Some(text) = value.as_str().and_then(parse_rfc3339_timestamp_millis) {
+            return text;
+        }
+    }
     now_millis()
 }
 
@@ -3118,8 +3221,23 @@ mod tests {
         assert_eq!(items[0]["sessionId"], "s-1");
         assert_eq!(items[0]["role"], "user");
         assert_eq!(items[0]["content"], "ping");
+        assert_eq!(items[0]["timestamp"].as_u64(), Some(1_778_457_601_000));
         assert_eq!(items[1]["role"], "assistant");
         assert_eq!(items[1]["content"], "pong");
+        assert_eq!(items[1]["timestamp"].as_u64(), Some(1_778_457_602_000));
+    }
+
+    #[test]
+    fn codex_history_timestamp_parser_handles_fractional_and_offsets() {
+        assert_eq!(
+            parse_rfc3339_timestamp_millis("2026-05-11T00:00:02.123Z"),
+            Some(1_778_457_602_123)
+        );
+        assert_eq!(
+            parse_rfc3339_timestamp_millis("2026-05-11T08:00:02+08:00"),
+            Some(1_778_457_602_000)
+        );
+        assert_eq!(parse_rfc3339_timestamp_millis("not-a-time"), None);
     }
 
     #[test]
