@@ -490,11 +490,26 @@ export const TerminalPanel = memo(function TerminalPanel({
     fitAddonRef.current = fitAddon
     setTerminalReady(true)
 
-    // Handle terminal input
+    // Handle terminal input. Coalesce keystrokes that arrive within the
+    // same task tick into a single IPC write so rapid typing cannot race
+    // multiple concurrent fire-and-forget invokes on the Rust side.
+    let pendingInput = ''
+    let inputFlushScheduled = false
+    let inputWriteChain: Promise<unknown> = Promise.resolve()
+    const flushPendingInput = () => {
+      inputFlushScheduled = false
+      if (!pendingInput) return
+      const chunk = pendingInput
+      pendingInput = ''
+      inputWriteChain = inputWriteChain.then(() => host.pty.write(terminalId, chunk)).catch(() => {})
+    }
     terminal.onData((data) => {
       if (!ptyReadyRef.current) return
-      host.pty.write(terminalId, data)
-      // Mark terminal as having user input (for agent command tracking)
+      pendingInput += data
+      if (!inputFlushScheduled) {
+        inputFlushScheduled = true
+        queueMicrotask(flushPendingInput)
+      }
       if (terminalType === 'code-agent') {
         workspaceStore.markHasUserInput(terminalId)
       }
