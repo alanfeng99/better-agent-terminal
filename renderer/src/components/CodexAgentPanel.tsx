@@ -3932,23 +3932,35 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <div className="claude-resume-empty">No sessions found</div>
           ) : (
             <div className="claude-resume-list">
-              {resumeSessions.map(s => (
-                <div
-                  key={s.sdkSessionId}
-                  className="claude-resume-item"
-                  onClick={() => handleResumeSelect(s.sdkSessionId)}
-                >
-                  <div className="claude-resume-item-header">
-                    <span className="claude-resume-item-id">{s.sdkSessionId.slice(0, 8)}</span>
-                    {s.gitBranch && <span className="claude-resume-item-branch">{s.gitBranch}</span>}
-                    <span className="claude-resume-item-time">
-                      {new Date(s.createdAt || s.timestamp).toLocaleString()}
-                    </span>
+              {resumeSessions.map(s => {
+                const fallbackPreview = s.preview && s.preview !== '(no preview)' ? s.preview : ''
+                const resumeTitle = s.customTitle || s.firstPrompt || fallbackPreview
+                const resumePreview = s.summary && s.summary !== resumeTitle
+                  ? s.summary
+                  : s.firstPrompt && s.firstPrompt !== resumeTitle
+                    ? s.firstPrompt
+                    : fallbackPreview && fallbackPreview !== resumeTitle
+                      ? fallbackPreview
+                      : ''
+                return (
+                  <div
+                    key={s.sdkSessionId}
+                    className="claude-resume-item"
+                    title={resumeTitle || s.sdkSessionId}
+                    onClick={() => handleResumeSelect(s.sdkSessionId)}
+                  >
+                    <div className="claude-resume-item-header">
+                      <span className="claude-resume-item-id">{s.sdkSessionId.slice(0, 8)}</span>
+                      {s.gitBranch && <span className="claude-resume-item-branch">{s.gitBranch}</span>}
+                      <span className="claude-resume-item-time">
+                        {new Date(s.createdAt || s.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                    {resumeTitle && <div className="claude-resume-item-title">{resumeTitle}</div>}
+                    {resumePreview && <div className="claude-resume-item-preview">{resumePreview}</div>}
                   </div>
-                  {s.customTitle && <div className="claude-resume-item-title">{s.customTitle}</div>}
-                  {s.summary && s.summary !== s.customTitle && <div className="claude-resume-item-preview">{s.summary}</div>}
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
           <div className="claude-permission-hint">{t('claude.escToCancel')}</div>

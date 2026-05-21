@@ -251,6 +251,7 @@ async function inProcess() {
   const jsonl = [
     JSON.stringify({ type: 'user', message: { content: 'hello world from test' } }),
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'reply' }] } }),
+    JSON.stringify({ type: 'summary', summary: 'A useful session name' }),
     'malformed line should be skipped',
     JSON.stringify({ type: 'user', message: { content: 'second user msg' } }),
   ].join('\n') + '\n'
@@ -283,7 +284,10 @@ async function inProcess() {
       assert.equal(sessions.length, 1)
       assert.equal(sessions[0].sdkSessionId, 'sess-test')
       assert.equal(sessions[0].preview, 'hello world from test')
-      assert.equal(sessions[0].messageCount, 3) // 3 valid lines, 1 skipped
+      assert.equal(sessions[0].customTitle, 'A useful session name')
+      assert.equal(sessions[0].firstPrompt, 'hello world from test')
+      assert.equal(sessions[0].summary, 'A useful session name')
+      assert.equal(sessions[0].messageCount, 4) // 4 valid lines, 1 skipped
       assert.equal(typeof sessions[0].timestamp, 'number')
     } finally {
       rmSync(realDir, { recursive: true, force: true })

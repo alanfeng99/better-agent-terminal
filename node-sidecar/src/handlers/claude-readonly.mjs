@@ -23,7 +23,7 @@ import {
 } from './codex.mjs'
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
-const PREVIEW_LINE_LIMIT = 20
+const PREVIEW_LINE_LIMIT = 200
 const PREVIEW_CHARS = 120
 const SESSION_LIST_LIMIT = 50
 
@@ -77,12 +77,16 @@ export async function listSessionsFallback(cwd) {
       const sdkSessionId = basename(file, '.jsonl')
       try {
         const st = await stat(filePath)
-        const { preview, messageCount } = await readSessionPreview(filePath)
+        const details = await readSessionPreview(filePath)
         results.push({
           sdkSessionId,
           timestamp: st.mtimeMs,
-          preview: preview || '(no preview)',
-          messageCount,
+          preview: details.preview || '(no preview)',
+          messageCount: details.messageCount,
+          ...(details.customTitle ? { customTitle: details.customTitle } : {}),
+          ...(details.firstPrompt ? { firstPrompt: details.firstPrompt } : {}),
+          ...(details.gitBranch ? { gitBranch: details.gitBranch } : {}),
+          ...(details.summary ? { summary: details.summary } : {}),
         })
       } catch { /* skip unreadable */ }
     }
@@ -98,13 +102,47 @@ export async function listSessionsFallback(cwd) {
   return deduped.slice(0, SESSION_LIST_LIMIT)
 }
 
+function normalizeSessionHintText(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  if (text === '[Request interrupted by user for tool use]') return ''
+  if (text.startsWith('<local-command-caveat>')) return ''
+  return text.slice(0, PREVIEW_CHARS)
+}
+
+function textFromClaudeContent(content) {
+  if (typeof content === 'string') return normalizeSessionHintText(content)
+  if (!Array.isArray(content)) return ''
+  for (const block of content) {
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      const text = normalizeSessionHintText(block.text)
+      if (text) return text
+    }
+  }
+  return ''
+}
+
+function summaryFromClaudeRecord(obj) {
+  if (obj?.type !== 'summary') return ''
+  return normalizeSessionHintText(
+    obj.summary
+      ?? obj.title
+      ?? obj.message?.summary
+      ?? obj.message?.content
+      ?? obj.content,
+  )
+}
+
 async function readSessionPreview(filePath) {
   // Stream up to PREVIEW_LINE_LIMIT lines and stop. We only need the
-  // first user message for the preview; any further reading is wasted I/O
+  // first user message and summary records for hints; any further reading is wasted I/O
   // on JSONL files that can be hundreds of MB.
   const stream = createReadStream(filePath, { encoding: 'utf-8' })
   const rl = createInterface({ input: stream, crlfDelay: Infinity })
   let preview = ''
+  let firstPrompt = ''
+  let summary = ''
+  let gitBranch = ''
   let messageCount = 0
   let lineCount = 0
   try {
@@ -114,21 +152,21 @@ async function readSessionPreview(filePath) {
       try {
         const obj = JSON.parse(line)
         messageCount++
-        if (!preview && obj?.type === 'user') {
-          const content = obj?.message?.content
-          if (typeof content === 'string') {
-            preview = content.slice(0, PREVIEW_CHARS)
-          } else if (Array.isArray(content)) {
-            const textBlock = content.find(b => b?.type === 'text')
-            if (textBlock?.text) preview = String(textBlock.text).slice(0, PREVIEW_CHARS)
-          }
+        if (!gitBranch && typeof obj?.gitBranch === 'string') gitBranch = normalizeSessionHintText(obj.gitBranch)
+        if (!gitBranch && typeof obj?.git_branch === 'string') gitBranch = normalizeSessionHintText(obj.git_branch)
+        const nextSummary = summaryFromClaudeRecord(obj)
+        if (nextSummary) summary = nextSummary
+        if (!firstPrompt && obj?.type === 'user') {
+          firstPrompt = textFromClaudeContent(obj?.message?.content)
+          if (!preview) preview = firstPrompt
         }
       } catch { /* skip malformed */ }
     }
   } finally {
     stream.destroy()
   }
-  return { preview, messageCount }
+  const customTitle = summary || firstPrompt || preview
+  return { preview, messageCount, customTitle, firstPrompt, gitBranch, summary }
 }
 
 // --- handlers --------------------------------------------------------------
