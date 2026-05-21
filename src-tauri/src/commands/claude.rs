@@ -48,7 +48,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 // invoke rather than relying on this timeout.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 const SESSION_LIST_LIMIT: usize = 50;
-const PREVIEW_LINE_LIMIT: usize = 20;
+const PREVIEW_LINE_LIMIT: usize = 200;
 const PREVIEW_CHARS: usize = 120;
 const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
@@ -458,6 +458,16 @@ pub(crate) struct SessionListEntry {
     timestamp: u128,
     preview: String,
     message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    custom_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -893,9 +903,30 @@ pub(crate) fn prepare_cli_session_native(
     })?)
 }
 
+#[derive(Default)]
+struct ClaudeSessionPreview {
+    preview: String,
+    message_count: usize,
+    custom_title: Option<String>,
+    first_prompt: Option<String>,
+    git_branch: Option<String>,
+    summary: Option<String>,
+}
+
+fn normalize_session_hint_text(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty()
+        || normalized == "[Request interrupted by user for tool use]"
+        || normalized.starts_with("<local-command-caveat>")
+    {
+        return None;
+    }
+    Some(normalized.chars().take(PREVIEW_CHARS).collect())
+}
+
 fn preview_text_from_claude_content(content: &Value) -> Option<String> {
     if let Some(text) = content.as_str() {
-        return Some(text.chars().take(PREVIEW_CHARS).collect());
+        return normalize_session_hint_text(text);
     }
     content.as_array().and_then(|blocks| {
         blocks.iter().find_map(|block| {
@@ -903,7 +934,7 @@ fn preview_text_from_claude_content(content: &Value) -> Option<String> {
                 block
                     .get("text")
                     .and_then(Value::as_str)
-                    .map(|text| text.chars().take(PREVIEW_CHARS).collect())
+                    .and_then(normalize_session_hint_text)
             } else {
                 None
             }
@@ -911,13 +942,26 @@ fn preview_text_from_claude_content(content: &Value) -> Option<String> {
     })
 }
 
-fn read_claude_session_preview(path: &Path) -> (String, usize) {
+fn summary_text_from_claude_record(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) != Some("summary") {
+        return None;
+    }
+    value
+        .get("summary")
+        .or_else(|| value.get("title"))
+        .or_else(|| value.pointer("/message/summary"))
+        .or_else(|| value.pointer("/message/content"))
+        .or_else(|| value.get("content"))
+        .and_then(Value::as_str)
+        .and_then(normalize_session_hint_text)
+}
+
+fn read_claude_session_preview(path: &Path) -> ClaudeSessionPreview {
     let Ok(file) = fs::File::open(path) else {
-        return (String::new(), 0);
+        return ClaudeSessionPreview::default();
     };
     let reader = BufReader::new(file);
-    let mut preview = String::new();
-    let mut message_count = 0;
+    let mut details = ClaudeSessionPreview::default();
     for line in reader
         .lines()
         .map_while(Result::ok)
@@ -926,14 +970,38 @@ fn read_claude_session_preview(path: &Path) -> (String, usize) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        message_count += 1;
-        if preview.is_empty() && value.get("type").and_then(Value::as_str) == Some("user") {
+        details.message_count += 1;
+        if details.git_branch.is_none() {
+            details.git_branch = value
+                .get("gitBranch")
+                .or_else(|| value.get("git_branch"))
+                .and_then(Value::as_str)
+                .and_then(normalize_session_hint_text);
+        }
+        if let Some(summary) = summary_text_from_claude_record(&value) {
+            details.summary = Some(summary);
+        }
+        if details.first_prompt.is_none()
+            && value.get("type").and_then(Value::as_str) == Some("user")
+        {
             if let Some(text) = preview_text_from_claude_content(&value["message"]["content"]) {
-                preview = text;
+                details.preview = text.clone();
+                details.first_prompt = Some(text);
             }
         }
     }
-    (preview, message_count)
+    details.custom_title = details
+        .summary
+        .clone()
+        .or_else(|| details.first_prompt.clone())
+        .or_else(|| {
+            if details.preview.is_empty() {
+                None
+            } else {
+                Some(details.preview.clone())
+            }
+        });
+    details
 }
 
 fn list_claude_sessions_in_projects(cwd: &str, projects_dir: &Path) -> Vec<SessionListEntry> {
@@ -956,19 +1024,24 @@ fn list_claude_sessions_in_projects(cwd: &str, projects_dir: &Path) -> Vec<Sessi
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            let (preview, message_count) = read_claude_session_preview(&path);
+            let details = read_claude_session_preview(&path);
             results.push(SessionListEntry {
                 sdk_session_id: stem.to_string(),
                 timestamp: metadata
                     .modified()
                     .map(system_time_millis)
                     .unwrap_or_default(),
-                preview: if preview.is_empty() {
+                preview: if details.preview.is_empty() {
                     "(no preview)".to_string()
                 } else {
-                    preview
+                    details.preview
                 },
-                message_count,
+                message_count: details.message_count,
+                custom_title: details.custom_title,
+                first_prompt: details.first_prompt,
+                git_branch: details.git_branch,
+                created_at: None,
+                summary: details.summary,
             });
         }
     }
@@ -1109,6 +1182,11 @@ fn list_codex_sessions_in_root(root: &Path, cwd: &str) -> Vec<SessionListEntry> 
         if sdk_session_id.is_empty() {
             sdk_session_id = fallback_id;
         }
+        let readable_preview = if preview.is_empty() {
+            None
+        } else {
+            Some(preview.clone())
+        };
         let preview = if preview.is_empty() {
             format!(
                 "({}...)",
@@ -1125,6 +1203,11 @@ fn list_codex_sessions_in_root(root: &Path, cwd: &str) -> Vec<SessionListEntry> 
                 .unwrap_or_default(),
             preview,
             message_count: 0,
+            custom_title: readable_preview.clone(),
+            first_prompt: readable_preview,
+            git_branch: None,
+            created_at: None,
+            summary: None,
         });
     }
     results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
@@ -4296,6 +4379,7 @@ mod tests {
             session_dir.join("sdk-1.jsonl"),
             r#"{"type":"system","message":{}}
 {"type":"user","message":{"content":[{"type":"text","text":"hello from history"}]}}
+{"type":"summary","summary":"Meaningful session title"}
 "#,
         )
         .unwrap();
@@ -4304,7 +4388,10 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].sdk_session_id, "sdk-1");
         assert_eq!(sessions[0].preview, "hello from history");
-        assert_eq!(sessions[0].message_count, 2);
+        assert_eq!(sessions[0].custom_title.as_deref(), Some("Meaningful session title"));
+        assert_eq!(sessions[0].first_prompt.as_deref(), Some("hello from history"));
+        assert_eq!(sessions[0].summary.as_deref(), Some("Meaningful session title"));
+        assert_eq!(sessions[0].message_count, 3);
 
         fs::remove_dir_all(base).ok();
     }
