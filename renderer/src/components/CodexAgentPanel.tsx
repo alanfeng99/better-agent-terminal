@@ -3580,17 +3580,29 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         <div className="tl-dot dot-assistant" />
         <div className="tl-content claude-message-assistant">
           {msg.thinking && showThinkingMsg && (() => {
-            const isExpanded = expandedTools.has(msg.id) || (autoExpandThinking && !expandedTools.has(`${msg.id}-collapsed`))
+            const collapsedId = `${msg.id}-collapsed`
+            const isExplicitlyCollapsed = expandedTools.has(collapsedId)
+            const isExpanded = !isExplicitlyCollapsed && (expandedTools.has(msg.id) || autoExpandThinking)
             return (
               <div className="claude-thinking-block">
                 <div
                   className="claude-thinking-toggle"
                   onClick={() => {
-                    if (isExpanded && autoExpandThinking) {
-                      // If auto-expanded, clicking collapses by marking it explicitly collapsed
-                      setExpandedTools(prev => { const next = new Set(prev); next.add(`${msg.id}-collapsed`); return next })
+                    if (isExpanded) {
+                      setExpandedTools(prev => {
+                        const next = new Set(prev)
+                        next.delete(msg.id)
+                        next.add(collapsedId)
+                        return next
+                      })
                     } else {
-                      toggleTool(msg.id, true)
+                      setExpandedTools(prev => {
+                        const next = new Set(prev)
+                        next.delete(collapsedId)
+                        next.add(msg.id)
+                        return next
+                      })
+                      setAutoExpandThinking(true)
                     }
                   }}
                 >
