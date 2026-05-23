@@ -287,8 +287,8 @@ fn infer_profile_id_from_window_id(
 fn normalize_window_entry_profile_ids(
     entries: &mut [WindowEntry],
     profile_safe_ids: &HashMap<String, Option<String>>,
-) -> bool {
-    let mut changed = false;
+) -> HashSet<String> {
+    let mut affected_profile_ids = HashSet::new();
     for entry in entries {
         if entry.detached_workspace_id.is_some() {
             continue;
@@ -297,11 +297,34 @@ fn normalize_window_entry_profile_ids(
             continue;
         };
         if entry.profile_id != profile_id {
+            affected_profile_ids.insert(entry.profile_id.clone());
+            affected_profile_ids.insert(profile_id.clone());
             entry.profile_id = profile_id;
-            changed = true;
         }
     }
-    changed
+    affected_profile_ids
+}
+
+fn write_profile_snapshots_for_ids(
+    app: &AppHandle,
+    entries: &[WindowEntry],
+    profile_ids: &HashSet<String>,
+) {
+    for profile_id in profile_ids {
+        let windows = profile_windows(entries, profile_id);
+        write_profile_snapshot(app, profile_id, &windows);
+    }
+}
+
+fn normalize_entries_for_app(app: &AppHandle, entries: &mut Vec<WindowEntry>) -> bool {
+    let affected_profile_ids =
+        normalize_window_entry_profile_ids(entries, &known_profile_safe_ids(app));
+    if affected_profile_ids.is_empty() {
+        return false;
+    }
+    persist_entries(app, entries);
+    write_profile_snapshots_for_ids(app, entries, &affected_profile_ids);
+    true
 }
 
 fn load_entries(app: &AppHandle) -> Vec<WindowEntry> {
@@ -312,10 +335,16 @@ fn load_entries(app: &AppHandle) -> Vec<WindowEntry> {
         return Vec::new();
     };
     let mut entries = serde_json::from_str::<Vec<WindowEntry>>(&raw).unwrap_or_default();
-    if normalize_window_entry_profile_ids(&mut entries, &known_profile_safe_ids(app)) {
-        persist_entries(app, &entries);
-    }
+    normalize_entries_for_app(app, &mut entries);
     entries
+}
+
+fn ensure_entries_ready(app: &AppHandle, entries: &mut Vec<WindowEntry>) {
+    if entries.is_empty() {
+        *entries = load_entries(app);
+    } else {
+        normalize_entries_for_app(app, entries);
+    }
 }
 
 fn persist_entries(app: &AppHandle, entries: &[WindowEntry]) {
@@ -492,9 +521,12 @@ fn initial_entry_for_window(
     entries: &[WindowEntry],
     window_id: &str,
 ) -> WindowEntry {
+    let inferred_profile_id =
+        infer_profile_id_from_window_id(window_id, &known_profile_safe_ids(app))
+            .unwrap_or_else(|| DEFAULT_PROFILE_ID.into());
     let mut entry = WindowEntry {
         id: window_id.to_string(),
-        profile_id: DEFAULT_PROFILE_ID.into(),
+        profile_id: inferred_profile_id,
         snapshot: empty_snapshot(),
         detached_workspace_id: None,
         detached_parent_window_id: None,
@@ -528,7 +560,16 @@ fn bounds_tuple(value: &Value) -> Option<(f64, f64, f64, f64)> {
 }
 
 fn remove_profile_window_entries(entries: &mut Vec<WindowEntry>, profile_id: &str) {
-    entries.retain(|entry| entry.profile_id != profile_id || entry.detached_workspace_id.is_some());
+    let safe_ids = profile_safe_id_map([profile_id.to_string()]);
+    entries.retain(|entry| {
+        if entry.detached_workspace_id.is_some() {
+            return true;
+        }
+        if entry.profile_id == profile_id {
+            return false;
+        }
+        infer_profile_id_from_window_id(&entry.id, &safe_ids).as_deref() != Some(profile_id)
+    });
 }
 
 fn remove_profile_window_entry_from_entries(
@@ -557,9 +598,7 @@ fn make_detached_window_id(workspace_id: &str) -> String {
 pub fn ensure_entry(app: &AppHandle, window_id: &str) -> WindowEntry {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     if let Some(index) = entries.iter().position(|entry| entry.id == window_id) {
         let entry = entries[index].clone();
         if window_id != "main" || snapshot_has_content(&entry.snapshot) {
@@ -596,9 +635,7 @@ pub fn get_entry(app: &AppHandle, window_id: &str) -> WindowEntry {
 pub fn profile_id_for_window(app: &AppHandle, window_id: &str) -> Option<String> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     entries
         .iter()
         .find(|entry| entry.id == window_id && entry.detached_workspace_id.is_none())
@@ -617,9 +654,7 @@ pub fn has_other_live_profile_windows(
         .collect::<HashSet<_>>();
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     entries.iter().any(|entry| {
         entry.id != current_window_id
             && entry.profile_id == profile_id
@@ -636,9 +671,7 @@ pub fn live_profile_window_count(app: &AppHandle, profile_id: &str) -> usize {
         .collect::<HashSet<_>>();
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     entries
         .iter()
         .filter(|entry| {
@@ -652,9 +685,7 @@ pub fn live_profile_window_count(app: &AppHandle, profile_id: &str) -> usize {
 pub fn window_bounds(app: &AppHandle, window_id: &str) -> Option<(f64, f64, f64, f64)> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     entries
         .iter()
         .find(|entry| entry.id == window_id)
@@ -675,9 +706,7 @@ pub fn update_window_bounds(
     }
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     let Some(entry) = entries.iter_mut().find(|entry| entry.id == window_id) else {
         return;
     };
@@ -697,9 +726,7 @@ pub fn update_window_bounds(
 pub fn mark_window_active(app: &AppHandle, window_id: &str) {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     if let Some(entry) = entries.iter_mut().find(|entry| entry.id == window_id) {
         entry.last_active_at = now_millis();
     } else {
@@ -717,9 +744,7 @@ pub fn latest_live_window_id(app: &AppHandle) -> Option<String> {
         .collect::<HashSet<_>>();
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     latest_live_window_id_for_entries(&entries, &live_window_ids)
 }
 
@@ -784,9 +809,7 @@ pub fn save_workspace_json(app: &AppHandle, window_id: &str, data: &str) -> bool
     };
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     // Ignore saves from windows that no longer have a registry entry.
     // A "Remove from profile" close fires one last workspace.save while the
     // webview tears down — resurrecting the entry there would re-add the
@@ -815,9 +838,7 @@ pub fn load_profile_workspace_into_window(
 ) -> bool {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     let mut entry = entries
         .iter()
         .find(|entry| entry.id == window_id)
@@ -853,9 +874,7 @@ pub fn load_profile_workspace_into_window(
 pub fn profile_workspace_from_existing_window(app: &AppHandle, profile_id: &str) -> Option<Value> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     latest_profile_workspace_value(&entries, profile_id)
 }
 
@@ -871,9 +890,7 @@ pub fn move_workspace(
     }
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
 
     let source_index = entries
         .iter()
@@ -921,9 +938,7 @@ pub fn move_workspace(
 pub fn detached_entry_for_workspace(app: &AppHandle, workspace_id: &str) -> Option<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     entries
         .iter()
         .find(|entry| entry.detached_workspace_id.as_deref() == Some(workspace_id))
@@ -937,9 +952,7 @@ pub fn create_detached_entry(
 ) -> Option<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     if let Some(entry) = entries
         .iter()
         .find(|entry| entry.detached_workspace_id.as_deref() == Some(workspace_id))
@@ -984,9 +997,7 @@ pub fn create_detached_entry(
 pub fn remove_detached_entry(app: &AppHandle, workspace_id: &str) -> Option<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     let index = entries
         .iter()
         .position(|entry| entry.detached_workspace_id.as_deref() == Some(workspace_id))?;
@@ -996,9 +1007,7 @@ pub fn remove_detached_entry(app: &AppHandle, workspace_id: &str) -> Option<Wind
 pub fn entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     entries
         .iter()
         .filter(|entry| entry.profile_id == profile_id && entry.detached_workspace_id.is_none())
@@ -1022,9 +1031,7 @@ pub fn live_window_ids_for_profile(app: &AppHandle, profile_id: &str) -> Vec<Str
 pub fn create_entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     let snapshots = {
         let loaded = read_profile_snapshot(app, profile_id);
         if !loaded.is_empty() {
@@ -1061,9 +1068,7 @@ pub fn create_empty_entry_for_profile(app: &AppHandle, profile_id: &str) -> Wind
     let state = app.state::<WindowRegistryState>();
     let entry = {
         let mut entries = state.entries.lock().unwrap();
-        if entries.is_empty() {
-            *entries = load_entries(app);
-        }
+        ensure_entries_ready(app, &mut entries);
         let entry = WindowEntry {
             id: make_window_id(profile_id, entries.len() + 1),
             profile_id: profile_id.to_string(),
@@ -1089,9 +1094,7 @@ pub fn take_fresh_window_flag(app: &AppHandle, window_id: &str) -> bool {
 pub fn remove_profile_window_entry(app: &AppHandle, window_id: &str) -> Option<String> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
-    if entries.is_empty() {
-        *entries = load_entries(app);
-    }
+    ensure_entries_ready(app, &mut entries);
     let profile_id = remove_profile_window_entry_from_entries(&mut entries, window_id)?;
     persist_entries(app, &entries);
     let windows = profile_windows(&entries, &profile_id);
@@ -1193,7 +1196,9 @@ mod tests {
             },
         ];
 
-        assert!(normalize_window_entry_profile_ids(&mut entries, &safe_ids));
+        let affected = normalize_window_entry_profile_ids(&mut entries, &safe_ids);
+        assert!(affected.contains("default"));
+        assert!(affected.contains("bat"));
         assert_eq!(entries[0].profile_id, "default");
         assert_eq!(entries[1].profile_id, "bat");
         assert_eq!(entries[2].profile_id, "default");
