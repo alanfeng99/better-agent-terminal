@@ -1006,6 +1006,19 @@ pub fn entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry
         .collect()
 }
 
+pub fn live_window_ids_for_profile(app: &AppHandle, profile_id: &str) -> Vec<String> {
+    let live_window_ids = app
+        .webview_windows()
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    entries_for_profile(app, profile_id)
+        .into_iter()
+        .filter(|entry| live_window_ids.contains(&entry.id))
+        .map(|entry| entry.id)
+        .collect()
+}
+
 pub fn create_entries_for_profile(app: &AppHandle, profile_id: &str) -> Vec<WindowEntry> {
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();

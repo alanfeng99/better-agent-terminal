@@ -19,6 +19,7 @@ use crate::remote_core::{
     REMOTE_PROTOCOL_V2,
 };
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, SidecarState};
+use crate::window_registry;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -35,7 +36,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tungstenite::handshake::derive_accept_key;
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::Message;
@@ -1582,12 +1583,14 @@ fn invoke_rust_for_remote(
             string_param(params, "data", channel).map(|data| {
                 let saved = profile_cmd::profile_save_workspace_for_remote(app, &profile_id, &data);
                 if saved {
-                    crate::event_hub::publish_runtime_event(
-                        app,
-                        "workspace:reload",
-                        Value::String(data),
-                        "remote-workspace-save",
-                    );
+                    let payload = Value::String(data.clone());
+                    for window_id in window_registry::live_window_ids_for_profile(app, &profile_id)
+                    {
+                        let _ = app.emit_to(&window_id, "workspace:reload", payload.clone());
+                    }
+                    if let Some(remote_state) = app.try_state::<RustRemoteServerState>() {
+                        remote_state.broadcast_event("workspace:reload", &payload);
+                    }
                 }
                 Value::Bool(saved)
             })

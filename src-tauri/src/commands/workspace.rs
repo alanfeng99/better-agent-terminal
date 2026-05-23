@@ -17,7 +17,6 @@
 use super::app::{log_tauri, renderer_url};
 use crate::app_data;
 use crate::commands::profile as profile_cmd;
-use crate::event_hub::publish_runtime_event;
 use crate::remote_client::RustRemoteClientState;
 use crate::window_registry;
 use serde::Serialize;
@@ -170,23 +169,11 @@ pub async fn workspace_save(
     {
         return remote_result.map(|value| value.as_bool().unwrap_or(false));
     }
-    let emit_app = app.clone();
-    let emit_data = data.clone();
-    let saved =
-        tauri::async_runtime::spawn_blocking(move || workspace_save_impl(app, window_label, data))
-            .await
-            .map_err(|err| CommandError {
-                message: format!("workspace.save worker failed: {err}"),
-            })?;
-    if saved.as_ref().copied().unwrap_or(false) {
-        publish_runtime_event(
-            &emit_app,
-            "workspace:reload",
-            Value::String(emit_data),
-            "workspace-save",
-        );
-    }
-    saved
+    tauri::async_runtime::spawn_blocking(move || workspace_save_impl(app, window_label, data))
+        .await
+        .map_err(|err| CommandError {
+            message: format!("workspace.save worker failed: {err}"),
+        })?
 }
 
 #[tauri::command]
