@@ -1,7 +1,7 @@
 use crate::app_data;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -220,14 +220,102 @@ fn profile_index_path(app: &AppHandle) -> Option<PathBuf> {
     app_data_dir(app).map(|dir| dir.join(PROFILES_DIR).join("index.json"))
 }
 
+fn safe_profile_id(profile_id: &str) -> String {
+    profile_id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
+fn profile_safe_id_map(
+    profile_ids: impl IntoIterator<Item = String>,
+) -> HashMap<String, Option<String>> {
+    let mut map = HashMap::new();
+    for profile_id in profile_ids {
+        let safe = safe_profile_id(&profile_id);
+        map.entry(safe)
+            .and_modify(|existing: &mut Option<String>| {
+                if existing.as_deref() != Some(profile_id.as_str()) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(profile_id));
+    }
+    map
+}
+
+fn known_profile_safe_ids(app: &AppHandle) -> HashMap<String, Option<String>> {
+    let profile_ids = profile_index_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| {
+            value.get("profiles")?.as_array().map(|profiles| {
+                profiles
+                    .iter()
+                    .filter_map(|profile| profile.get("id").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .filter(|profile_ids| !profile_ids.is_empty())
+        .unwrap_or_else(|| vec![DEFAULT_PROFILE_ID.into()]);
+    profile_safe_id_map(profile_ids)
+}
+
+fn infer_profile_id_from_window_id(
+    window_id: &str,
+    profile_safe_ids: &HashMap<String, Option<String>>,
+) -> Option<String> {
+    let suffix = window_id.strip_prefix("profile-")?;
+    profile_safe_ids
+        .iter()
+        .filter_map(|(safe, profile_id)| {
+            let profile_id = profile_id.as_ref()?;
+            if safe.is_empty() {
+                return None;
+            }
+            if suffix == safe || suffix.starts_with(&format!("{safe}-")) {
+                Some((safe.len(), profile_id.clone()))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, profile_id)| profile_id)
+}
+
+fn normalize_window_entry_profile_ids(
+    entries: &mut [WindowEntry],
+    profile_safe_ids: &HashMap<String, Option<String>>,
+) -> bool {
+    let mut changed = false;
+    for entry in entries {
+        if entry.detached_workspace_id.is_some() {
+            continue;
+        }
+        let Some(profile_id) = infer_profile_id_from_window_id(&entry.id, profile_safe_ids) else {
+            continue;
+        };
+        if entry.profile_id != profile_id {
+            entry.profile_id = profile_id;
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn load_entries(app: &AppHandle) -> Vec<WindowEntry> {
     let Some(path) = windows_path(app) else {
         return Vec::new();
     };
-    let Ok(raw) = fs::read_to_string(path) else {
+    let Ok(raw) = fs::read_to_string(&path) else {
         return Vec::new();
     };
-    serde_json::from_str::<Vec<WindowEntry>>(&raw).unwrap_or_default()
+    let mut entries = serde_json::from_str::<Vec<WindowEntry>>(&raw).unwrap_or_default();
+    if normalize_window_entry_profile_ids(&mut entries, &known_profile_safe_ids(app)) {
+        persist_entries(app, &entries);
+    }
+    entries
 }
 
 fn persist_entries(app: &AppHandle, entries: &[WindowEntry]) {
@@ -454,10 +542,7 @@ fn remove_profile_window_entry_from_entries(
 }
 
 fn make_window_id(profile_id: &str, index: usize) -> String {
-    let safe = profile_id
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect::<String>();
+    let safe = safe_profile_id(profile_id);
     format!("profile-{safe}-{}-{index}", now_millis())
 }
 
@@ -978,11 +1063,7 @@ pub fn create_empty_entry_for_profile(app: &AppHandle, profile_id: &str) -> Wind
         persist_entries(app, &entries);
         entry
     };
-    state
-        .fresh_windows
-        .lock()
-        .unwrap()
-        .insert(entry.id.clone());
+    state.fresh_windows.lock().unwrap().insert(entry.id.clone());
     entry
 }
 
@@ -1029,6 +1110,80 @@ mod tests {
         let id = make_window_id("my profile", 1);
         assert!(id.starts_with("profile-my-profile-"));
         assert!(id.ends_with("-1"));
+    }
+
+    #[test]
+    fn infers_profile_id_from_profile_window_id() {
+        let safe_ids = profile_safe_id_map(vec![
+            "default".into(),
+            "bat".into(),
+            "hyper".into(),
+            "tonyq.org".into(),
+        ]);
+
+        assert_eq!(
+            infer_profile_id_from_window_id("profile-bat-1779344644785-23", &safe_ids).as_deref(),
+            Some("bat")
+        );
+        assert_eq!(
+            infer_profile_id_from_window_id("profile-hyper-1778574296888-2", &safe_ids).as_deref(),
+            Some("hyper")
+        );
+        assert_eq!(
+            infer_profile_id_from_window_id("profile-tonyq-org-1778574296888-1", &safe_ids)
+                .as_deref(),
+            Some("tonyq.org")
+        );
+        assert_eq!(
+            infer_profile_id_from_window_id("main", &safe_ids).as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn ambiguous_safe_profile_ids_are_not_inferred() {
+        let safe_ids = profile_safe_id_map(vec!["a/b".into(), "a:b".into()]);
+
+        assert_eq!(
+            infer_profile_id_from_window_id("profile-a-b-1779344644785-1", &safe_ids).as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_window_entry_profile_ids_repairs_migrated_profile_mismatch() {
+        let safe_ids = profile_safe_id_map(vec!["default".into(), "bat".into()]);
+        let mut entries = vec![
+            WindowEntry {
+                id: "main".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+            WindowEntry {
+                id: "profile-bat-1779344644785-23".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: None,
+                detached_parent_window_id: None,
+                last_active_at: 0,
+            },
+            WindowEntry {
+                id: "profile-bat-detached".into(),
+                profile_id: "default".into(),
+                snapshot: empty_snapshot(),
+                detached_workspace_id: Some("w1".into()),
+                detached_parent_window_id: Some("profile-bat-1779344644785-23".into()),
+                last_active_at: 0,
+            },
+        ];
+
+        assert!(normalize_window_entry_profile_ids(&mut entries, &safe_ids));
+        assert_eq!(entries[0].profile_id, "default");
+        assert_eq!(entries[1].profile_id, "bat");
+        assert_eq!(entries[2].profile_id, "default");
     }
 
     #[test]
