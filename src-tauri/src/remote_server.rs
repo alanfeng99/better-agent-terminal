@@ -12,8 +12,9 @@ use crate::electron_safe_storage::{
 };
 use crate::network_addresses;
 use crate::remote_core::{
-    event_params_to_legacy_v1_args, legacy_v1_args_to_params, negotiate_remote_protocol,
-    RemoteProtocol, REMOTE_PROTOCOL_LEGACY_V1, REMOTE_PROTOCOL_V2,
+    canonical_remote_channel, event_params_to_legacy_v1_args, legacy_v1_args_to_params,
+    negotiate_remote_protocol, remote_agent_channel, RemoteProtocol, REMOTE_PROTOCOL_LEGACY_V1,
+    REMOTE_PROTOCOL_V2,
 };
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, SidecarState};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -237,7 +238,7 @@ impl RustRemoteServerState {
 
     pub fn broadcast_event(&self, channel: &str, params: &Value) {
         let args = event_params_to_legacy_v1_args(channel, params);
-        let frame = json!({ "type": "event", "channel": channel, "args": args });
+        let agent_channel = remote_agent_channel(channel);
         let clients = {
             let Ok(guard) = self.inner.lock() else {
                 return;
@@ -248,7 +249,15 @@ impl RustRemoteServerState {
             Arc::clone(&running.clients)
         };
         if let Ok(mut clients) = clients.lock() {
-            clients.retain(|client| client.tx.send(frame.clone()).is_ok());
+            clients.retain(|client| {
+                let frame = json!({
+                    "type": "event",
+                    "channel": agent_channel.clone(),
+                    "params": params.clone(),
+                    "args": args.clone(),
+                });
+                client.tx.send(frame).is_ok()
+            });
         };
     }
 }
@@ -765,6 +774,8 @@ fn invoke_sidecar_for_remote(
     if channel.is_empty() {
         return Err("remote invoke: missing channel".to_string());
     }
+    let dispatch_channel = canonical_remote_channel(channel);
+    let channel = dispatch_channel.as_str();
     let args = frame
         .get("args")
         .and_then(Value::as_array)
@@ -1779,7 +1790,8 @@ fn invoke_rust_for_remote(
 }
 
 fn remote_invoke_timeout(channel: &str) -> Duration {
-    match channel {
+    let canonical = canonical_remote_channel(channel);
+    match canonical.as_str() {
         "claude:start-session"
         | "claude:resume-session"
         | "claude:send-message"

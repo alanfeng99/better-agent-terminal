@@ -35,6 +35,24 @@ pub fn negotiate_remote_protocol(offered: &[String]) -> Option<RemoteProtocol> {
     None
 }
 
+pub fn canonical_remote_channel(channel: &str) -> String {
+    let Some(rest) = channel.strip_prefix("agent:") else {
+        return channel.to_string();
+    };
+    if rest == "list-presets" {
+        channel.to_string()
+    } else {
+        format!("claude:{rest}")
+    }
+}
+
+pub fn remote_agent_channel(channel: &str) -> String {
+    let Some(rest) = channel.strip_prefix("claude:") else {
+        return channel.to_string();
+    };
+    format!("agent:{rest}")
+}
+
 fn object_from_keys(keys: &[&str], args: &[Value]) -> Value {
     let mut map = Map::new();
     for (index, key) in keys.iter().enumerate() {
@@ -57,7 +75,8 @@ fn strip_null_fields(value: Value) -> Value {
 }
 
 fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
-    match channel {
+    let canonical = canonical_remote_channel(channel);
+    match canonical.as_str() {
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
         "workspace:load" => Some(&["profileId"]),
@@ -168,6 +187,8 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
 }
 
 pub fn legacy_v1_args_to_params(channel: &str, args: &[Value]) -> Value {
+    let canonical = canonical_remote_channel(channel);
+    let channel = canonical.as_str();
     if args.is_empty() {
         return Value::Null;
     }
@@ -256,6 +277,8 @@ pub fn normalize_remote_invoke(request: RemoteInvokeRequest) -> HostDispatchRequ
 }
 
 pub fn event_params_to_legacy_v1_args(channel: &str, params: &Value) -> Vec<Value> {
+    let canonical = canonical_remote_channel(channel);
+    let channel = canonical.as_str();
     if let Value::Array(values) = params {
         return values.clone();
     }
@@ -310,7 +333,8 @@ pub fn event_params_to_legacy_v1_args(channel: &str, params: &Value) -> Vec<Valu
 }
 
 pub fn legacy_v1_event_args_to_params(channel: &str, args: &[Value]) -> Value {
-    match channel {
+    let canonical = canonical_remote_channel(channel);
+    match canonical.as_str() {
         "pty:output" => json!({
             "id": args.first().cloned().unwrap_or(Value::Null),
             "data": args.get(1).cloned().unwrap_or(Value::Null),
@@ -367,8 +391,9 @@ fn claude_event_params(args: &[Value], payload_key: &str) -> Value {
 }
 
 pub fn is_proxied_remote_event(channel: &str) -> bool {
+    let canonical = canonical_remote_channel(channel);
     matches!(
-        channel,
+        canonical.as_str(),
         "pty:output"
             | "pty:exit"
             | "pty:viewport-state"
@@ -593,6 +618,35 @@ mod tests {
             invoke_params_for_protocol(
                 RemoteProtocol::V2,
                 "claude:send-message",
+                &[json!("legacy")],
+                Some(json!({ "sessionId": "v2", "prompt": "hi" })),
+            ),
+            json!({ "sessionId": "v2", "prompt": "hi" })
+        );
+    }
+
+    #[test]
+    fn agent_channels_alias_existing_claude_runtime_channels() {
+        assert_eq!(
+            canonical_remote_channel("agent:send-message"),
+            "claude:send-message"
+        );
+        assert_eq!(
+            remote_agent_channel("claude:send-message"),
+            "agent:send-message"
+        );
+        assert_eq!(
+            canonical_remote_channel("agent:list-presets"),
+            "agent:list-presets"
+        );
+        assert_eq!(
+            legacy_v1_args_to_params("agent:get-supported-codex-sandbox-modes", &[json!("s1")]),
+            json!({ "sessionId": "s1" })
+        );
+        assert_eq!(
+            invoke_params_for_protocol(
+                RemoteProtocol::V2,
+                "agent:send-message",
                 &[json!("legacy")],
                 Some(json!({ "sessionId": "v2", "prompt": "hi" })),
             ),

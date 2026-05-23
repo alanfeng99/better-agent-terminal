@@ -23,6 +23,7 @@ use crate::commands::profile as profile_cmd;
 use crate::commands::worktree as worktree_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::remote_client::RustRemoteClientState;
+use crate::remote_core::remote_agent_channel;
 use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, BridgeError, SidecarState};
 use crate::subprocess::hide_console_window;
 use crate::window_registry;
@@ -153,14 +154,16 @@ async fn remote_invoke_for_window(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let remote_channel = remote_agent_channel(channel);
+    let error_channel = remote_channel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         remote_client
-            .invoke(channel, args, timeout)
+            .invoke(&remote_channel, args, timeout)
             .map_err(BridgeError::from)
     })
     .await
     .map_err(|err| BridgeError {
-        message: format!("remote.invoke {channel} worker failed: {err}"),
+        message: format!("remote.invoke {error_channel} worker failed: {err}"),
     });
     Some(match result {
         Ok(value) => value,
@@ -3278,7 +3281,7 @@ pub async fn claude_get_supported_efforts(
         &app,
         &state,
         &window,
-        "claude:get-supported-efforts",
+        "agent:get-supported-efforts",
         vec![json!(session_id.clone())],
         DEFAULT_TIMEOUT,
     )
@@ -3301,7 +3304,7 @@ pub async fn claude_get_supported_codex_sandbox_modes(
         &app,
         &state,
         &window,
-        "claude:get-supported-codex-sandbox-modes",
+        "agent:get-supported-codex-sandbox-modes",
         vec![json!(session_id.clone())],
         DEFAULT_TIMEOUT,
     )
@@ -3325,7 +3328,7 @@ pub async fn claude_get_supported_codex_approval_policies(
         &app,
         &state,
         &window,
-        "claude:get-supported-codex-approval-policies",
+        "agent:get-supported-codex-approval-policies",
         vec![json!(session_id.clone())],
         DEFAULT_TIMEOUT,
     )

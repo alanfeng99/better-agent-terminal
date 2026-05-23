@@ -1,6 +1,7 @@
 use crate::event_hub::publish_runtime_event;
 use crate::remote_core::{
-    is_proxied_remote_event, legacy_v1_event_args_to_params, REMOTE_PROTOCOL_LEGACY_V1,
+    canonical_remote_channel, is_proxied_remote_event, legacy_v1_event_args_to_params,
+    REMOTE_PROTOCOL_LEGACY_V1, REMOTE_PROTOCOL_V2,
 };
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -334,23 +335,22 @@ fn handle_frame(app: &AppHandle, pending: &mut HashMap<String, PendingInvoke>, t
         return;
     }
     if frame_type == "event" {
-        let Some(channel) = frame.get("channel").and_then(Value::as_str) else {
+        let Some(raw_channel) = frame.get("channel").and_then(Value::as_str) else {
             return;
         };
-        if !is_proxied_remote_event(channel) {
+        let channel = canonical_remote_channel(raw_channel);
+        if !is_proxied_remote_event(&channel) {
             return;
         }
-        let args = frame
-            .get("args")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        publish_runtime_event(
-            app,
-            channel,
-            legacy_v1_event_args_to_params(channel, &args),
-            "rust-remote-client",
-        );
+        let params = frame.get("params").cloned().unwrap_or_else(|| {
+            let args = frame
+                .get("args")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            legacy_v1_event_args_to_params(&channel, &args)
+        });
+        publish_runtime_event(app, &channel, params, "rust-remote-client");
     }
 }
 
@@ -429,7 +429,7 @@ fn connect_socket(
             "type": "auth",
             "id": format!("{}-auth", unix_ms()),
             "token": token,
-            "protocols": [REMOTE_PROTOCOL_LEGACY_V1],
+            "protocols": [REMOTE_PROTOCOL_V2, REMOTE_PROTOCOL_LEGACY_V1],
             "args": [label],
         }),
     )?;
