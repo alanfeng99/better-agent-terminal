@@ -9,7 +9,6 @@ export interface AgentPresetMenuGroups {
 
 const PRESET_ORDER = [
   'claude-code',
-  'claude-code-v2',
   'codex-agent',
   'claude-cli',
   'codex-cli',

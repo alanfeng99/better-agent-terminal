@@ -930,24 +930,70 @@ pub fn move_workspace(
     insert_index: usize,
 ) -> Option<(String, String)> {
     if source_window_id == target_window_id {
+        debug_registry_log(
+            app,
+            format!(
+                "move workspace ignored reason=same-window source={} target={} workspace={}",
+                source_window_id, target_window_id, workspace_id
+            ),
+        );
         return None;
     }
     let state = app.state::<WindowRegistryState>();
     let mut entries = state.entries.lock().unwrap();
     ensure_entries_ready(app, &mut entries);
 
-    let source_index = entries
+    let Some(source_index) = entries
         .iter()
-        .position(|entry| entry.id == source_window_id)?;
-    let target_index = entries
+        .position(|entry| entry.id == source_window_id)
+    else {
+        debug_registry_log(
+            app,
+            format!(
+                "move workspace failed reason=missing-source source={} target={} workspace={} entries={}",
+                source_window_id,
+                target_window_id,
+                workspace_id,
+                entries.len()
+            ),
+        );
+        return None;
+    };
+    let Some(target_index) = entries
         .iter()
-        .position(|entry| entry.id == target_window_id)?;
+        .position(|entry| entry.id == target_window_id)
+    else {
+        debug_registry_log(
+            app,
+            format!(
+                "move workspace failed reason=missing-target source={} target={} workspace={} entries={}",
+                source_window_id,
+                target_window_id,
+                workspace_id,
+                entries.len()
+            ),
+        );
+        return None;
+    };
     let mut source = entries[source_index].clone();
     let mut target = entries[target_index].clone();
 
     let source_profile_id = source.profile_id.clone();
     let target_profile_id = target.profile_id.clone();
     if !move_workspace_between_entries(&mut source, &mut target, workspace_id, insert_index) {
+        debug_registry_log(
+            app,
+            format!(
+                "move workspace failed reason=missing-workspace source={} target={} workspace={} sourceProfile={} targetProfile={} sourceWorkspaces={} targetWorkspaces={}",
+                source_window_id,
+                target_window_id,
+                workspace_id,
+                source_profile_id,
+                target_profile_id,
+                value_array_len(&source.snapshot.workspaces),
+                value_array_len(&target.snapshot.workspaces)
+            ),
+        );
         return None;
     }
 
@@ -969,6 +1015,19 @@ pub fn move_workspace(
         let target_windows = profile_windows(&entries, &target_profile_id);
         write_profile_snapshot(app, &target_profile_id, &target_windows);
     }
+    debug_registry_log(
+        app,
+        format!(
+            "move workspace wrote source={} target={} workspace={} sourceProfile={} targetProfile={} sourceWorkspaces={} targetWorkspaces={}",
+            source_window_id,
+            target_window_id,
+            workspace_id,
+            source_profile_id,
+            target_profile_id,
+            value_array_len(&source.snapshot.workspaces),
+            value_array_len(&target.snapshot.workspaces)
+        ),
+    );
 
     let source_json =
         serde_json::to_string_pretty(&workspace_value_from_snapshot(&source.snapshot))

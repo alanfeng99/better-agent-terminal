@@ -262,7 +262,15 @@ pub async fn workspace_move_to_window(
     workspace_id: String,
     insert_index: usize,
 ) -> Result<bool, CommandError> {
+    debug_workspace_log(
+        &app,
+        format!(
+            "moveToWindow requested source={} target={} workspace={} insertIndex={}",
+            source_window_id, target_window_id, workspace_id, insert_index
+        ),
+    );
     let worker_app = app.clone();
+    let worker_workspace_id = workspace_id.clone();
     let emit_source_window_id = source_window_id.clone();
     let emit_target_window_id = target_window_id.clone();
     let moved = tauri::async_runtime::spawn_blocking(move || {
@@ -270,7 +278,7 @@ pub async fn workspace_move_to_window(
             &worker_app,
             &source_window_id,
             &target_window_id,
-            &workspace_id,
+            &worker_workspace_id,
             insert_index,
         )
     })
@@ -280,8 +288,26 @@ pub async fn workspace_move_to_window(
     })?;
 
     let Some((source_json, target_json)) = moved else {
+        debug_workspace_log(
+            &app,
+            format!(
+                "moveToWindow rejected source={} target={} workspace={}",
+                emit_source_window_id, emit_target_window_id, workspace_id
+            ),
+        );
         return Ok(false);
     };
+    debug_workspace_log(
+        &app,
+        format!(
+            "moveToWindow emitting source={} target={} workspace={} sourceBytes={} targetBytes={}",
+            emit_source_window_id,
+            emit_target_window_id,
+            workspace_id,
+            source_json.len(),
+            target_json.len()
+        ),
+    );
     let _ = app.emit_to(&emit_source_window_id, "workspace:reload", source_json);
     let _ = app.emit_to(&emit_target_window_id, "workspace:reload", target_json);
     Ok(true)

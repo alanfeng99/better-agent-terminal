@@ -103,5 +103,5 @@ export function getVisiblePresets(isDebugOverride?: boolean): AgentPreset[] {
     ? isDebugOverride
     : typeof window !== 'undefined'
       && (window as unknown as { batAppAPI?: { debug?: { isDebugMode?: boolean } } }).batAppAPI?.debug?.isDebugMode === true
-  return AGENT_PRESETS.filter(p => !p.debug || isDebug)
+  return AGENT_PRESETS.filter(p => p.id !== 'claude-code-v2' && (!p.debug || isDebug))
 }

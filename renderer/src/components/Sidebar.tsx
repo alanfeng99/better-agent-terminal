@@ -18,6 +18,11 @@ interface WorkspaceMovePayload {
   timestamp?: number
 }
 
+function debugLog(...args: unknown[]): void {
+  if (host.debug.isDebugMode !== true) return
+  void host.debug.log(...args).catch(() => {})
+}
+
 function parseWorkspaceMovePayload(raw: string | null): WorkspaceMovePayload | null {
   if (!raw) return null
   try {
@@ -188,7 +193,19 @@ export function Sidebar({
   }, [contextMenu])
 
   const moveWorkspaceToWindow = useCallback(async (sourceWindowId: string, targetWindowId: string, workspaceId: string, insertIndex: number) => {
+    try {
+      await workspaceStore.save()
+    } catch (error) {
+      debugLog('[Sidebar] target save before moveToWindow failed', {
+        sourceWindowId,
+        targetWindowId,
+        workspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+    debugLog('[Sidebar] moveToWindow requested', { sourceWindowId, targetWindowId, workspaceId, insertIndex })
     const ok = await host.workspace.moveToWindow(sourceWindowId, targetWindowId, workspaceId, insertIndex)
+    debugLog('[Sidebar] moveToWindow result', { sourceWindowId, targetWindowId, workspaceId, ok })
     if (!ok) window.alert('Workspace move failed. Try saving both windows, then drag again.')
   }, [])
 
@@ -282,6 +299,7 @@ export function Sidebar({
   const parseCrossWindowDrop = useCallback((dataTransfer: DataTransfer): { workspaceId: string; sourceWindowId: string } | null => {
     if (!windowId) return null
     const parsed = parseWorkspaceMovePayload(dataTransfer.getData(WORKSPACE_MOVE_MIME))
+      || parseWorkspaceMovePayload(dataTransfer.getData('text/plain'))
       || readStoredWorkspaceMove()
     if (parsed?.sourceWindowId && parsed.sourceWindowId !== windowId) return parsed
     return null
@@ -300,7 +318,17 @@ export function Sidebar({
         timestamp: Date.now(),
       }
       e.dataTransfer.setData(WORKSPACE_MOVE_MIME, JSON.stringify(payload))
+      // macOS/Tauri cross-window drags may preserve text/plain while dropping
+      // custom MIME data, so keep the same payload in the plain fallback too.
+      e.dataTransfer.setData('text/plain', JSON.stringify(payload))
       writeStoredWorkspaceMove(payload)
+      void workspaceStore.save().catch((error) => {
+        debugLog('[Sidebar] source save on dragStart failed', {
+          sourceWindowId: windowId,
+          workspaceId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
     }
     requestAnimationFrame(() => {
       const target = e.target as HTMLElement
@@ -326,7 +354,12 @@ export function Sidebar({
 
     if (draggedId === workspaceId) return
     // For cross-window drags (no local draggedId), check MIME type
-    if (!draggedId && !e.dataTransfer.types.includes(WORKSPACE_MOVE_MIME) && !readStoredWorkspaceMove()) return
+    if (
+      !draggedId
+      && !e.dataTransfer.types.includes(WORKSPACE_MOVE_MIME)
+      && !e.dataTransfer.types.includes('text/plain')
+      && !readStoredWorkspaceMove()
+    ) return
 
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
     const midY = rect.top + rect.height / 2
@@ -437,7 +470,11 @@ export function Sidebar({
         onDragOver={(e) => {
           // Only react to external file drops or cross-window workspace drags (not internal workspace reorder)
           if (draggedId) return
-          if (e.dataTransfer.types.includes(WORKSPACE_MOVE_MIME) || readStoredWorkspaceMove()) {
+          if (
+            e.dataTransfer.types.includes(WORKSPACE_MOVE_MIME)
+            || e.dataTransfer.types.includes('text/plain')
+            || readStoredWorkspaceMove()
+          ) {
             e.preventDefault()
             e.dataTransfer.dropEffect = 'move'
             return

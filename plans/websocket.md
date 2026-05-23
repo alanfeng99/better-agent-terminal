@@ -355,6 +355,7 @@ Workspace / profile:
 ```text
 workspace:load
 workspace:save
+workspace:move-to-window
 agent:list-sessions
 profile:list
 profile:get-active-ids
@@ -386,6 +387,7 @@ Workspace state:
 - After a successful `workspace:save`, the host broadcasts `workspace:reload` with the saved workspace JSON.
 - Clients receiving `workspace:reload` must replace/reload their workspace state from the payload.
 - Host-side window/workspace changes that affect the serialized workspace view should also broadcast `workspace:reload`.
+- `workspace:move-to-window` moves one workspace from a source host window to a target host window. Clients must send the source window id, target window id, workspace id, and insert index. The host applies the move, persists both affected window/profile snapshots, then emits `workspace:reload` for both affected windows.
 
 Profile/window state:
 
@@ -418,6 +420,7 @@ Workspace lifecycle:
 
 - Workspace creation, deletion, reorder, rename, group changes, terminal add/remove, and window detach/reattach are host-owned workspace mutations.
 - Clients request these mutations through the relevant invoke path, usually ending in `workspace:save` or a workspace/window command.
+- Before requesting a cross-window workspace move, both participating clients should flush their current workspace snapshot to the host when possible. The move is still accepted or rejected by the host's canonical state, not by the client's drag payload.
 - After the host accepts a workspace mutation, it broadcasts `workspace:reload` with the canonical serialized workspace state for that profile/window scope.
 - Clients must reconcile local UI to the `workspace:reload` payload.
 - If the currently selected workspace is removed in the host payload, the client must switch to the payload's `activeWorkspaceId` when present.
@@ -461,6 +464,15 @@ client requests workspace mutation
   -> host returns invoke-result/invoke-error
   -> on success host broadcasts workspace:reload
   -> all clients apply the host payload
+
+client requests workspace move between windows/profiles
+  -> source and target clients flush their latest workspace snapshots when possible
+  -> client invokes workspace:move-to-window on the host
+  -> host validates source window, target window, and workspace id against canonical registry state
+  -> host moves the workspace and associated terminals, then persists both affected window/profile snapshots
+  -> host returns invoke-result/invoke-error
+  -> host emits workspace:reload to the source and target windows
+  -> all affected clients render only the host-reflected workspace state
 
 client opens session/resume list
   -> client invokes agent:list-sessions against host
