@@ -213,6 +213,21 @@ Timeouts:
 
 ## Current Channel Groups
 
+App metadata:
+
+```text
+app:get-version
+```
+
+Result:
+
+```json
+{
+  "version": "3.0.0",
+  "protocol": "bat-remote/v2"
+}
+```
+
 Remote runtime metadata:
 
 ```text

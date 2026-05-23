@@ -77,6 +77,7 @@ fn strip_null_fields(value: Value) -> Value {
 fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
     let canonical = canonical_remote_channel(channel);
     match canonical.as_str() {
+        "app:get-version" => Some(&[]),
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
         "workspace:load" => Some(&["profileId"]),
@@ -651,6 +652,18 @@ mod tests {
                 Some(json!({ "sessionId": "v2", "prompt": "hi" })),
             ),
             json!({ "sessionId": "v2", "prompt": "hi" })
+        );
+    }
+
+    #[test]
+    fn maps_app_version_without_params() {
+        assert_eq!(
+            legacy_v1_args_to_params("app:get-version", &[]),
+            Value::Null
+        );
+        assert_eq!(
+            invoke_params_for_protocol(RemoteProtocol::V2, "app:get-version", &[], None),
+            Value::Null
         );
     }
 

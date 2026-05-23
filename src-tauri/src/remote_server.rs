@@ -932,6 +932,10 @@ fn invoke_rust_for_remote(
     params: &Value,
 ) -> Option<Result<Value, String>> {
     let result = match channel {
+        "app:get-version" => Ok(json!({
+            "version": app.package_info().version.to_string(),
+            "protocol": REMOTE_PROTOCOL_V2,
+        })),
         "agent:list-presets" => Ok(agent_cmd::agent_preset_ids()),
         "claude:start-session" => {
             let options = params.get("options").cloned().unwrap_or(Value::Null);
