@@ -8,6 +8,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { workspaceStore } from '../stores/workspace-store'
 import { settingsStore } from '../stores/settings-store'
 import type { AgentPresetId } from '../types/agent-presets'
+import { createPtyInputWriter, type PtyInputWriter } from '../utils/pty-input-writer'
 import '@xterm/xterm/css/xterm.css'
 
 const dlog = (...args: unknown[]) => host.debug.log(...args)
@@ -80,6 +81,7 @@ export const TerminalPanel = memo(function TerminalPanel({
   const supportsImagePaste = agentPreset === 'codex-cli' || isClaudeCliPreset(agentPreset)
   const isClaudeCliTerminal = isClaudeCliPreset(agentPreset)
   const ptyReadyRef = useRef(ptyReady)
+  const ptyInputRef = useRef<PtyInputWriter | null>(null)
   const onReadySizeRef = useRef(onReadySize)
   const viewportStateRef = useRef(viewportState)
   const { t } = useTranslation()
@@ -151,6 +153,15 @@ export const TerminalPanel = memo(function TerminalPanel({
 
   const pasteAbortRef = useRef<{ cancelled: boolean } | null>(null)
 
+  const writePtyInput = (data: string) => {
+    const writer = ptyInputRef.current
+    if (writer) {
+      writer.write(data)
+    } else {
+      host.pty.write(terminalId, data)
+    }
+  }
+
   // Chunked write with sequential scheduling (avoids creating thousands of timers)
   const writeChunked = (text: string) => {
     const CHUNK_SIZE = 2000
@@ -166,7 +177,7 @@ export const TerminalPanel = memo(function TerminalPanel({
       }
       const chunk = text.slice(offset, offset + CHUNK_SIZE)
       offset += CHUNK_SIZE
-      host.pty.write(terminalId, chunk)
+      writePtyInput(chunk)
       setTimeout(sendNext, DELAY)
     }
     sendNext()
@@ -199,7 +210,7 @@ export const TerminalPanel = memo(function TerminalPanel({
     if (text.length > 4000) {
       writeChunked(text)
     } else {
-      host.pty.write(terminalId, text)
+      writePtyInput(text)
     }
   }
 
@@ -223,7 +234,7 @@ export const TerminalPanel = memo(function TerminalPanel({
     }
     dlog(`[paste-image] writeImage → ${written}`)
     if (!written) return false
-    host.pty.write(terminalId, '\x1bv')
+    writePtyInput('\x1bv')
     dlog(`[paste-image] sent \\x1bv to pty terminal=${terminalId}`)
     return true
   }
@@ -307,7 +318,7 @@ export const TerminalPanel = memo(function TerminalPanel({
                 setTimeout(() => {
                   const currentTerminal = workspaceStore.getState().terminals.find(t => t.id === terminalId)
                   if (isActiveRef.current && currentTerminal && !currentTerminal.hasUserInput && !currentTerminal.agentCommandSent) {
-                    host.pty.write(terminalId, agentCommand + '\r')
+                    writePtyInput(agentCommand + '\r')
                     workspaceStore.markAgentCommandSent(terminalId)
                   }
                 }, 3000)
@@ -510,26 +521,11 @@ export const TerminalPanel = memo(function TerminalPanel({
     fitAddonRef.current = fitAddon
     setTerminalReady(true)
 
-    // Handle terminal input. Coalesce keystrokes that arrive within the
-    // same task tick into a single IPC write so rapid typing cannot race
-    // multiple concurrent fire-and-forget invokes on the Rust side.
-    let pendingInput = ''
-    let inputFlushScheduled = false
-    let inputWriteChain: Promise<unknown> = Promise.resolve()
-    const flushPendingInput = () => {
-      inputFlushScheduled = false
-      if (!pendingInput) return
-      const chunk = pendingInput
-      pendingInput = ''
-      inputWriteChain = inputWriteChain.then(() => host.pty.write(terminalId, chunk)).catch(() => {})
-    }
+    const ptyInput = createPtyInputWriter((chunk) => host.pty.write(terminalId, chunk))
+    ptyInputRef.current = ptyInput
     terminal.onData((data) => {
       if (!ptyReadyRef.current) return
-      pendingInput += data
-      if (!inputFlushScheduled) {
-        inputFlushScheduled = true
-        queueMicrotask(flushPendingInput)
-      }
+      ptyInput.write(data)
       if (terminalType === 'code-agent') {
         workspaceStore.markHasUserInput(terminalId)
       }
@@ -570,7 +566,7 @@ export const TerminalPanel = memo(function TerminalPanel({
 
       if (isPlainBackspace) {
         event.preventDefault()
-        host.pty.write(terminalId, '\x7f')
+        ptyInput.write('\x7f')
         if (terminalType === 'code-agent') {
           workspaceStore.markHasUserInput(terminalId)
         }
@@ -581,7 +577,7 @@ export const TerminalPanel = memo(function TerminalPanel({
       if (event.shiftKey && event.key === 'Enter') {
         event.preventDefault()
         // Send newline character to allow multiline input
-        host.pty.write(terminalId, '\n')
+        ptyInput.write('\n')
         return false
       }
       // Ctrl+Shift+C for copy
@@ -715,6 +711,10 @@ export const TerminalPanel = memo(function TerminalPanel({
       if (xtermTextarea) {
         xtermTextarea.removeEventListener('compositionstart', onCompositionStart)
         xtermTextarea.removeEventListener('compositionend', onCompositionEnd)
+      }
+      ptyInput.dispose()
+      if (ptyInputRef.current === ptyInput) {
+        ptyInputRef.current = null
       }
       containerEl.removeEventListener('contextmenu', onContextMenu)
       doResizeRef.current = null
