@@ -16,11 +16,14 @@
 // bytes into Tauri events and to wait on the child exit.
 
 use crate::app_data;
+use crate::commands::profile as profile_cmd;
 use crate::commands::settings::resolve_shell_path;
 use crate::commands::worker_buffer::{append_worker_log_lines, WorkerBufferState};
+use crate::remote_client::RustRemoteClientState;
+use crate::window_registry;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -28,7 +31,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
+
+const REMOTE_PTY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -43,7 +48,56 @@ impl<E: std::fmt::Display> From<E> for CommandError {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
+    let Some(profile_id) = window_registry::profile_id_for_window(app, window.label()) else {
+        return false;
+    };
+    profile_cmd::profile_get(app.clone(), profile_id)
+        .map(|profile| profile.kind == "remote")
+        .unwrap_or(false)
+}
+
+fn remote_invoke_for_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    channel: &str,
+    args: Vec<Value>,
+) -> Option<Result<Value, CommandError>> {
+    if !is_remote_profile_window(app, window) {
+        return None;
+    }
+    let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    Some(
+        remote_client
+            .invoke(channel, args, REMOTE_PTY_TIMEOUT)
+            .map_err(CommandError::from),
+    )
+}
+
+fn remote_value_for_window<T>(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    channel: &str,
+    args: Vec<Value>,
+) -> Option<Result<T, CommandError>>
+where
+    T: DeserializeOwned,
+{
+    remote_invoke_for_window(app, window, channel, args).map(|result| {
+        result.and_then(|value| serde_json::from_value(value).map_err(CommandError::from))
+    })
+}
+
+fn remote_unit_for_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    channel: &str,
+    args: Vec<Value>,
+) -> Option<Result<(), CommandError>> {
+    remote_invoke_for_window(app, window, channel, args).map(|result| result.map(|_| ()))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePtyOptions {
     pub id: String,
@@ -216,7 +270,7 @@ pub struct TerminalViewportState {
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SetViewportModeOptions {
     #[serde(default)]
@@ -711,10 +765,19 @@ pub(crate) fn start_pty_session(
 #[tauri::command]
 pub async fn pty_create(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, PtyState>,
     worker_buffer: State<'_, WorkerBufferState>,
     options: CreatePtyOptions,
 ) -> Result<String, CommandError> {
+    if let Some(result) = remote_value_for_window(
+        &app,
+        &window,
+        "pty:create",
+        vec![json!(options.clone())],
+    ) {
+        return result;
+    }
     let handle = state.handle();
     let worker_buffer_handle = worker_buffer.handle();
     tauri::async_runtime::spawn_blocking(move || {
@@ -727,7 +790,21 @@ pub async fn pty_create(
 }
 
 #[tauri::command]
-pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), CommandError> {
+pub fn pty_write(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PtyState>,
+    id: String,
+    data: String,
+) -> Result<(), CommandError> {
+    if let Some(result) = remote_unit_for_window(
+        &app,
+        &window,
+        "pty:write",
+        vec![json!(id.clone()), json!(data.clone())],
+    ) {
+        return result;
+    }
     write_pty_session(&state, &id, &data)
 }
 
@@ -761,18 +838,37 @@ pub(crate) fn read_pty_output_buffer(state: &PtyState, id: &str) -> Result<Strin
 }
 
 #[tauri::command]
-pub fn pty_read_buffer(state: State<'_, PtyState>, id: String) -> Result<String, CommandError> {
+pub fn pty_read_buffer(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PtyState>,
+    id: String,
+) -> Result<String, CommandError> {
+    if let Some(result) =
+        remote_value_for_window(&app, &window, "pty:read-buffer", vec![json!(id.clone())])
+    {
+        return result;
+    }
     read_pty_output_buffer(&state, &id)
 }
 
 #[tauri::command]
 pub fn pty_resize(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, PtyState>,
     id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), CommandError> {
+    if let Some(result) = remote_unit_for_window(
+        &app,
+        &window,
+        "pty:resize",
+        vec![json!(id.clone()), json!(cols), json!(rows)],
+    ) {
+        return result;
+    }
     resize_pty_session_from_desktop(&app, &state, &id, cols, rows).map(|_| ())
 }
 
@@ -929,37 +1025,80 @@ pub(crate) fn set_pty_viewport_size(
 
 #[tauri::command]
 pub fn pty_get_viewport_state(
+    app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, PtyState>,
     id: String,
 ) -> Result<TerminalViewportState, CommandError> {
+    if let Some(result) = remote_value_for_window(
+        &app,
+        &window,
+        "pty:get-viewport-state",
+        vec![json!(id.clone())],
+    ) {
+        return result;
+    }
     get_pty_viewport_state(&state, &id)
 }
 
 #[tauri::command]
 pub fn pty_set_viewport_mode(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, PtyState>,
     id: String,
     mode: TerminalViewportMode,
     options: Option<SetViewportModeOptions>,
 ) -> Result<TerminalViewportState, CommandError> {
+    if let Some(result) = remote_value_for_window(
+        &app,
+        &window,
+        "pty:set-viewport-mode",
+        vec![json!(id.clone()), json!(mode.clone()), json!(options.clone())],
+    ) {
+        return result;
+    }
     set_pty_viewport_mode(&app, &state, &id, mode, options)
 }
 
 #[tauri::command]
 pub fn pty_set_viewport_size(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, PtyState>,
     id: String,
     cols: u16,
     rows: u16,
     source: TerminalViewportSource,
 ) -> Result<TerminalViewportState, CommandError> {
+    if let Some(result) = remote_value_for_window(
+        &app,
+        &window,
+        "pty:set-viewport-size",
+        vec![
+            json!(id.clone()),
+            json!(cols),
+            json!(rows),
+            json!(source.clone()),
+        ],
+    ) {
+        return result;
+    }
     set_pty_viewport_size(&app, &state, &id, cols, rows, source)
 }
 
 #[tauri::command]
-pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), CommandError> {
+pub fn pty_kill(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PtyState>,
+    id: String,
+) -> Result<(), CommandError> {
+    if let Some(result) =
+        remote_unit_for_window(&app, &window, "pty:kill", vec![json!(id.clone())])
+    {
+        return result;
+    }
     kill_pty_session(&state, &id)
 }
 
@@ -975,6 +1114,30 @@ pub(crate) fn kill_pty_session(state: &PtyState, id: &str) -> Result<(), Command
 
 #[tauri::command]
 pub async fn pty_restart(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PtyState>,
+    id: String,
+    cwd: String,
+    shell: Option<String>,
+) -> Result<bool, CommandError> {
+    if let Some(result) = remote_value_for_window(
+        &app,
+        &window,
+        "pty:restart",
+        vec![json!(id.clone()), json!(cwd.clone()), json!(shell.clone())],
+    ) {
+        return result;
+    }
+    let handle = state.handle();
+    tauri::async_runtime::spawn_blocking(move || pty_restart_impl(app, handle, id, cwd, shell))
+        .await
+        .map_err(|e| CommandError {
+            message: format!("pty.restart worker failed: {e}"),
+        })?
+}
+
+pub(crate) async fn pty_restart_native(
     app: AppHandle,
     state: State<'_, PtyState>,
     id: String,
@@ -1039,12 +1202,26 @@ fn pty_restart_impl(
     Ok(true)
 }
 
-#[tauri::command]
-pub fn pty_get_cwd(state: State<'_, PtyState>, id: String) -> Result<Option<String>, CommandError> {
+pub(crate) fn get_pty_cwd(state: &PtyState, id: &str) -> Result<Option<String>, CommandError> {
     let map = state.inner.lock().map_err(|e| CommandError {
         message: e.to_string(),
     })?;
-    Ok(map.get(&id).map(|session| session.cwd.clone()))
+    Ok(map.get(id).map(|session| session.cwd.clone()))
+}
+
+#[tauri::command]
+pub fn pty_get_cwd(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PtyState>,
+    id: String,
+) -> Result<Option<String>, CommandError> {
+    if let Some(result) =
+        remote_value_for_window(&app, &window, "pty:get-cwd", vec![json!(id.clone())])
+    {
+        return result;
+    }
+    get_pty_cwd(&state, &id)
 }
 
 #[cfg(test)]

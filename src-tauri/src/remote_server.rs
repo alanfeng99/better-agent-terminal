@@ -1415,7 +1415,7 @@ fn invoke_rust_for_remote(
         "pty:restart" => string_param(params, "id", channel).and_then(|id| {
             string_param(params, "cwd", channel).and_then(|cwd| {
                 let shell = optional_string_param(params, "shell");
-                tauri::async_runtime::block_on(pty_cmd::pty_restart(
+                tauri::async_runtime::block_on(pty_cmd::pty_restart_native(
                     app.clone(),
                     app.state::<pty_cmd::PtyState>(),
                     id,
@@ -1427,7 +1427,8 @@ fn invoke_rust_for_remote(
             })
         }),
         "pty:get-cwd" => string_param(params, "id", channel).and_then(|id| {
-            pty_cmd::pty_get_cwd(app.state::<pty_cmd::PtyState>(), id)
+            let state = app.state::<pty_cmd::PtyState>();
+            pty_cmd::get_pty_cwd(&state, &id)
                 .map(|cwd| cwd.map(Value::String).unwrap_or(Value::Null))
                 .map_err(|err| format!("{err:?}"))
         }),
