@@ -162,6 +162,7 @@ export default function App() {
   // Track workspaces that have been visited (for lazy mounting)
   const [mountedWorkspaces, setMountedWorkspaces] = useState<Set<string>>(new Set())
   const lastRenderSummaryRef = useRef<string>('')
+  const currentWindowIdRef = useRef<string | null>(null)
 
   // Sync window title with active profile, window index, and account info
   const [windowIndex, setWindowIndex] = useState<number>(1)
@@ -190,13 +191,37 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    let disposed = false
+    const rememberWindowId = async (): Promise<string | null> => {
+      const cached = currentWindowIdRef.current
+      if (cached) return cached
+      const windowId = await host.app.getWindowId().catch(() => null)
+      if (!disposed && windowId) {
+        currentWindowIdRef.current = windowId
+        workspaceStore.setWindowId(windowId)
+      }
+      return windowId
+    }
+    void rememberWindowId()
     const unsubscribe = host.app.onProfileWindowCloseRequested?.((request: ProfileWindowCloseRequest) => {
-      setProfileWindowCloseRequest(request)
+      void rememberWindowId().then(windowId => {
+        if (!windowId || request.windowId !== windowId) return
+        if (disposed) return
+        setProfileWindowCloseRequest(request)
+      })
     })
     return () => {
+      disposed = true
       if (typeof unsubscribe === 'function') unsubscribe()
     }
   }, [])
+  useEffect(() => {
+    if (!profileWindowCloseRequest) return
+    const windowId = currentWindowIdRef.current
+    if (windowId && profileWindowCloseRequest.windowId !== windowId) {
+      setProfileWindowCloseRequest(null)
+    }
+  }, [profileWindowCloseRequest])
   useEffect(() => {
     const profileTitle = /:\d+$/.test(activeProfileName)
       ? activeProfileName

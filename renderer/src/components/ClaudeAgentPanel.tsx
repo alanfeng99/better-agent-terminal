@@ -4,8 +4,8 @@ import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ClaudeMessage, ClaudeToolCall } from '../types/claude-agent'
 import { isMessageItem, isToolCall } from '../types/claude-agent'
-import type { EffortLevel } from '../types'
-import { EFFORT_LEVELS } from '../types'
+import type { CodexApprovalPolicy, CodexSandboxMode, EffortLevel } from '../types'
+import { CODEX_APPROVAL_POLICIES, CODEX_SANDBOX_MODES, EFFORT_LEVELS } from '../types'
 import { normalizeAgentParams } from '../types/agent-profiles'
 import { settingsStore, useSettings } from '../stores/settings-store'
 import { workspaceStore } from '../stores/workspace-store'
@@ -206,6 +206,11 @@ function waitForTauriAgentListeners(): Promise<void> {
   return new Promise(resolve => window.setTimeout(resolve, 75))
 }
 
+function includeCurrentOption(values: readonly string[], current: string): string[] {
+  const filtered = values.filter(value => typeof value === 'string' && value.length > 0)
+  return current && !filtered.includes(current) ? [current, ...filtered] : filtered
+}
+
 export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose, showUserMsg = true, showAssistantMsg = true, showToolMsg = true, showThinkingMsg = true, isRemoteConnected = false, targetAgent }: Readonly<ClaudeAgentPanelProps>) {
   const { t } = useTranslation()
   // Determine backend/session flavor from agentPreset
@@ -260,13 +265,13 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const t = workspaceStore.getState().terminals.find(t => t.id === sessionId)
     return normalizeClaudeModelSelection(t?.model || settingsStore.getSettings().defaultClaudeModel) || ''
   })
-  const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
+  const [codexSandboxMode, setCodexSandboxMode] = useState<CodexSandboxMode>(() => {
     const value = normalizedAgentParams?.sandboxMode
     return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access'
       ? value
       : 'workspace-write'
   })
-  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<'untrusted' | 'on-request' | 'never'>(() => {
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>(() => {
     const value = normalizedAgentParams?.approvalPolicy
     return value === 'untrusted' || value === 'on-request' || value === 'never'
       ? value
@@ -279,6 +284,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [usageAccount, setUsageAccount] = useState(workspaceStore.usageAccount)
   const [rateLimits, setRateLimits] = useState<Record<string, { resetsAt: number; utilization: number | null; isUsingOverage: boolean }>>({})
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
+  const [availableEfforts, setAvailableEfforts] = useState<string[]>(() => [...EFFORT_LEVELS])
+  const [availableCodexSandboxModes, setAvailableCodexSandboxModes] = useState<string[]>(() => [...CODEX_SANDBOX_MODES])
+  const [availableCodexApprovalPolicies, setAvailableCodexApprovalPolicies] = useState<string[]>(() => [...CODEX_APPROVAL_POLICIES])
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null)
   const [planFileContent, setPlanFileContent] = useState<string | null>(null)
   const [permissionFocus, setPermissionFocus] = useState(0) // 0=Yes, 1=Yes always, 2=No, 3=custom text
@@ -295,6 +303,18 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [resumeLoading, setResumeLoading] = useState(false)
   const [showModelList, setShowModelList] = useState(false)
   const [contentModal, setContentModal] = useState<{ title: string; content: string; markdown?: boolean } | null>(null)
+  const effortOptions = useMemo(
+    () => includeCurrentOption(availableEfforts, effortLevel),
+    [availableEfforts, effortLevel],
+  )
+  const codexSandboxModeOptions = useMemo(
+    () => includeCurrentOption(availableCodexSandboxModes, codexSandboxMode),
+    [availableCodexSandboxModes, codexSandboxMode],
+  )
+  const codexApprovalPolicyOptions = useMemo(
+    () => includeCurrentOption(availableCodexApprovalPolicies, codexApprovalPolicy),
+    [availableCodexApprovalPolicies, codexApprovalPolicy],
+  )
   const currentModelLabel = useMemo(() => {
     return availableModels.find(model => model.value === currentModel)?.displayName || displayNameForClaudeSelection(currentModel)
   }, [availableModels, currentModel])
@@ -1511,15 +1531,31 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [sessionId, isCodexSession])
 
   useEffect(() => {
-    if (!(sessionMeta?.sdkSessionId && availableModels.length === 0)) return
+    if (!sessionMeta?.sdkSessionId) return
     let cancelled = false
     const cancelRefresh = scheduleAgentMetadataRefresh(() => {
-      host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+      if (availableModels.length === 0) {
+        host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+          if (cancelled) return
+          if (models && models.length > 0) {
+            setAvailableModels(models)
+          }
+        }).catch(() => {})
+      }
+      host.claude.getSupportedEfforts(sessionId).then((levels: string[]) => {
         if (cancelled) return
-        if (models && models.length > 0) {
-          setAvailableModels(models)
-        }
+        if (levels && levels.length > 0) setAvailableEfforts(levels)
       }).catch(() => {})
+      if (isCodexSession) {
+        host.claude.getSupportedCodexSandboxModes(sessionId).then((modes: string[]) => {
+          if (cancelled) return
+          if (modes && modes.length > 0) setAvailableCodexSandboxModes(modes)
+        }).catch(() => {})
+        host.claude.getSupportedCodexApprovalPolicies(sessionId).then((policies: string[]) => {
+          if (cancelled) return
+          if (policies && policies.length > 0) setAvailableCodexApprovalPolicies(policies)
+        }).catch(() => {})
+      }
       if (!isCodexSession) {
         host.claude.getAccountInfo(sessionId).then(info => {
           if (cancelled) return
@@ -2460,14 +2496,14 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   }, [sessionId])
 
   const handleCodexSandboxModeChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const next = e.target.value as 'read-only' | 'workspace-write' | 'danger-full-access'
+    const next = e.target.value as CodexSandboxMode
     setCodexSandboxMode(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { sandboxMode: next })
     await host.claude.setCodexSandboxMode(sessionId, next)
   }, [sessionId])
 
   const handleCodexApprovalPolicyChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const next = e.target.value as 'untrusted' | 'on-request' | 'never'
+    const next = e.target.value as CodexApprovalPolicy
     setCodexApprovalPolicy(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { approvalPolicy: next })
     await host.claude.setCodexApprovalPolicy(sessionId, next)
@@ -4382,9 +4418,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                   onChange={handleCodexSandboxModeChange}
                   title="Codex sandbox mode"
                 >
-                  <option value="read-only">sandbox: read-only</option>
-                  <option value="workspace-write">sandbox: workspace-write</option>
-                  <option value="danger-full-access">sandbox: danger-full-access</option>
+                  {codexSandboxModeOptions.map(mode => (
+                    <option key={mode} value={mode}>sandbox: {mode}</option>
+                  ))}
                 </select>
                 <select
                   className="claude-effort-select"
@@ -4392,9 +4428,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                   onChange={handleCodexApprovalPolicyChange}
                   title="Codex approval policy"
                 >
-                  <option value="untrusted">approval: untrusted</option>
-                  <option value="on-request">approval: on-request</option>
-                  <option value="never">approval: never</option>
+                  {codexApprovalPolicyOptions.map(policy => (
+                    <option key={policy} value={policy}>approval: {policy}</option>
+                  ))}
                 </select>
               </>
             )}
@@ -4424,7 +4460,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 onChange={handleEffortChange}
                 title={t('claude.effortLevel')}
               >
-                {EFFORT_LEVELS.map(level => (
+                {effortOptions.map(level => (
                   <option key={level} value={level}>{level}</option>
                 ))}
               </select>

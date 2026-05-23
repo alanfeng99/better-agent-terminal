@@ -32,6 +32,12 @@ export type EffortLevel = typeof EFFORT_LEVELS[number]
 export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
 export type CodexEffortLevel = typeof CODEX_EFFORT_LEVELS[number]
 
+export const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'] as const
+export type CodexSandboxMode = typeof CODEX_SANDBOX_MODES[number]
+
+export const CODEX_APPROVAL_POLICIES = ['untrusted', 'on-request', 'never'] as const
+export type CodexApprovalPolicy = typeof CODEX_APPROVAL_POLICIES[number]
+
 export const WORKSPACE_COLORS = [
   { id: 'red', value: '#e74c3c', label: 'Red' },
   { id: 'orange', value: '#e67e22', label: 'Orange' },

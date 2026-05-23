@@ -4,8 +4,8 @@ import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { ClaudeMessage, ClaudeToolCall } from '../types/claude-agent'
 import { isMessageItem, isToolCall } from '../types/claude-agent'
-import type { CodexEffortLevel, EffortLevel } from '../types'
-import { CODEX_EFFORT_LEVELS, EFFORT_LEVELS } from '../types'
+import type { CodexApprovalPolicy, CodexEffortLevel, CodexSandboxMode, EffortLevel } from '../types'
+import { CODEX_APPROVAL_POLICIES, CODEX_EFFORT_LEVELS, CODEX_SANDBOX_MODES, EFFORT_LEVELS } from '../types'
 import { normalizeAgentParams } from '../types/agent-profiles'
 import { settingsStore, useSettings } from '../stores/settings-store'
 import { workspaceStore } from '../stores/workspace-store'
@@ -143,6 +143,11 @@ function filenameForGeneratedImage(prompt: string, id?: string): string {
   return `${base || 'generated-image'}.png`
 }
 
+function includeCurrentOption(values: readonly string[], current: string): string[] {
+  const filtered = values.filter(value => typeof value === 'string' && value.length > 0)
+  return current && !filtered.includes(current) ? [current, ...filtered] : filtered
+}
+
 export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose, showUserMsg = true, showAssistantMsg = true, showToolMsg = true, showThinkingMsg = true, isRemoteConnected = false }: Readonly<CodexAgentPanelProps>) {
   const { t } = useTranslation()
   const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
@@ -206,13 +211,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const currentModelTitle = currentModel
     ? `${currentModelLabel || currentModel}${currentModelLabel && currentModelLabel !== currentModel ? ` (${currentModel})` : ''}`
     : '(default)'
-  const [codexSandboxMode, setCodexSandboxMode] = useState<'read-only' | 'workspace-write' | 'danger-full-access'>(() => {
+  const [codexSandboxMode, setCodexSandboxMode] = useState<CodexSandboxMode>(() => {
     const value = normalizedAgentParams?.sandboxMode
     return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access'
       ? value
       : 'workspace-write'
   })
-  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<'untrusted' | 'on-request' | 'never'>(() => {
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>(() => {
     const value = normalizedAgentParams?.approvalPolicy
     return value === 'untrusted' || value === 'on-request' || value === 'never'
       ? value
@@ -229,6 +234,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [usageAccount, setUsageAccount] = useState(workspaceStore.usageAccount)
   const [rateLimits, setRateLimits] = useState<Record<string, { resetsAt: number; utilization: number | null; isUsingOverage: boolean }>>({})
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
+  const [availableEfforts, setAvailableEfforts] = useState<string[]>(() => [...CODEX_EFFORT_LEVELS])
+  const [availableCodexSandboxModes, setAvailableCodexSandboxModes] = useState<string[]>(() => [...CODEX_SANDBOX_MODES])
+  const [availableCodexApprovalPolicies, setAvailableCodexApprovalPolicies] = useState<string[]>(() => [...CODEX_APPROVAL_POLICIES])
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null)
   const [planFileContent, setPlanFileContent] = useState<string | null>(null)
   const [permissionFocus, setPermissionFocus] = useState(0) // 0=Yes, 1=Yes always, 2=No, 3=custom text
@@ -244,6 +252,18 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [resumeSessions, setResumeSessions] = useState<SessionSummary[]>([])
   const [resumeLoading, setResumeLoading] = useState(false)
   const [showModelList, setShowModelList] = useState(false)
+  const effortOptions = useMemo(
+    () => includeCurrentOption(isCodexSession ? availableEfforts : EFFORT_LEVELS, effortLevel),
+    [availableEfforts, effortLevel, isCodexSession],
+  )
+  const codexSandboxModeOptions = useMemo(
+    () => includeCurrentOption(availableCodexSandboxModes, codexSandboxMode),
+    [availableCodexSandboxModes, codexSandboxMode],
+  )
+  const codexApprovalPolicyOptions = useMemo(
+    () => includeCurrentOption(availableCodexApprovalPolicies, codexApprovalPolicy),
+    [availableCodexApprovalPolicies, codexApprovalPolicy],
+  )
   const [contentModal, setContentModal] = useState<{ title: string; content: string; markdown?: boolean } | null>(null)
   const [imageModal, setImageModal] = useState<{ dataUrl: string; prompt: string; filename: string } | null>(null)
   // Subagent message storage (keyed by parent Task tool_use_id)
@@ -1475,15 +1495,31 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [sessionId, isCodexSession])
 
   useEffect(() => {
-    if (!(sessionMeta?.sdkSessionId && availableModels.length === 0)) return
+    if (!sessionMeta?.sdkSessionId) return
     let cancelled = false
     const cancelRefresh = scheduleAgentMetadataRefresh(() => {
-      host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
-        if (cancelled) return
-        if (models && models.length > 0) {
-          setAvailableModels(models)
-        }
-      }).catch(() => {})
+      if (availableModels.length === 0) {
+        host.claude.getSupportedModels(sessionId).then((models: ModelInfo[]) => {
+          if (cancelled) return
+          if (models && models.length > 0) {
+            setAvailableModels(models)
+          }
+        }).catch(() => {})
+      }
+      if (isCodexSession) {
+        host.claude.getSupportedEfforts(sessionId).then((levels: string[]) => {
+          if (cancelled) return
+          if (levels && levels.length > 0) setAvailableEfforts(levels)
+        }).catch(() => {})
+        host.claude.getSupportedCodexSandboxModes(sessionId).then((modes: string[]) => {
+          if (cancelled) return
+          if (modes && modes.length > 0) setAvailableCodexSandboxModes(modes)
+        }).catch(() => {})
+        host.claude.getSupportedCodexApprovalPolicies(sessionId).then((policies: string[]) => {
+          if (cancelled) return
+          if (policies && policies.length > 0) setAvailableCodexApprovalPolicies(policies)
+        }).catch(() => {})
+      }
       if (!isCodexSession) {
         host.claude.getAccountInfo(sessionId).then(info => {
           if (cancelled) return
@@ -2436,14 +2472,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   }, [sessionId, isCodexSession])
 
   const handleCodexSandboxModeChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const next = e.target.value as 'read-only' | 'workspace-write' | 'danger-full-access'
+    const next = e.target.value as CodexSandboxMode
     setCodexSandboxMode(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { sandboxMode: next })
     await host.claude.setCodexSandboxMode(sessionId, next)
   }, [sessionId])
 
   const handleCodexApprovalPolicyChange = useCallback(async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const next = e.target.value as 'untrusted' | 'on-request' | 'never'
+    const next = e.target.value as CodexApprovalPolicy
     setCodexApprovalPolicy(next)
     workspaceStore.updateTerminalAgentParams(sessionId, { approvalPolicy: next })
     await host.claude.setCodexApprovalPolicy(sessionId, next)
@@ -4292,9 +4328,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                   onChange={handleCodexSandboxModeChange}
                   title="Codex sandbox mode"
                 >
-                  <option value="read-only">sandbox: read-only</option>
-                  <option value="workspace-write">sandbox: workspace-write</option>
-                  <option value="danger-full-access">sandbox: danger-full-access</option>
+                  {codexSandboxModeOptions.map(mode => (
+                    <option key={mode} value={mode}>sandbox: {mode}</option>
+                  ))}
                 </select>
                 <select
                   className="claude-effort-select"
@@ -4302,9 +4338,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                   onChange={handleCodexApprovalPolicyChange}
                   title="Codex approval policy"
                 >
-                  <option value="untrusted">approval: untrusted</option>
-                  <option value="on-request">approval: on-request</option>
-                  <option value="never">approval: never</option>
+                  {codexApprovalPolicyOptions.map(policy => (
+                    <option key={policy} value={policy}>approval: {policy}</option>
+                  ))}
                 </select>
               </>
             )}
@@ -4334,7 +4370,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                 onChange={handleEffortChange}
                 title={t('claude.effortLevel')}
               >
-                {(isCodexSession ? CODEX_EFFORT_LEVELS : EFFORT_LEVELS).map(level => (
+                {effortOptions.map(level => (
                   <option key={level} value={level}>{level}</option>
                 ))}
               </select>

@@ -982,6 +982,22 @@ fn invoke_rust_for_remote(
             Some(route) => route.map(|(codex, _)| codex.supported_models()),
             None => Ok(claude_cmd::claude_builtin_models_native()),
         },
+        "claude:get-supported-efforts" => match codex_for_remote_session(app, channel, params) {
+            Some(route) => route.map(|(codex, _)| codex.supported_efforts()),
+            None => Ok(claude_cmd::claude_supported_efforts_native()),
+        },
+        "claude:get-supported-codex-sandbox-modes" => {
+            match codex_for_remote_session(app, channel, params) {
+                Some(route) => route.map(|(codex, _)| codex.supported_sandbox_modes()),
+                None => Ok(claude_cmd::codex_supported_sandbox_modes_native()),
+            }
+        }
+        "claude:get-supported-codex-approval-policies" => {
+            match codex_for_remote_session(app, channel, params) {
+                Some(route) => route.map(|(codex, _)| codex.supported_approval_policies()),
+                None => Ok(claude_cmd::codex_supported_approval_policies_native()),
+            }
+        }
         "claude:get-supported-commands" | "claude:get-supported-agents" => {
             match codex_for_remote_session(app, channel, params) {
                 Some(route) => route.map(|_| json!([])),

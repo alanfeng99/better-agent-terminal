@@ -156,6 +156,7 @@ struct CodexSession {
     runtime_status_started_at: Option<u128>,
     is_running: bool,
     is_resting: bool,
+    abort_requested: bool,
 }
 
 impl CodexSession {
@@ -1205,6 +1206,18 @@ impl CodexAppServerState {
         ])
     }
 
+    pub fn supported_efforts(&self) -> Value {
+        json!(["minimal", "low", "medium", "high", "xhigh"])
+    }
+
+    pub fn supported_sandbox_modes(&self) -> Value {
+        json!(["read-only", "workspace-write", "danger-full-access"])
+    }
+
+    pub fn supported_approval_policies(&self) -> Value {
+        json!(["untrusted", "on-request", "never"])
+    }
+
     fn session_id_for_notification(&self, params: &Value) -> Option<String> {
         if let Some(thread_id) = thread_id_from_params(params) {
             if let Some(session_id) = self
@@ -1355,6 +1368,7 @@ impl CodexAppServerState {
             runtime_status_started_at: None,
             is_running: false,
             is_resting: false,
+            abort_requested: false,
         };
         self.inner
             .sessions
@@ -1508,6 +1522,7 @@ impl CodexAppServerState {
             runtime_status_started_at: None,
             is_running: false,
             is_resting: false,
+            abort_requested: false,
         };
         self.inner
             .sessions
@@ -1622,6 +1637,7 @@ impl CodexAppServerState {
             );
             cleanup_session_temp_images(session);
             session.temporary_image_paths.append(&mut temp_image_paths);
+            session.abort_requested = false;
             session.is_running = true;
             session.is_resting = false;
             session.num_turns += 1;
@@ -1795,6 +1811,7 @@ impl CodexAppServerState {
         let meta = {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             sessions.get_mut(session_id).map(|session| {
+                session.abort_requested = false;
                 session.is_running = false;
                 session.active_turn_id = None;
                 clear_runtime_status(session);
@@ -1840,6 +1857,7 @@ impl CodexAppServerState {
             );
             let thread_id = session.thread_id.clone();
             let turn_id = session.active_turn_id.clone();
+            session.abort_requested = true;
             session.is_running = false;
             session.active_turn_id = None;
             cleanup_session_temp_images(session);
@@ -1958,6 +1976,7 @@ impl CodexAppServerState {
             cleanup_session_temp_images(session);
             session.command_outputs.clear();
             session.command_output_last_emit.clear();
+            session.abort_requested = false;
             session.is_running = false;
             session.is_resting = false;
             session.start_time = Instant::now();
@@ -1985,6 +2004,7 @@ impl CodexAppServerState {
         session.is_resting = true;
         session.is_running = false;
         session.active_turn_id = None;
+        session.abort_requested = false;
         let msg = make_system_message(
             session_id,
             "Session is resting. Send a message to wake it up.".to_string(),
@@ -2279,32 +2299,69 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
             }
         }
         "turn/started" => {
+            let turn_id = params
+                .get("turn")
+                .and_then(|v| v.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
             log_codex(
                 app,
                 &session_id,
                 format!(
                     "notification turn/started turn={}",
-                    params
-                        .get("turn")
-                        .and_then(|v| v.get("id"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("none")
+                    turn_id.as_deref().unwrap_or("none")
                 ),
             );
-            let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.is_running = true;
-                if session.last_turn_started_at.is_none() {
-                    session.num_turns += 1;
-                    session.last_turn_started_at = Some(Instant::now());
-                    session.last_turn_first_token_ms = None;
-                    session.last_turn_duration_ms = None;
-                }
-                session.active_turn_id = params
-                    .get("turn")
-                    .and_then(|v| v.get("id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+            let pending_interrupt = {
+                let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
+                sessions.get_mut(&session_id).and_then(|session| {
+                    if session.abort_requested {
+                        session.is_running = false;
+                        session.active_turn_id = None;
+                        return session.thread_id.clone().zip(turn_id.clone());
+                    }
+                    session.is_running = true;
+                    if session.last_turn_started_at.is_none() {
+                        session.num_turns += 1;
+                        session.last_turn_started_at = Some(Instant::now());
+                        session.last_turn_first_token_ms = None;
+                        session.last_turn_duration_ms = None;
+                    }
+                    session.active_turn_id = turn_id.clone();
+                    None
+                })
+            };
+            if let Some((thread_id, turn_id)) = pending_interrupt {
+                log_codex(
+                    app,
+                    &session_id,
+                    format!("turn/started arrived after abort; interrupting turn={turn_id}"),
+                );
+                let interrupt_app = app.clone();
+                let interrupt_state = state.clone();
+                let interrupt_session_id = session_id.clone();
+                std::thread::spawn(move || {
+                    match interrupt_state
+                        .ensure_connection(&interrupt_app)
+                        .and_then(|connection| {
+                            connection.request(
+                                "turn/interrupt",
+                                json!({ "threadId": thread_id, "turnId": turn_id }),
+                                REQUEST_TIMEOUT,
+                            )
+                        }) {
+                        Ok(_) => log_codex(
+                            &interrupt_app,
+                            &interrupt_session_id,
+                            "late turn/interrupt ok",
+                        ),
+                        Err(err) => log_codex(
+                            &interrupt_app,
+                            &interrupt_session_id,
+                            format!("late turn/interrupt failed: {err}"),
+                        ),
+                    }
+                });
             }
         }
         "error" => {
@@ -2759,6 +2816,7 @@ fn handle_turn_completed(
         };
         session.is_running = false;
         session.active_turn_id = None;
+        session.abort_requested = false;
         clear_runtime_status(session);
         cleanup_session_temp_images(session);
         session.command_outputs.clear();
@@ -3148,6 +3206,7 @@ mod tests {
             runtime_status_started_at: None,
             is_running: false,
             is_resting: false,
+            abort_requested: false,
         };
 
         let meta = session.metadata();
@@ -3193,6 +3252,7 @@ mod tests {
                     runtime_status_started_at: None,
                     is_running: false,
                     is_resting: false,
+                    abort_requested: false,
                 },
             );
 

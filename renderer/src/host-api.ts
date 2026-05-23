@@ -989,6 +989,9 @@ function createTauriHost(): BatAppAPI {
         }
         const sessionReadCommands: Record<string, string> = {
           getSupportedModels: 'claude_get_supported_models',
+          getSupportedEfforts: 'claude_get_supported_efforts',
+          getSupportedCodexSandboxModes: 'claude_get_supported_codex_sandbox_modes',
+          getSupportedCodexApprovalPolicies: 'claude_get_supported_codex_approval_policies',
           getSupportedCommands: 'claude_get_supported_commands',
           getSupportedAgents: 'claude_get_supported_agents',
           getAccountInfo: 'claude_get_account_info',

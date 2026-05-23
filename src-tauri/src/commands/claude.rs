@@ -324,7 +324,9 @@ pub(crate) fn resolve_claude_cli_path(app: &AppHandle) -> String {
     let target_os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     if let Ok(resource_dir) = app.path().resource_dir() {
-        if let Some(candidate) = find_packaged_claude_cli_in_base(app, &resource_dir, target_os, arch) {
+        if let Some(candidate) =
+            find_packaged_claude_cli_in_base(app, &resource_dir, target_os, arch)
+        {
             return candidate.to_string_lossy().to_string();
         }
     }
@@ -1622,6 +1624,18 @@ pub(crate) fn supported_agents_native(cwd: &Path) -> Vec<AgentScanEntry> {
     entries
 }
 
+pub(crate) fn claude_supported_efforts_native() -> Value {
+    json!(["low", "medium", "high", "xhigh", "max"])
+}
+
+pub(crate) fn codex_supported_sandbox_modes_native() -> Value {
+    json!(["read-only", "workspace-write", "danger-full-access"])
+}
+
+pub(crate) fn codex_supported_approval_policies_native() -> Value {
+    json!(["untrusted", "on-request", "never"])
+}
+
 fn parse_frontmatter_field(content: &str, field: &str) -> Option<String> {
     let rest = content.strip_prefix("---")?;
     let end = rest.find("\n---")?;
@@ -2403,6 +2417,27 @@ impl ClaudeRuntimeRouter {
             return self.codex.supported_models();
         }
         claude_builtin_models_native()
+    }
+
+    fn supported_efforts(&self, session_id: &str) -> Value {
+        if self.codex.is_owned(session_id) {
+            return self.codex.supported_efforts();
+        }
+        claude_supported_efforts_native()
+    }
+
+    fn supported_codex_sandbox_modes(&self, session_id: &str) -> Value {
+        if self.codex.is_owned(session_id) {
+            return self.codex.supported_sandbox_modes();
+        }
+        codex_supported_sandbox_modes_native()
+    }
+
+    fn supported_codex_approval_policies(&self, session_id: &str) -> Value {
+        if self.codex.is_owned(session_id) {
+            return self.codex.supported_approval_policies();
+        }
+        codex_supported_approval_policies_native()
     }
 
     async fn supported_commands(&self, session_id: String) -> Result<Value, BridgeError> {
@@ -3229,6 +3264,77 @@ pub async fn claude_get_supported_models(
         return result;
     }
     Ok(ClaudeRuntimeRouter::from_states(app, &state, &codex_state).supported_models(&session_id))
+}
+
+#[tauri::command]
+pub async fn claude_get_supported_efforts(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:get-supported-efforts",
+        vec![json!(session_id.clone())],
+        DEFAULT_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
+    Ok(ClaudeRuntimeRouter::from_states(app, &state, &codex_state).supported_efforts(&session_id))
+}
+
+#[tauri::command]
+pub async fn claude_get_supported_codex_sandbox_modes(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:get-supported-codex-sandbox-modes",
+        vec![json!(session_id.clone())],
+        DEFAULT_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
+    Ok(ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .supported_codex_sandbox_modes(&session_id))
+}
+
+#[tauri::command]
+pub async fn claude_get_supported_codex_approval_policies(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, SidecarState>,
+    codex_state: State<'_, CodexAppServerState>,
+    session_id: String,
+) -> Result<Value, BridgeError> {
+    if let Some(result) = remote_invoke_for_window(
+        &app,
+        &state,
+        &window,
+        "claude:get-supported-codex-approval-policies",
+        vec![json!(session_id.clone())],
+        DEFAULT_TIMEOUT,
+    )
+    .await
+    {
+        return result;
+    }
+    Ok(ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
+        .supported_codex_approval_policies(&session_id))
 }
 
 #[tauri::command]
@@ -4388,9 +4494,18 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].sdk_session_id, "sdk-1");
         assert_eq!(sessions[0].preview, "hello from history");
-        assert_eq!(sessions[0].custom_title.as_deref(), Some("Meaningful session title"));
-        assert_eq!(sessions[0].first_prompt.as_deref(), Some("hello from history"));
-        assert_eq!(sessions[0].summary.as_deref(), Some("Meaningful session title"));
+        assert_eq!(
+            sessions[0].custom_title.as_deref(),
+            Some("Meaningful session title")
+        );
+        assert_eq!(
+            sessions[0].first_prompt.as_deref(),
+            Some("hello from history")
+        );
+        assert_eq!(
+            sessions[0].summary.as_deref(),
+            Some("Meaningful session title")
+        );
         assert_eq!(sessions[0].message_count, 3);
 
         fs::remove_dir_all(base).ok();
