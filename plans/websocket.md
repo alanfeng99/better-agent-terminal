@@ -302,6 +302,7 @@ Result:
 Remote runtime metadata:
 
 ```text
+agent:get-supported-session-types
 agent:get-supported-models
 agent:get-supported-efforts
 agent:get-supported-codex-sandbox-modes
@@ -313,6 +314,11 @@ agent:get-session-meta
 agent:get-context-usage
 agent:get-worktree-status
 ```
+
+`agent:get-supported-session-types` returns the host-supported session creation type ids, such as
+`none`, `claude-code`, `claude-cli`, `codex-agent`, and worktree variants. Remote clients must use
+this host response to decide which add-session actions to show; they should not infer supported
+session types from local renderer code. `agent:list-presets` is kept as a compatibility alias.
 
 Claude / Codex session control:
 

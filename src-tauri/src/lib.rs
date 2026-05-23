@@ -287,6 +287,7 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
             worktree_cmd::worktree_status,
             worktree_cmd::worktree_merge,
             worktree_cmd::worktree_rehydrate,
+            agent_cmd::agent_get_supported_session_types,
             agent_cmd::agent_list_presets,
             worker_buffer_cmd::worker_buffer_init,
             worker_buffer_cmd::worker_buffer_append,

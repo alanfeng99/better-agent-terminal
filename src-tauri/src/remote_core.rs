@@ -117,7 +117,7 @@ pub fn canonical_remote_channel(channel: &str) -> String {
     let Some(rest) = channel.strip_prefix("agent:") else {
         return channel.to_string();
     };
-    if rest == "list-presets" {
+    if rest == "list-presets" || rest == "get-supported-session-types" {
         channel.to_string()
     } else {
         format!("claude:{rest}")
@@ -156,6 +156,7 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
     let canonical = canonical_remote_channel(channel);
     match canonical.as_str() {
         "app:get-version" => Some(&[]),
+        "agent:get-supported-session-types" | "agent:list-presets" => Some(&[]),
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
         "workspace:load" => Some(&["profileId"]),
@@ -761,6 +762,14 @@ mod tests {
         assert_eq!(
             canonical_remote_channel("agent:list-presets"),
             "agent:list-presets"
+        );
+        assert_eq!(
+            canonical_remote_channel("agent:get-supported-session-types"),
+            "agent:get-supported-session-types"
+        );
+        assert_eq!(
+            legacy_v1_args_to_params("agent:get-supported-session-types", &[]),
+            Value::Null
         );
         assert_eq!(
             legacy_v1_args_to_params("agent:get-supported-codex-sandbox-modes", &[json!("s1")]),

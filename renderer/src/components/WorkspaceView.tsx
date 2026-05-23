@@ -176,7 +176,8 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   // because workspaces re-mount when the active profile changes.
   useEffect(() => {
     let cancelled = false
-    host.agent.listPresets()
+    const listSupportedSessionTypes = host.agent.getSupportedSessionTypes || host.agent.listPresets
+    listSupportedSessionTypes()
       .then(ids => { if (!cancelled) setSupportedPresetIds(ids) })
       .catch(() => { if (!cancelled) setSupportedPresetIds(null) })
     return () => { cancelled = true }

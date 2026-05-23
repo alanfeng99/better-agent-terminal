@@ -1180,7 +1180,9 @@ fn invoke_rust_for_remote(
             "version": app.package_info().version.to_string(),
             "protocol": REMOTE_PROTOCOL_V2,
         })),
-        "agent:list-presets" => Ok(agent_cmd::agent_preset_ids()),
+        "agent:get-supported-session-types" | "agent:list-presets" => {
+            Ok(agent_cmd::agent_supported_session_type_ids())
+        }
         "claude:start-session" => {
             let options = params.get("options").cloned().unwrap_or(Value::Null);
             let maybe_options = Some(options.clone());

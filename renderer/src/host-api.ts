@@ -1101,6 +1101,7 @@ function createTauriHost(): BatAppAPI {
       },
     }),
     agent: {
+      getSupportedSessionTypes: () => getInvoke()<string[]>('agent_get_supported_session_types'),
       listPresets: () => getInvoke()<string[]>('agent_list_presets'),
     },
     workerBuffer: {
