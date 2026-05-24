@@ -1,0 +1,61 @@
+.claude-channel-panel {
+  --claude-accent: #f97316;
+  min-height: 0;
+}
+
+.claude-channel-messages {
+  padding: 16px 16px 24px 0;
+}
+
+.claude-channel-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.claude-channel-message {
+  max-width: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.claude-channel-message.user {
+  border-color: transparent;
+}
+
+.claude-channel-message.assistant {
+  border-color: transparent;
+}
+
+.claude-channel-message-role {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.claude-channel-message-text {
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.claude-channel-error-message {
+  color: #fecaca;
+  white-space: pre-wrap;
+}
+
+.claude-channel-input-area {
+  flex-shrink: 0;
+}
+
+.claude-channel-input {
+  min-height: 58px;
+}
+
+.claude-channel-status-btn {
+  color: var(--text-secondary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

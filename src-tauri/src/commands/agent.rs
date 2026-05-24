@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub const AGENT_PRESET_IDS: &[&str] = &[
     "claude-code",
+    "claude-channel",
     "claude-code-worktree",
     "claude-cli",
     "claude-cli-worktree",
@@ -17,6 +18,15 @@ pub const AGENT_PRESET_IDS: &[&str] = &[
     "codex-cli",
     "none",
 ];
+
+const DEBUG_ONLY_AGENT_PRESET_IDS: &[&str] = &["claude-channel"];
+
+fn bat_debug_enabled() -> bool {
+    matches!(
+        std::env::var("BAT_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
 
 #[tauri::command]
 pub async fn agent_get_supported_session_types(app: AppHandle, window: WebviewWindow) -> Value {
@@ -65,7 +75,17 @@ fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
 }
 
 pub fn agent_supported_session_type_ids() -> Value {
-    json!(AGENT_PRESET_IDS)
+    json!(agent_supported_session_type_ids_for_debug(
+        bat_debug_enabled()
+    ))
+}
+
+fn agent_supported_session_type_ids_for_debug(debug_enabled: bool) -> Vec<&'static str> {
+    AGENT_PRESET_IDS
+        .iter()
+        .copied()
+        .filter(|id| debug_enabled || !DEBUG_ONLY_AGENT_PRESET_IDS.contains(id))
+        .collect()
 }
 
 #[cfg(test)]
@@ -75,9 +95,20 @@ mod tests {
     #[test]
     fn preset_list_matches_supported_runtime_ids() {
         assert!(AGENT_PRESET_IDS.contains(&"claude-code"));
+        assert!(AGENT_PRESET_IDS.contains(&"claude-channel"));
         assert!(!AGENT_PRESET_IDS.contains(&"claude-code-v2"));
         assert!(AGENT_PRESET_IDS.contains(&"codex-agent"));
         assert!(AGENT_PRESET_IDS.contains(&"codex-agent-worktree"));
         assert!(!AGENT_PRESET_IDS.contains(&"openai-agent"));
+    }
+
+    #[test]
+    fn supported_session_types_hide_debug_only_presets_without_debug() {
+        let regular = agent_supported_session_type_ids_for_debug(false);
+        assert!(regular.contains(&"claude-code"));
+        assert!(!regular.contains(&"claude-channel"));
+
+        let debug = agent_supported_session_type_ids_for_debug(true);
+        assert!(debug.contains(&"claude-channel"));
     }
 }

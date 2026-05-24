@@ -19,7 +19,10 @@ function setHostDockBadge(count: number): void {
 
 function normalizePersistedAgentPreset(value: unknown): AgentPresetId | undefined {
   if (value === 'openai-agent') return 'codex-agent'
-  if (typeof value === 'string' && getAgentPreset(value)) return value as AgentPresetId
+  if (typeof value === 'string') {
+    const preset = getAgentPreset(value)
+    if (preset && (!preset.debug || host.debug.isDebugMode === true)) return value as AgentPresetId
+  }
   return undefined
 }
 
@@ -824,9 +827,15 @@ class WorkspaceStore {
         }
         const cwd = t.cwd || ws.folderPath
         // For agent terminals, always derive title from preset to fix any persisted corruption
-        const agentPreset = normalizePersistedAgentPreset(t.agentPreset)
+        const originalAgentPreset = typeof t.agentPreset === 'string' ? t.agentPreset : undefined
+        const agentPreset = normalizePersistedAgentPreset(originalAgentPreset)
+        const hiddenDebugPreset = !!originalAgentPreset
+          && !agentPreset
+          && getAgentPreset(originalAgentPreset)?.debug === true
         const presetTitle = agentPreset && agentPreset !== 'none'
           ? (getAgentPreset(agentPreset)?.name || t.title || 'Terminal')
+          : hiddenDebugPreset
+            ? 'Terminal'
           : (t.title || 'Terminal')
         return {
           id: t.id || '',

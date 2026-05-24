@@ -24,11 +24,11 @@ mod subprocess;
 mod window_registry;
 
 use commands::{
-    agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
-    debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd,
-    image as image_cmd, notification as notification_cmd, profile as profile_cmd, pty as pty_cmd,
-    remote as remote_cmd, runtime as runtime_cmd, settings, shell as shell_cmd,
-    snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
+    agent as agent_cmd, app as app_cmd, claude as claude_cmd, claude_channel as claude_channel_cmd,
+    clipboard as clipboard_cmd, debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd,
+    git as git_cmd, github as github_cmd, image as image_cmd, notification as notification_cmd,
+    profile as profile_cmd, pty as pty_cmd, remote as remote_cmd, runtime as runtime_cmd, settings,
+    shell as shell_cmd, snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
     worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
 };
 use serde_json::{json, Value};
@@ -286,6 +286,11 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
             claude_cmd::claude_resolve_ask_user,
             claude_cmd::claude_check_mcp_json_status,
             claude_cmd::claude_enable_all_project_mcp,
+            claude_channel_cmd::claude_channel_get_capabilities,
+            claude_channel_cmd::claude_channel_start_session,
+            claude_channel_cmd::claude_channel_send_message,
+            claude_channel_cmd::claude_channel_stop_session,
+            claude_channel_cmd::claude_channel_get_status,
             worktree_cmd::worktree_create,
             worktree_cmd::worktree_remove,
             worktree_cmd::worktree_status,

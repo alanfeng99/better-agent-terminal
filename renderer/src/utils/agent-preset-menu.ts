@@ -9,6 +9,7 @@ export interface AgentPresetMenuGroups {
 
 const PRESET_ORDER = [
   'claude-code',
+  'claude-channel',
   'codex-agent',
   'claude-cli',
   'codex-cli',
@@ -27,7 +28,7 @@ function isWorktreePreset(preset: AgentPreset): boolean {
 }
 
 function isAgentPreset(preset: AgentPreset): boolean {
-  return preset.backend === 'sdk'
+  return preset.backend === 'sdk' || preset.backend === 'channel'
 }
 
 function sortPresets(presets: AgentPreset[]): AgentPreset[] {

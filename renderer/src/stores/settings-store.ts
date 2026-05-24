@@ -51,7 +51,10 @@ const defaultSettings: AppSettings = {
 
 function normalizeDefaultAgent(value: unknown): AgentPresetId {
   if (value === 'openai-agent') return 'codex-agent'
-  if (typeof value === 'string' && getAgentPreset(value)) return value as AgentPresetId
+  if (typeof value === 'string') {
+    const preset = getAgentPreset(value)
+    if (preset && (!preset.debug || host.debug.isDebugMode === true)) return value as AgentPresetId
+  }
   return defaultSettings.defaultAgent ?? 'claude-code'
 }
 

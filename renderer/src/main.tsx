@@ -20,6 +20,7 @@ import './styles/file-browser.css'
 import './styles/path-linker.css'
 import './styles/prompt-box.css'
 import './styles/claude-agent.css'
+import './styles/claude-channel-agent.css'
 import './styles/skills-panel.css'
 
 const dlog = (...args: unknown[]) => host.debug.log(...args)

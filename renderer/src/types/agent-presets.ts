@@ -11,11 +11,11 @@ export interface AgentPreset {
   command?: string;       // 可選的自動啟動命令（PTY 模式用）
   debug?: boolean;        // 僅在 debug 模式下顯示
   suggested?: boolean;    // 標記為推薦選項
-  backend?: 'sdk' | 'cli' | 'pty';  // sdk = ClaudeAgentPanel, cli = bundled CLI PTY, pty = generic PTY
+  backend?: 'sdk' | 'channel' | 'cli' | 'pty';  // sdk = ClaudeAgentPanel, channel = Claude Channel Agent, cli = bundled CLI PTY, pty = generic PTY
   needsGitRepo?: boolean; // 需要 git repo（worktree 類）
 }
 
-export type AgentPresetId = 'claude-code' | 'claude-code-v2' | 'claude-code-worktree' | 'claude-cli' | 'claude-cli-worktree' | 'codex-agent' | 'codex-agent-worktree' | 'codex-cli' | 'none';
+export type AgentPresetId = 'claude-code' | 'claude-channel' | 'claude-code-v2' | 'claude-code-worktree' | 'claude-cli' | 'claude-cli-worktree' | 'codex-agent' | 'codex-agent-worktree' | 'codex-cli' | 'none';
 
 export const AGENT_PRESETS: AgentPreset[] = [
   {
@@ -34,6 +34,14 @@ export const AGENT_PRESETS: AgentPreset[] = [
     color: '#eab308',
     debug: true,
     backend: 'sdk',
+  },
+  {
+    id: 'claude-channel',
+    name: 'Claude Channel Agent',
+    icon: '◉',
+    color: '#f97316',
+    debug: true,
+    backend: 'channel',
   },
   {
     id: 'claude-code-worktree',

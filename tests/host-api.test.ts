@@ -225,6 +225,11 @@ async function run() {
       if (cmd === 'claude_get_session_meta') return null as unknown as T
       if (cmd === 'claude_get_context_usage') return null as unknown as T
       if (cmd === 'claude_get_worktree_status') return null as unknown as T
+      if (cmd === 'claude_channel_get_capabilities') return { supported: false } as unknown as T
+      if (cmd === 'claude_channel_start_session') return { ok: true, sessionId: 'ch-1' } as unknown as T
+      if (cmd === 'claude_channel_send_message') return { ok: true, messageId: 'm-1' } as unknown as T
+      if (cmd === 'claude_channel_stop_session') return { ok: true, existed: true } as unknown as T
+      if (cmd === 'claude_channel_get_status') return { ok: true, status: 'ready' } as unknown as T
       if (cmd === 'worktree_create') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'worktree_remove') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'worktree_status') return null as unknown as T
@@ -616,6 +621,16 @@ async function run() {
     assert.equal(await mod.host.claude.getContextUsage('s-1'), null)
     assert.equal(await mod.host.claude.getWorktreeStatus('s-1'), null)
 
+    // claudeChannel.* — debug-only experimental runtime surface.
+    assert.deepEqual(await mod.host.claudeChannel.getCapabilities(), { supported: false })
+    assert.deepEqual(await mod.host.claudeChannel.startSession('ch-1', { cwd: '/cwd' }), { ok: true, sessionId: 'ch-1' })
+    assert.deepEqual(await mod.host.claudeChannel.sendMessage('ch-1', 'hello', 'm-1'), { ok: true, messageId: 'm-1' })
+    assert.deepEqual(await mod.host.claudeChannel.getStatus('ch-1'), { ok: true, status: 'ready' })
+    assert.deepEqual(await mod.host.claudeChannel.stopSession('ch-1'), { ok: true, existed: true })
+    mod.host.claudeChannel.onMessage(() => {})()
+    mod.host.claudeChannel.onStatus(() => {})()
+    mod.host.claudeChannel.onTurnEnd(() => {})()
+
     // worktree.* — sidecar-routed. The fixture returns shaped failures so
     // this adapter test can focus on command names + payloads.
     assert.deepEqual(await mod.host.worktree.create('s-1', '/cwd'), {
@@ -877,6 +892,11 @@ async function run() {
       { cmd: 'claude_get_session_meta', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_context_usage', args: { sessionId: 's-1' } },
       { cmd: 'claude_get_worktree_status', args: { sessionId: 's-1' } },
+      { cmd: 'claude_channel_get_capabilities', args: undefined },
+      { cmd: 'claude_channel_start_session', args: { sessionId: 'ch-1', options: { cwd: '/cwd' } } },
+      { cmd: 'claude_channel_send_message', args: { sessionId: 'ch-1', prompt: 'hello', messageId: 'm-1' } },
+      { cmd: 'claude_channel_get_status', args: { sessionId: 'ch-1' } },
+      { cmd: 'claude_channel_stop_session', args: { sessionId: 'ch-1' } },
       { cmd: 'worktree_create', args: { sessionId: 's-1', cwd: '/cwd' } },
       { cmd: 'worktree_remove', args: { sessionId: 's-1', deleteBranch: true } },
       { cmd: 'worktree_status', args: { sessionId: 's-1' } },

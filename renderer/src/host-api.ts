@@ -1113,6 +1113,28 @@ function createTauriHost(): BatAppAPI {
         return permissiveValueFor(`claude.${key}`)
       },
     }),
+    claudeChannel: {
+      getCapabilities: () => getInvoke()<unknown>('claude_channel_get_capabilities'),
+      startSession: async (sessionId: string, options: unknown) =>
+        getInvoke()<unknown>('claude_channel_start_session', {
+          sessionId,
+          options: options == null
+            ? options
+            : await attachWorkspaceIdentity(sessionId, options as Record<string, unknown>),
+        }),
+      sendMessage: (sessionId: string, prompt: string, messageId?: string) =>
+        getInvoke()<unknown>('claude_channel_send_message', { sessionId, prompt, messageId }),
+      stopSession: (sessionId: string) =>
+        getInvoke()<unknown>('claude_channel_stop_session', { sessionId }),
+      getStatus: (sessionId: string) =>
+        getInvoke()<unknown>('claude_channel_get_status', { sessionId }),
+      onMessage: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:message', callback),
+      onStatus: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:status', callback),
+      onTurnEnd: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:turn-end', callback),
+    },
     worktree: new Proxy({}, {
       // worktree.* — agent-tied. Sidecar handlers mirror the host
       // WorktreeManager while keeping the renderer-facing shape stable.
@@ -1311,7 +1333,7 @@ const PORTED_NAMESPACES = new Set([
   'settings', 'runtime', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
   'notification', 'system', 'github', 'snippet', 'profile',
-  'claude', 'worktree', 'agent', 'workerBuffer',
+  'claude', 'claudeChannel', 'worktree', 'agent', 'workerBuffer',
   'remote', 'tunnel',
 ])
 
