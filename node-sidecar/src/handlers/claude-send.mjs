@@ -334,13 +334,13 @@ function processMessage(s, sessionId, msg) {
         .join('\n')
         .trim()
     }
-    const outboundMessage = flatThinking ? { ...msg, thinking: flatThinking } : msg
     const text = textFromContent(blocks)
       .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
       .replace(/Full transcript available at:.*$/gm, '')
       .trim()
+    let outboundMessage = null
     if (text || flatThinking) {
-      appendSessionMessage(s, {
+      outboundMessage = {
         id: `assistant-${Date.now()}-${s.messages?.length || 0}`,
         sessionId,
         role: 'assistant',
@@ -348,14 +348,17 @@ function processMessage(s, sessionId, msg) {
         ...(flatThinking ? { thinking: flatThinking } : {}),
         ...(msg.parent_tool_use_id ? { parentToolUseId: msg.parent_tool_use_id } : {}),
         timestamp: Date.now(),
-      })
+      }
+      appendSessionMessage(s, outboundMessage)
       clearSessionStream(s)
     }
     debugLog('emit-assistant-message', sessionId, {
       blockTypes: Array.isArray(blocks) ? blocks.map(b => b?.type).filter(Boolean) : [],
       textLen: contentLength(blocks),
     })
-    sendEvent('claude:message', { sessionId, message: outboundMessage })
+    if (outboundMessage) {
+      sendEvent('claude:message', { sessionId, message: outboundMessage })
+    }
     if (Array.isArray(blocks)) {
       for (const block of blocks) {
         if (block && block.type === 'tool_use' && typeof block.id === 'string') {
