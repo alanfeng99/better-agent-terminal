@@ -71,6 +71,19 @@ function clearRuntimeStatusMeta(meta: SessionMeta | null): SessionMeta | null {
   return { ...meta, runtimeStatus: null, runtimeMessage: null, runtimeStatusStartedAt: null }
 }
 
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object' && 'message' in error && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message
+  }
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
+
 function runtimeWaitingMessage(meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
@@ -1049,6 +1062,26 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           return m
         }))
         if (isAgentStatusChange) { flushSync(doResultUpdate) } else { doResultUpdate() }
+      }),
+
+      api.onTurnEnd((sid: string, payload: { reason?: string } | null | undefined) => {
+        if (sid !== sessionId) return
+        const reason = payload?.reason
+        setIsStreaming(false)
+        setIsInterrupted(false)
+        setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+        setStreamingText('')
+        setStreamingThinking('')
+        if (reason === 'aborted' || reason === 'error') {
+          setPendingPermission(null)
+          setPendingQuestion(null)
+          setMessages(prev => prev.map(m => {
+            if ('toolName' in m && (m as ClaudeToolCall).status === 'running') {
+              return { ...m, status: 'error', denied: true } as ClaudeToolCall
+            }
+            return m
+          }))
+        }
       }),
 
       api.onResult((sid: string, resultData: unknown) => {
@@ -2260,6 +2293,21 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow),
         { id: userMsgId, displayContent },
       )
+    } catch (err) {
+      const message = formatUnknownError(err)
+      setIsStreaming(false)
+      setIsInterrupted(false)
+      setStreamingText('')
+      setStreamingThinking('')
+      setPendingPermission(null)
+      setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+      setMessages(prev => [...prev, {
+        id: `err-send-${Date.now()}`,
+        sessionId,
+        role: 'system' as const,
+        content: `Error: ${message}`,
+        timestamp: Date.now(),
+      }])
     } finally {
       const __sendT2 = performance.now()
       const sync = __sendT1 - __sendT0

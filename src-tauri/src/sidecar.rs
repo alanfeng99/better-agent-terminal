@@ -706,15 +706,16 @@ fn find_bundled_node(resource_dir: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-fn which_node() -> Option<PathBuf> {
-    // Trivial which: try PATHEXT-aware lookup on Windows, plain `node` on Unix.
+fn find_node_in_dirs<I>(dirs: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
     let exe_names: &[&str] = if cfg!(windows) {
         &["node.exe", "node.cmd", "node"]
     } else {
         &["node"]
     };
-    let path = std::env::var_os("PATH")?;
-    for entry in std::env::split_paths(&path) {
+    for entry in dirs {
         for name in exe_names {
             let candidate = entry.join(name);
             if candidate.is_file() {
@@ -723,6 +724,36 @@ fn which_node() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn common_node_dirs() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        Vec::new()
+    } else if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+        ]
+    } else {
+        vec![
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+        ]
+    }
+}
+
+fn which_node() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        if let Some(candidate) = find_node_in_dirs(std::env::split_paths(&path)) {
+            return Some(candidate);
+        }
+    }
+    // macOS GUI apps launched from Finder do not inherit the user's shell PATH.
+    // Homebrew installs Node under these prefixes, and lightweight BAT relies
+    // on that external runtime when no bundled Node is shipped.
+    find_node_in_dirs(common_node_dirs())
 }
 
 #[cfg(test)]
@@ -748,6 +779,22 @@ mod tests {
 
     fn require_node() -> Option<PathBuf> {
         which_node()
+    }
+
+    #[test]
+    fn find_node_in_dirs_finds_candidate_without_path_env() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bat-node-dir-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let exe = tmp.join(exe_name);
+        std::fs::write(&exe, b"fake").unwrap();
+        let found = find_node_in_dirs(vec![tmp.clone()]).expect("expected node candidate");
+        assert_eq!(found, exe);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

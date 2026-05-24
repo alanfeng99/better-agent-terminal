@@ -34,6 +34,19 @@ function clearRuntimeStatusMeta(meta: SessionMeta | null): SessionMeta | null {
   return { ...meta, runtimeStatus: null, runtimeMessage: null, runtimeStatusStartedAt: null }
 }
 
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object' && 'message' in error && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message
+  }
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
+
 function runtimeWaitingMessage(meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
@@ -1008,6 +1021,22 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
 
       api.onTurnEnd((sid: string, payload) => {
         if (sid !== sessionId) return
+        const reason = payload?.reason
+        setIsStreaming(false)
+        setIsInterrupted(false)
+        setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+        setStreamingText('')
+        setStreamingThinking('')
+        if (reason === 'aborted' || reason === 'error') {
+          setPendingPermission(null)
+          setPendingQuestion(null)
+          setMessages(prev => prev.map(m => {
+            if ('toolName' in m && (m as ClaudeToolCall).status === 'running') {
+              return { ...m, status: 'error', denied: true } as ClaudeToolCall
+            }
+            return m
+          }))
+        }
         // Auto-continue: continue on success and specific recoverable Codex timeout errors.
         if (!shouldAutoContinueAfterTurnEnd(payload)) return
         const ac = autoContinueRef.current
@@ -1941,8 +1970,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       autoContinueRef.current.used = 0
     }
 
-    // Intercept /resume command (only when not streaming)
-    if (!isStreaming && trimmed === '/resume') {
+    // Intercept /resume before the send path so stale running state cannot block session recovery.
+    if (trimmed === '/resume') {
       clearInput()
       setShowResumeList(true)
       return
@@ -2183,12 +2212,10 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     setAttachedFiles([])
     setPromptSuggestion(null)
     setShowSlashMenu(false)
-    if (!isStreaming || isInterrupted) {
-      setIsStreaming(true)
-      setIsInterrupted(false)
-      setStreamingText('')
-      setStreamingThinking('')
-    }
+    setIsStreaming(true)
+    setIsInterrupted(false)
+    setStreamingText('')
+    setStreamingThinking('')
 
     // Build prompt with file paths prepended
     let promptToSend = trimmed
@@ -2223,20 +2250,36 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     try {
       const sendInvokeStarted = performance.now()
       const result = await sendClaudeMessage(promptToSend, imageDataUrls.length > 0 ? imageDataUrls : undefined) as { ok?: boolean; error?: string } | undefined
+      if (result?.ok === false) {
+        throw new Error(result.error || 'Codex rejected the request.')
+      }
       if (debugSend) {
         host.debug.log(
           `${tag} handleSend sendMessage returned elapsedMs=${Math.round(performance.now() - sendInvokeStarted)} totalMs=${Math.round(performance.now() - sendStart)} result=${JSON.stringify(result)}`
         )
       }
     } catch (err) {
+      const message = formatUnknownError(err)
       if (debugSend) {
         host.debug.log(
-          `${tag} handleSend sendMessage failed totalMs=${Math.round(performance.now() - sendStart)} error=${err instanceof Error ? err.message : String(err)}`
+          `${tag} handleSend sendMessage failed totalMs=${Math.round(performance.now() - sendStart)} error=${message}`
         )
       }
-      throw err
+      setIsStreaming(false)
+      setIsInterrupted(false)
+      setStreamingText('')
+      setStreamingThinking('')
+      setPendingPermission(null)
+      setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+      setMessages(prev => [...prev, {
+        id: `err-send-${Date.now()}`,
+        sessionId,
+        role: 'system' as const,
+        content: `Error: ${message}`,
+        timestamp: Date.now(),
+      }])
     }
-  }, [isRemoteConnected, isStreaming, sessionId, attachedImages, attachedFiles, clearInput, sendClaudeMessage])
+  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, sendClaudeMessage])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return
