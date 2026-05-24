@@ -3795,7 +3795,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             ) : null
             return <Fragment key={item.id || `msg-${i}`}>{divider}{renderMessage(item, i)}</Fragment>
           })}
-          {isStreaming && !streamingText && !streamingThinking && showThinkingMsg && (
+          {isStreaming && !streamingText && (!streamingThinking || !showThinkingMsg) && (
             <div className="tl-item">
               <div className="tl-dot dot-thinking" />
               <div className="tl-content claude-thinking">
