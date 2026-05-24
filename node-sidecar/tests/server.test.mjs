@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 
@@ -3174,6 +3174,35 @@ async function inProcess() {
     }
   } finally {
     if (savedBin !== undefined) process.env.BAT_SIDECAR_CLAUDE_BIN = savedBin
+  }
+
+  if (process.platform !== 'win32') {
+    const savedDataDirForManaged = process.env.BAT_SIDECAR_DATA_DIR
+    const managedRoot = mkdtempSync(join(tmpdir(), 'bat-managed-claude-'))
+    const managedKey = `${process.platform}-${process.arch}`
+    const managedBin = join(
+      managedRoot,
+      'runtimes',
+      'claude-agent-sdk',
+      '0.3.150',
+      managedKey,
+      'claude',
+    )
+    mkdirSync(dirname(managedBin), { recursive: true })
+    writeFileSync(managedBin, '#!/bin/sh\necho claude 0.3.150\n')
+    chmodSync(managedBin, 0o700)
+    process.env.BAT_SIDECAR_DATA_DIR = managedRoot
+    delete process.env.BAT_SIDECAR_CLAUDE_BIN
+    __resetClaudeCliCacheForTests()
+    try {
+      assert.equal(resolveClaudeCliBinary(), managedBin)
+    } finally {
+      rmSync(managedRoot, { recursive: true, force: true })
+      if (savedDataDirForManaged === undefined) delete process.env.BAT_SIDECAR_DATA_DIR
+      else process.env.BAT_SIDECAR_DATA_DIR = savedDataDirForManaged
+      if (savedBin !== undefined) process.env.BAT_SIDECAR_CLAUDE_BIN = savedBin
+      __resetClaudeCliCacheForTests()
+    }
   }
 
   // Env override: set BAT_SIDECAR_CLAUDE_BIN to a node shim that

@@ -53,6 +53,7 @@ const PREVIEW_LINE_LIMIT: usize = 200;
 const PREVIEW_CHARS: usize = 120;
 const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+const CLAUDE_AGENT_SDK_NATIVE_VERSION: &str = "0.3.150";
 const WORKTREE_DIFF_MAX_BYTES: usize = 10 * 1024 * 1024;
 const CLAUDE_CLI_HOOK_SCRIPT: &str = r#"import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -203,6 +204,18 @@ fn claude_sdk_package_name(target_os: &str, arch: &str) -> Option<&'static str> 
     }
 }
 
+fn claude_runtime_platform_dir(target_os: &str, arch: &str) -> Option<&'static str> {
+    match (target_os, arch) {
+        ("windows", "x86_64") => Some("win32-x64"),
+        ("windows", "aarch64") => Some("win32-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        _ => None,
+    }
+}
+
 fn claude_exe_name(target_os: &str) -> &'static str {
     if target_os == "windows" {
         "claude.exe"
@@ -224,6 +237,22 @@ fn find_bundled_claude_cli_in_base(
         .join(package)
         .join(claude_exe_name(target_os));
     candidate.is_file().then_some(candidate)
+}
+
+fn managed_claude_cli_path(data_dir: &Path, target_os: &str, arch: &str) -> Option<PathBuf> {
+    Some(
+        data_dir
+            .join("runtimes")
+            .join("claude-agent-sdk")
+            .join(CLAUDE_AGENT_SDK_NATIVE_VERSION)
+            .join(claude_runtime_platform_dir(target_os, arch)?)
+            .join(claude_exe_name(target_os)),
+    )
+}
+
+fn find_managed_claude_cli(app: &AppHandle, target_os: &str, arch: &str) -> Option<PathBuf> {
+    let candidate = managed_claude_cli_path(&app_data_dir(app).ok()?, target_os, arch)?;
+    (candidate.is_file() && claude_cli_version_check(&candidate)).then_some(candidate)
 }
 
 fn compressed_claude_cli_cache_key(path: &Path) -> Option<String> {
@@ -318,6 +347,92 @@ fn find_claude_cli_on_path(
     })
 }
 
+fn find_claude_cli_in_dirs(
+    dirs: impl IntoIterator<Item = PathBuf>,
+    pathext_env: Option<&str>,
+    target_os: &str,
+) -> Option<PathBuf> {
+    let exts = if target_os == "windows" {
+        pathext_env
+            .unwrap_or(".COM;.EXE;.BAT;.CMD")
+            .split(';')
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        vec![String::new()]
+    };
+    dirs.into_iter().find_map(|dir| {
+        exts.iter().find_map(|ext| {
+            let candidate = dir.join(format!("claude{ext}"));
+            candidate.is_file().then_some(candidate)
+        })
+    })
+}
+
+fn common_claude_dirs(target_os: &str) -> Vec<PathBuf> {
+    match target_os {
+        "macos" => vec![
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+        ],
+        "linux" => vec![
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn claude_cli_version_check(candidate: &Path) -> bool {
+    let mut command = Command::new(candidate);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    hide_console_window(&mut command);
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() >= Duration::from_secs(5) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+fn resolve_system_claude_cli_path(target_os: &str) -> Option<PathBuf> {
+    if let Some(candidate) = find_claude_cli_on_path(
+        std::env::var("PATH").ok().as_deref(),
+        std::env::var("PATHEXT").ok().as_deref(),
+        target_os,
+    ) {
+        if claude_cli_version_check(&candidate) {
+            return Some(candidate);
+        }
+    }
+    find_claude_cli_in_dirs(
+        common_claude_dirs(target_os),
+        std::env::var("PATHEXT").ok().as_deref(),
+        target_os,
+    )
+    .filter(|candidate| claude_cli_version_check(candidate))
+}
+
 pub(crate) fn resolve_claude_cli_path(app: &AppHandle) -> String {
     if let Ok(override_path) = std::env::var("BAT_SIDECAR_CLAUDE_BIN") {
         if !override_path.trim().is_empty() {
@@ -326,6 +441,12 @@ pub(crate) fn resolve_claude_cli_path(app: &AppHandle) -> String {
     }
     let target_os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
+    if let Some(candidate) = find_managed_claude_cli(app, target_os, arch) {
+        return candidate.to_string_lossy().to_string();
+    }
+    if let Some(candidate) = resolve_system_claude_cli_path(target_os) {
+        return candidate.to_string_lossy().to_string();
+    }
     if let Ok(resource_dir) = app.path().resource_dir() {
         if let Some(candidate) =
             find_packaged_claude_cli_in_base(app, &resource_dir, target_os, arch)
@@ -338,13 +459,7 @@ pub(crate) fn resolve_claude_cli_path(app: &AppHandle) -> String {
             return candidate.to_string_lossy().to_string();
         }
     }
-    find_claude_cli_on_path(
-        std::env::var("PATH").ok().as_deref(),
-        std::env::var("PATHEXT").ok().as_deref(),
-        target_os,
-    )
-    .map(|path| path.to_string_lossy().to_string())
-    .unwrap_or_default()
+    String::new()
 }
 
 fn build_claude_cli_command(cli_path: &str, args: &[&str]) -> Command {
@@ -4323,6 +4438,24 @@ mod tests {
         assert_eq!(
             find_bundled_claude_cli_in_base(&base, "windows", "x86_64"),
             Some(bin)
+        );
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn claude_cli_managed_path_matches_runtime_setup_layout() {
+        let base = temp_data_dir("claude-cli-managed");
+        let expected = base
+            .join("runtimes")
+            .join("claude-agent-sdk")
+            .join(CLAUDE_AGENT_SDK_NATIVE_VERSION)
+            .join("darwin-arm64")
+            .join("claude");
+
+        assert_eq!(
+            managed_claude_cli_path(&base, "macos", "aarch64"),
+            Some(expected)
         );
 
         fs::remove_dir_all(base).ok();

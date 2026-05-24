@@ -1,10 +1,10 @@
 // claude.* auth + account handlers. Also exports the Claude CLI binary
 // resolver / spawner used by other handlers (sendMessage, forkSession).
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { accessSync, chmodSync, constants as fsConstants, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
-import { platform } from 'node:os'
+import { createHash, randomUUID } from 'node:crypto'
+import { arch, platform } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { execFile, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -19,16 +19,53 @@ export const AUTH_STATUS_TIMEOUT_MS = 10_000
 // we give it a generous ceiling. The CLI exits as soon as the OAuth
 // callback fires; if the user never completes the flow, we time out.
 export const AUTH_LOGIN_TIMEOUT_MS = 180_000
+export const CLAUDE_AGENT_SDK_NATIVE_VERSION = '0.3.150'
+
+const CLAUDE_NATIVE_CATALOG = {
+  'darwin-arm64': {
+    packageName: 'claude-agent-sdk-darwin-arm64',
+    integrity: 'sha512-YVWJ0MHdSy0tobHO2G5/+vd9iRGyosg3wM6sY4pirezsnwZJBkJv/9IeVIaKqdLv83OA6HUcxxOLGzKSBawq2Q==',
+  },
+  'darwin-x64': {
+    packageName: 'claude-agent-sdk-darwin-x64',
+    integrity: 'sha512-72M8mKCa7Tfy66G5hr5z9TirKynQa9sFj+4qDxkAp5LAYnyViUzHOqO6mEjVtwDr2aXnjqkhTdBtc5Hmn1m/nA==',
+  },
+  'linux-arm64': {
+    packageName: 'claude-agent-sdk-linux-arm64',
+    integrity: 'sha512-1nhCXjfbxwhQPTgx2+q8lFYHx8DGJEOdaSd4wLvhGJifd/9QJwtnxaill1q+qdggZDroXHDJOTugttP0be6diA==',
+  },
+  'linux-x64': {
+    packageName: 'claude-agent-sdk-linux-x64',
+    integrity: 'sha512-G7yOB9O6twOhQH3SvZWIvOcjehfA0HD5f/j49Z/yxZK5U72hOxtnbx7GCbcH/8AyB7JFyHjHpR9hxOxFoJNIhQ==',
+  },
+  'win32-arm64': {
+    packageName: 'claude-agent-sdk-win32-arm64',
+    integrity: 'sha512-z9vlm3JdOQ1Vqj9sG8kW+r9miunv4UFQOn0AqoI++J9AgoCBjKGCH2WWmZYhGOvezZqogunXaTciJvhtDhJiWQ==',
+  },
+  'win32-x64': {
+    packageName: 'claude-agent-sdk-win32-x64',
+    integrity: 'sha512-lpAVi7tZdHi3BXRWmCVmOE2O8q7nzbvuMneYKS9rkpIbcjMjOBk6ud/rlp8Cuiqmp4LzZ8ylbbI7vFEiylK6Hg==',
+  },
+}
+
+for (const entry of Object.values(CLAUDE_NATIVE_CATALOG)) {
+  entry.version = CLAUDE_AGENT_SDK_NATIVE_VERSION
+  entry.url = `https://registry.npmjs.org/@anthropic-ai/${entry.packageName}/-/${entry.packageName}-${entry.version}.tgz`
+}
 
 // Resolve the path to a `claude` CLI binary. The bundled SDK ships one
 // per platform (e.g. node-sidecar/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe);
-// prefer that so a fresh release MSI install can authenticate without
-// requiring a system claude. Falls back to whatever's on PATH.
+// but setup-install builds prefer an app-data managed runtime and then a
+// working user-managed PATH runtime before falling back to bundled resources.
 //
 // Test/fixture override: BAT_SIDECAR_CLAUDE_BIN points at any executable
 // (typically a printf-and-exit shim) so tests can verify the spawn path
 // without invoking the real CLI's network flow.
 let _claudeCliPathCache
+let _claudeCliInstallPromise
+let _claudeNativeCatalogForTests = null
+let _claudeNativeDownloaderForTests = null
+
 function candidateSidecarRoots(fromFile) {
   const roots = []
   let dir = dirname(fromFile)
@@ -39,6 +76,25 @@ function candidateSidecarRoots(fromFile) {
     dir = parent
   }
   return roots
+}
+
+function currentClaudeRuntimeKey() {
+  return `${platform()}-${arch()}`
+}
+
+function claudeExeName() {
+  return platform() === 'win32' ? 'claude.exe' : 'claude'
+}
+
+function managedClaudeCliPath(dataDir = resolveDataDir(), key = currentClaudeRuntimeKey()) {
+  return join(
+    dataDir,
+    'runtimes',
+    'claude-agent-sdk',
+    CLAUDE_AGENT_SDK_NATIVE_VERSION,
+    key,
+    claudeExeName(),
+  )
 }
 
 function isUsableClaudeCli(candidate) {
@@ -96,8 +152,13 @@ function resolvePackagedClaudeCli(candidate, exeName) {
 }
 
 function findOnPath(exeName) {
-  const pathEnv = process.env.PATH || ''
-  for (const dir of pathEnv.split(delimiter)) {
+  const dirs = (process.env.PATH || '').split(delimiter).filter(Boolean)
+  if (platform() === 'darwin') {
+    dirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin')
+  } else if (platform() !== 'win32') {
+    dirs.push('/usr/local/bin', '/usr/bin', '/bin')
+  }
+  for (const dir of dirs) {
     if (!dir) continue
     const candidate = join(dir, exeName)
     if (isUsableClaudeCli(candidate)) return candidate
@@ -119,7 +180,19 @@ export function resolveClaudeCliBinary() {
     'claude-agent-sdk-linux-x64',
     'claude-agent-sdk-linux-arm64',
   ]
-  const exeName = platform() === 'win32' ? 'claude.exe' : 'claude'
+  const exeName = claudeExeName()
+  const managed = managedClaudeCliPath()
+  if (isUsableClaudeCli(managed)) {
+    _claudeCliPathCache = managed
+    return managed
+  }
+
+  const system = findOnPath(exeName)
+  if (system) {
+    _claudeCliPathCache = system
+    return system
+  }
+
   // Walk up from this module to find node_modules/@anthropic-ai/.
   // import.meta.url is a file URL; resolve up to the sidecar root and
   // probe node_modules/@anthropic-ai/<pkg>/.
@@ -158,16 +231,122 @@ export function resolveClaudeCliBinary() {
       }
     }
   }
-  _claudeCliPathCache = findOnPath(exeName)
-  return _claudeCliPathCache
+  _claudeCliPathCache = null
+  return null
+}
+
+function catalogForCurrentPlatform() {
+  const catalog = _claudeNativeCatalogForTests || CLAUDE_NATIVE_CATALOG
+  return catalog[currentClaudeRuntimeKey()] || null
+}
+
+async function downloadClaudeNativeArchive(entry) {
+  if (_claudeNativeDownloaderForTests) return _claudeNativeDownloaderForTests(entry)
+  const res = await fetch(entry.url, {
+    headers: { 'User-Agent': 'better-agent-terminal-runtime-installer' },
+  })
+  if (!res.ok) {
+    throw new Error(`download failed: ${entry.url} -> HTTP ${res.status}`)
+  }
+  return Buffer.from(await res.arrayBuffer())
+}
+
+function verifyIntegrity(bytes, integrity) {
+  const [algorithm, expected] = String(integrity || '').split('-', 2)
+  if (!algorithm || !expected) throw new Error('missing Claude native package integrity')
+  const actual = createHash(algorithm).update(bytes).digest('base64')
+  if (actual !== expected) {
+    throw new Error(`Claude native package integrity mismatch: expected ${algorithm}-${expected}`)
+  }
+}
+
+function tarString(bytes) {
+  const nul = bytes.indexOf(0)
+  return bytes.subarray(0, nul === -1 ? bytes.length : nul).toString('utf8')
+}
+
+function readTarEntry(tarBytes, wantedName) {
+  let offset = 0
+  while (offset + 512 <= tarBytes.length) {
+    const header = tarBytes.subarray(offset, offset + 512)
+    if (header.every(byte => byte === 0)) return null
+    const name = tarString(header.subarray(0, 100))
+    const prefix = tarString(header.subarray(345, 500))
+    const fullName = prefix ? `${prefix}/${name}` : name
+    const sizeText = tarString(header.subarray(124, 136)).trim()
+    const size = parseInt(sizeText || '0', 8)
+    offset += 512
+    const body = tarBytes.subarray(offset, offset + size)
+    if (fullName === wantedName) return Buffer.from(body)
+    offset += Math.ceil(size / 512) * 512
+  }
+  return null
+}
+
+async function installManagedClaudeCli() {
+  const entry = catalogForCurrentPlatform()
+  if (!entry) return null
+  const finalPath = managedClaudeCliPath()
+  if (isUsableClaudeCli(finalPath)) return finalPath
+
+  const finalDir = dirname(finalPath)
+  const tmpDir = join(resolveDataDir(), 'runtimes', '.tmp', `claude-agent-sdk-${randomUUID()}`)
+  const tmpPath = join(tmpDir, claudeExeName())
+  try {
+    const archive = await downloadClaudeNativeArchive(entry)
+    verifyIntegrity(archive, entry.integrity)
+    const exeBytes = readTarEntry(gunzipSync(archive), `package/${claudeExeName()}`)
+    if (!exeBytes) throw new Error(`Claude native package missing package/${claudeExeName()}`)
+    await rm(tmpDir, { recursive: true, force: true })
+    await mkdir(tmpDir, { recursive: true, mode: 0o700 })
+    await writeFile(tmpPath, exeBytes, { mode: 0o700 })
+    chmodSync(tmpPath, 0o700)
+    if (!isUsableClaudeCli(tmpPath)) throw new Error('installed Claude native binary failed --version check')
+    await mkdir(dirname(finalDir), { recursive: true, mode: 0o700 })
+    await rm(finalDir, { recursive: true, force: true })
+    await rename(tmpDir, finalDir)
+    _claudeCliPathCache = undefined
+    return isUsableClaudeCli(finalPath) ? finalPath : null
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+export async function resolveClaudeCliBinaryWithInstall() {
+  const resolved = resolveClaudeCliBinary()
+  if (resolved) return resolved
+  if (!_claudeCliInstallPromise) {
+    _claudeCliInstallPromise = installManagedClaudeCli()
+      .finally(() => { _claudeCliInstallPromise = null })
+  }
+  try {
+    await _claudeCliInstallPromise
+  } finally {
+    _claudeCliPathCache = undefined
+  }
+  return resolveClaudeCliBinary()
 }
 
 // Spawn the resolved claude CLI with the given args. Falls back to
 // invoking 'claude' from PATH when no bundled binary is available.
-export function spawnClaudeCli(args, opts, callback) {
+export function spawnClaudeCli(args, opts, callback, options = {}) {
   const bundled = resolveClaudeCliBinary()
-  const bin = bundled || 'claude'
-  return execFile(bin, args, opts, callback)
+  if (bundled) return execFile(bundled, args, opts, callback)
+  if (!options.installManaged) return execFile('claude', args, opts, callback)
+
+  let child = null
+  resolveClaudeCliBinaryWithInstall()
+    .then((installed) => {
+      child = execFile(installed || 'claude', args, opts, callback)
+    })
+    .catch((err) => {
+      callback(err, '', '')
+    })
+  return {
+    kill(signal) {
+      if (child) child.kill(signal)
+    },
+  }
 }
 
 export function fetchAuthStatus() {
@@ -237,6 +416,8 @@ async function markSwitchWarningShown() {
 
 // Exported for tests.
 export function __resetClaudeCliCacheForTests() { _claudeCliPathCache = undefined }
+export function __setClaudeNativeCatalogForTests(value) { _claudeNativeCatalogForTests = value }
+export function __setClaudeNativeDownloaderForTests(value) { _claudeNativeDownloaderForTests = value }
 
 // --- handlers --------------------------------------------------------------
 
@@ -260,13 +441,13 @@ registerHandler('claude.accountList', async () => readAccountIndex())
 // the OAuth callback fires; we just wait for the process to exit. The
 // 180s ceiling is generous for a real-user flow but bounded so a stuck
 // flow eventually fails. Uses the bundled CLI when available so a fresh
-// release MSI install can authenticate without requiring system claude.
+// setup-install release can authenticate without requiring system claude.
 registerHandler('claude.authLogin', async () => {
   return new Promise((resolve) => {
     spawnClaudeCli(['auth', 'login'], { timeout: AUTH_LOGIN_TIMEOUT_MS }, (err) => {
       if (err) resolve({ success: false, error: err.message })
       else resolve({ success: true })
-    })
+    }, { installManaged: true })
   })
 })
 // authLogout shells out to `claude auth logout` and reports the result.
@@ -282,7 +463,7 @@ registerHandler('claude.authLogout', async () => {
       invalidateAccountMetadataCache()
       if (err) resolve({ success: false, error: err.message })
       else resolve({ success: true })
-    })
+    }, { installManaged: true })
   })
 })
 registerHandler('claude.accountImportCurrent', async () => null)

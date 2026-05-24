@@ -71,7 +71,10 @@ export let __resetMetadataCacheForTests
 export let fetchAuthStatus
 export let readAccountIndex
 export let resolveClaudeCliBinary
+export let resolveClaudeCliBinaryWithInstall
 export let __resetClaudeCliCacheForTests
+export let __setClaudeNativeCatalogForTests
+export let __setClaudeNativeDownloaderForTests
 
 async function loadHandlers() {
   const loaded = new Map()
@@ -91,7 +94,10 @@ async function loadHandlers() {
   fetchAuthStatus = auth.fetchAuthStatus
   readAccountIndex = auth.readAccountIndex
   resolveClaudeCliBinary = auth.resolveClaudeCliBinary
+  resolveClaudeCliBinaryWithInstall = auth.resolveClaudeCliBinaryWithInstall
   __resetClaudeCliCacheForTests = auth.__resetClaudeCliCacheForTests
+  __setClaudeNativeCatalogForTests = auth.__setClaudeNativeCatalogForTests
+  __setClaudeNativeDownloaderForTests = auth.__setClaudeNativeDownloaderForTests
 }
 
 // Ping is the lone built-in that doesn't fit any namespace — keep it

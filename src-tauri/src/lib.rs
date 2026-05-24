@@ -27,9 +27,9 @@ use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, clipboard as clipboard_cmd,
     debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd,
     image as image_cmd, notification as notification_cmd, profile as profile_cmd, pty as pty_cmd,
-    remote as remote_cmd, settings, shell as shell_cmd, snippet as snippet_cmd,
-    tunnel as tunnel_cmd, update as update_cmd, worker_buffer as worker_buffer_cmd,
-    workspace as workspace_cmd, worktree as worktree_cmd,
+    remote as remote_cmd, runtime as runtime_cmd, settings, shell as shell_cmd,
+    snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
+    worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -130,6 +130,10 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
             settings::settings_get_shell_path,
             settings::settings_clear_terminal_history,
             settings::settings_detect_cx,
+            runtime_cmd::runtime_get_status,
+            runtime_cmd::runtime_install,
+            runtime_cmd::runtime_open_runtime_folder,
+            runtime_cmd::runtime_clear_managed,
             shell_cmd::shell_open_external,
             shell_cmd::shell_open_path,
             dialog_cmd::dialog_confirm,

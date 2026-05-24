@@ -38,6 +38,7 @@ const STDERR_TAIL_LIMIT: usize = 100;
 const RESTART_BACKOFF_WINDOW: Duration = Duration::from_secs(30);
 const RESTART_BACKOFF_LIMIT: usize = 3;
 const RESTART_BACKOFF_DURATION: Duration = Duration::from_secs(5);
+const NODE_RUNTIME_VERSION: &str = "20.18.1";
 
 // Avoid launching the sidecar with cwd `/` (the default when a macOS .app is
 // started from Finder). Falls back to None when no usable home dir is found,
@@ -584,21 +585,27 @@ struct SidecarReplyError {
 pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, BridgeError> {
     use tauri::Manager;
 
-    // Prefer a bundled Node runtime if present in resource_dir; that's
-    // the path a release build takes when the runtime was shipped via
-    // bundle.resources. Fall back to PATH lookup so `tauri dev` and
-    // unit tests still work without any bundled binary.
+    // Runtime setup prefers app-data managed Node, then a user-managed PATH
+    // Node, then the all-in-one bundled runtime.
+    let managed = find_managed_node(app);
+    let system = which_node();
     let bundled = app
         .path()
         .resource_dir()
         .ok()
         .and_then(|dir| find_bundled_node(&dir));
-    let node_path = match bundled {
-        Some(p) => p,
-        None => which_node().ok_or_else(|| BridgeError {
-            message: "sidecar: could not find `node` (no bundled runtime, not on PATH)".into(),
-        })?,
-    };
+    let cwd_bundled = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_bundled_node(&cwd));
+    let node_path = managed
+        .or(system)
+        .or(bundled)
+        .or(cwd_bundled)
+        .ok_or_else(|| BridgeError {
+            message:
+                "sidecar: could not find `node` (no managed runtime, no PATH runtime, no bundled runtime)"
+                    .into(),
+        })?;
     // Tauri app data dir, if available. We pass it to the sidecar via env
     // so file-backed handlers land in the same directory the Rust side
     // uses (e.g. claude-accounts.json written by the Electron build).
@@ -654,6 +661,29 @@ fn find_sidecar_script(base_dir: &Path, prefer_dist: bool) -> Option<PathBuf> {
         [src, dist]
     };
     candidates.into_iter().find(|p| p.is_file())
+}
+
+fn node_runtime_key() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("windows", "aarch64") => Some("win32-arm64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        _ => None,
+    }
+}
+
+fn find_managed_node(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
+    let root = crate::app_data::app_data_dir_opt(app)?
+        .join("runtimes")
+        .join("node")
+        .join(NODE_RUNTIME_VERSION)
+        .join(node_runtime_key()?);
+    let candidates = [root.join(exe_name), root.join("bin").join(exe_name)];
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 // Look for a bundled Node runtime under <resource_dir>/node-runtime.

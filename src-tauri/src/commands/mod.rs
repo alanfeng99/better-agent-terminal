@@ -20,6 +20,7 @@ pub mod notification;
 pub mod profile;
 pub mod pty;
 pub mod remote;
+pub mod runtime;
 pub mod settings;
 pub mod shell;
 pub mod snippet;

@@ -35,7 +35,7 @@ import { loadAnthropicSdk } from '../lib/sdk-loader.mjs'
 import { info as logInfo, warn as logWarn } from '../lib/logger.mjs'
 import { sdkModelForClaudeSelection } from '../lib/models.mjs'
 import { loadInstalledPlugins, dataUrlToContentBlock } from '../lib/plugins.mjs'
-import { resolveClaudeCliBinary } from './claude-auth.mjs'
+import { resolveClaudeCliBinaryWithInstall } from './claude-auth.mjs'
 import { buildCanUseTool } from './claude-permission.mjs'
 import { LiveQuery } from '../lib/live-query.mjs'
 import { isCodexSession, sendCodexMessage, isCodexAgentPreset } from './codex.mjs'
@@ -484,7 +484,7 @@ async function buildQueryOptions(s, sessionId, prompt) {
   }
   const sdkMode = s.permissionMode === 'bypassPlan' ? 'plan' : s.permissionMode
   const sdkModel = sdkModelForClaudeSelection(s.model)
-  const claudeCodePath = resolveClaudeCliBinary()
+  const claudeCodePath = await resolveClaudeCliBinaryWithInstall()
   const queryOptions = {
     cwd,
     systemPrompt: { type: 'preset', preset: 'claude_code' },

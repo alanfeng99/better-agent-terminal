@@ -5,6 +5,7 @@
 // thread/turn/item notifications back into the existing claude:* event shape
 // consumed by the renderer.
 
+use crate::app_data;
 use crate::codex_auth;
 use crate::commands::app as app_cmd;
 use crate::event_hub::publish_runtime_event;
@@ -30,6 +31,7 @@ const MSG_BUFFER_CAP: usize = 300;
 const DEFAULT_CODEX_CONTEXT_WINDOW: u64 = 1_000_000;
 const DEFAULT_CODEX_REASONING_SUMMARY: &str = "auto";
 const COMMAND_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(100);
+const CODEX_RUNTIME_VERSION: &str = "0.133.0";
 static CODEX_TEMP_IMAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 type ReplySender = Sender<Result<Value, String>>;
@@ -369,6 +371,28 @@ fn codex_platform_package() -> Option<&'static str> {
     }
 }
 
+fn codex_runtime_key() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("windows", "x86_64") => Some("win32-x64"),
+        ("windows", "aarch64") => Some("win32-arm64"),
+        _ => None,
+    }
+}
+
+fn managed_codex_candidate(app: &AppHandle) -> Option<PathBuf> {
+    let path = app_data::app_data_dir_opt(app)?
+        .join("runtimes")
+        .join("codex")
+        .join(CODEX_RUNTIME_VERSION)
+        .join(codex_runtime_key()?)
+        .join(codex_exe_name());
+    path.is_file().then_some(path)
+}
+
 fn bundled_codex_candidate(base: &Path) -> Option<PathBuf> {
     let triple = codex_target_triple()?;
     let platform_pkg = codex_platform_package()?;
@@ -410,8 +434,23 @@ fn bundled_codex_candidate(base: &Path) -> Option<PathBuf> {
 }
 
 fn find_codex_on_path() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
+    let mut dirs = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        dirs.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+        ]);
+    } else if cfg!(target_os = "linux") {
+        dirs.extend([
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+        ]);
+    }
+    for dir in dirs {
         let candidate = dir.join(codex_exe_name());
         if candidate.is_file() {
             return Some(candidate);
@@ -436,6 +475,14 @@ fn resolve_codex_binary(app: &AppHandle) -> CodexBinary {
         }
     }
 
+    if let Some(path) = managed_codex_candidate(app) {
+        return CodexBinary::Native(path);
+    }
+
+    if let Some(path) = find_codex_on_path() {
+        return CodexBinary::Native(path);
+    }
+
     if let Ok(resource_dir) = app.path().resource_dir() {
         if let Some(path) = bundled_codex_candidate(&resource_dir) {
             return CodexBinary::Native(path);
@@ -451,10 +498,6 @@ fn resolve_codex_binary(app: &AppHandle) -> CodexBinary {
                 break;
             }
         }
-    }
-
-    if let Some(path) = find_codex_on_path() {
-        return CodexBinary::Native(path);
     }
 
     CodexBinary::Wrapper("codex".to_string())

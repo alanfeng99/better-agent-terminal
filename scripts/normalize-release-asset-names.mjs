@@ -33,6 +33,7 @@ function normalizeBundleMode(value) {
 }
 
 function withModeSuffix(name, mode) {
+  if (mode === 'all-in-one') return name
   return mode ? `${name}.${mode}` : name
 }
 

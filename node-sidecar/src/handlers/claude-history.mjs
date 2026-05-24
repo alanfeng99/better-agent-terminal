@@ -10,7 +10,7 @@ import { sessions, buildSessionMeta, resetSessionTranscript } from '../lib/state
 import { __resolveProjectsDir, archiveFilePath, resolveDataDir } from '../lib/data-paths.mjs'
 import { loadAnthropicSdk } from '../lib/sdk-loader.mjs'
 import { warn as logWarn } from '../lib/logger.mjs'
-import { resolveClaudeCliBinary } from './claude-auth.mjs'
+import { resolveClaudeCliBinaryWithInstall } from './claude-auth.mjs'
 
 function historyProjectDirCandidates(cwd) {
   const encoded = String(cwd || process.cwd()).replace(/[^a-zA-Z0-9]/g, '-')
@@ -318,7 +318,7 @@ registerHandler('claude.forkSession', async (params) => {
   const cwd = (session?.options && typeof session.options === 'object' && typeof session.options.cwd === 'string')
     ? session.options.cwd
     : process.cwd()
-  const claudeCodePath = resolveClaudeCliBinary()
+  const claudeCodePath = await resolveClaudeCliBinaryWithInstall()
   const abortController = new AbortController()
   const timeoutHandle = setTimeout(() => {
     if (!abortController.signal.aborted) {

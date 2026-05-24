@@ -18,7 +18,7 @@ try {
     arch: 'arm64',
     mode: 'all-in-one',
   })
-  assert.deepEqual(await readdir(macDir), ['BetterAgentTerminal-2.9.0-pre.15-arm64.all-in-one.dmg'])
+  assert.deepEqual(await readdir(macDir), ['BetterAgentTerminal-2.9.0-pre.15-arm64.dmg'])
 
   const linuxDir = join(root, 'appimage')
   await mkdir(linuxDir)

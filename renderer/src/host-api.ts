@@ -442,6 +442,13 @@ function createTauriHost(): BatAppAPI {
         error?: string
       }>('settings_detect_cx'),
     },
+    runtime: {
+      getStatus: () => getInvoke()<unknown>('runtime_get_status'),
+      install: (tool: string) => getInvoke()<unknown>('runtime_install', { tool }),
+      openRuntimeFolder: () => getInvoke()<void>('runtime_open_runtime_folder'),
+      clearManaged: (tool?: string) =>
+        getInvoke()<void>('runtime_clear_managed', tool ? { tool } : {}),
+    },
     shell: {
       openExternal: (url: string) => getInvoke()<void>('shell_open_external', { url }),
       openPath: (path: string) => getInvoke()<void>('shell_open_path', { path }),
@@ -1301,7 +1308,7 @@ function permissiveValueFor(name: string, asFunction = true): unknown {
 // Namespaces whose methods are routed through Tauri invoke. Listed here so
 // the permissive shim can prefer the real impl when present.
 const PORTED_NAMESPACES = new Set([
-  'settings', 'shell', 'dialog', 'fs', 'clipboard', 'image',
+  'settings', 'runtime', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
   'notification', 'system', 'github', 'snippet', 'profile',
   'claude', 'worktree', 'agent', 'workerBuffer',

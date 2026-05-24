@@ -54,7 +54,34 @@ interface CxDetectionStatus {
   error?: string
 }
 
-type SettingsTab = 'general' | 'agent' | 'remote' | 'accounts' | 'advanced'
+type RuntimeTool = 'node' | 'codex' | 'claude'
+type RuntimeState = 'ready' | 'missing' | 'installing' | 'broken'
+type RuntimeSource = 'managed' | 'system' | 'bundled' | 'missing'
+
+interface RuntimeItemStatus {
+  tool: RuntimeTool
+  state: RuntimeState
+  source: RuntimeSource
+  path?: string
+  version?: string
+  message?: string
+  canInstallManaged: boolean
+}
+
+interface RuntimeStatus {
+  node: RuntimeItemStatus
+  codex: RuntimeItemStatus
+  claude: RuntimeItemStatus
+}
+
+interface RuntimeInstallResult {
+  tool: RuntimeTool
+  ok: boolean
+  status: RuntimeItemStatus
+  message?: string
+}
+
+type SettingsTab = 'general' | 'agent' | 'remote' | 'accounts' | 'runtime' | 'advanced'
 const CUSTOM_MODEL_OPTION = '__custom_model__'
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
@@ -73,6 +100,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const [cxStatus, setCxStatus] = useState<CxDetectionStatus | null>(null)
   const [cxDetecting, setCxDetecting] = useState(false)
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
+  const [runtimeLoading, setRuntimeLoading] = useState(false)
+  const [runtimeInstallingTool, setRuntimeInstallingTool] = useState<RuntimeTool | null>(null)
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
 
   // QR code state
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
@@ -146,10 +177,30 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   }, [])
 
+  const refreshRuntimeStatus = useCallback(async () => {
+    setRuntimeLoading(true)
+    setRuntimeError(null)
+    try {
+      const status = await host.runtime.getStatus() as RuntimeStatus | null
+      setRuntimeStatus(status)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setRuntimeError(message)
+      host.debug.log?.('[SettingsPanel] Failed to load runtime status:', message)
+    } finally {
+      setRuntimeLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     if (activeTab !== 'agent') return
     refreshCxStatus().catch(() => { /* ignore */ })
   }, [activeTab, settings.cxBinaryPath, settings.cxSemanticNavigationEnabled, refreshCxStatus])
+
+  useEffect(() => {
+    if (activeTab !== 'runtime') return
+    refreshRuntimeStatus().catch(() => { /* ignore */ })
+  }, [activeTab, refreshRuntimeStatus])
 
   // Check font availability on mount
   useEffect(() => {
@@ -426,6 +477,46 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
   }, [generateQrForIp])
 
+  const handleRuntimeInstall = useCallback(async (tool: RuntimeTool) => {
+    setRuntimeInstallingTool(tool)
+    setRuntimeError(null)
+    try {
+      const result = await host.runtime.install(tool) as RuntimeInstallResult
+      if (!result.ok && result.message) {
+        setRuntimeError(result.message)
+      }
+      await refreshRuntimeStatus()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setRuntimeError(message)
+      host.debug.log?.('[SettingsPanel] Failed to install runtime:', tool, message)
+    } finally {
+      setRuntimeInstallingTool(null)
+    }
+  }, [refreshRuntimeStatus])
+
+  const handleOpenRuntimeFolder = useCallback(() => {
+    Promise.resolve(host.runtime.openRuntimeFolder()).catch(error => {
+      const message = error instanceof Error ? error.message : String(error)
+      setRuntimeError(message)
+      host.debug.log?.('[SettingsPanel] Failed to open runtime folder:', message)
+    })
+  }, [])
+
+  const handleClearManagedRuntimes = useCallback(async () => {
+    const confirmed = confirm(t('settings.runtimeClearManagedConfirm', 'Clear managed runtimes?'))
+    if (!confirmed) return
+    setRuntimeError(null)
+    try {
+      await host.runtime.clearManaged()
+      await refreshRuntimeStatus()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setRuntimeError(message)
+      host.debug.log?.('[SettingsPanel] Failed to clear managed runtimes:', message)
+    }
+  }, [refreshRuntimeStatus, t])
+
   const terminalColors = settingsStore.getTerminalColors()
 
   const tabs: { id: SettingsTab; label: string }[] = [
@@ -433,8 +524,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     { id: 'agent', label: t('settings.tabAgent') },
     { id: 'remote', label: t('settings.tabRemote') },
     { id: 'accounts', label: t('settings.tabAccounts', 'Accounts') },
+    { id: 'runtime', label: t('settings.tabRuntime', 'Runtime') },
     { id: 'advanced', label: t('settings.tabAdvanced') },
   ]
+
+  const runtimeRows = runtimeStatus
+    ? [runtimeStatus.node, runtimeStatus.codex, runtimeStatus.claude]
+    : []
 
   return (
     <div className="settings-overlay" onClick={onClose}>
@@ -1174,6 +1270,68 @@ Reference: https://github.com/ind-igo/cx`
                 </div>
               )}
             </div>
+          )}
+
+          {/* ── RUNTIME TAB ── */}
+          {activeTab === 'runtime' && (
+            <>
+              <div className="settings-section">
+                <h3>{t('settings.runtimeManager', 'Runtime Manager')}</h3>
+                <div className="runtime-toolbar">
+                  <button className="statusline-template-btn" onClick={refreshRuntimeStatus} disabled={runtimeLoading || runtimeInstallingTool !== null}>
+                    {runtimeLoading ? t('common.loading', 'Loading...') : t('common.refresh', 'Refresh')}
+                  </button>
+                  <button className="statusline-template-btn" onClick={handleOpenRuntimeFolder}>
+                    {t('settings.openRuntimeFolder', 'Open Runtime Folder')}
+                  </button>
+                  <button className="statusline-template-btn" onClick={handleClearManagedRuntimes} disabled={runtimeInstallingTool !== null}>
+                    {t('settings.clearManagedRuntimes', 'Clear Managed')}
+                  </button>
+                </div>
+                {runtimeError && (
+                  <p className="runtime-error">{runtimeError}</p>
+                )}
+                <div className="runtime-list">
+                  {runtimeRows.map(item => (
+                    <div key={item.tool} className="runtime-row">
+                      <div className="runtime-row-main">
+                        <div className="runtime-row-title">
+                          <span className={`runtime-state-dot ${item.state}`} />
+                          <span>{item.tool === 'node' ? 'Node' : item.tool === 'codex' ? 'Codex' : 'Claude'}</span>
+                          <span className={`runtime-state-pill ${item.state}`}>{item.state}</span>
+                          <span className="runtime-source-pill">{item.source}</span>
+                        </div>
+                        <div className="runtime-row-meta">
+                          {item.version || t('settings.runtimeNoVersion', 'No version')}
+                        </div>
+                        {item.path && (
+                          <div className="runtime-path" title={item.path}>{item.path}</div>
+                        )}
+                        {item.message && (
+                          <div className="runtime-message">{item.message}</div>
+                        )}
+                      </div>
+                      <div className="runtime-row-actions">
+                        {item.canInstallManaged && (
+                          <button
+                            className="statusline-template-btn"
+                            onClick={() => handleRuntimeInstall(item.tool)}
+                            disabled={runtimeInstallingTool !== null}
+                          >
+                            {runtimeInstallingTool === item.tool
+                              ? t('settings.runtimeInstalling', 'Installing...')
+                              : t('settings.runtimeInstallManaged', 'Install Managed')}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {!runtimeLoading && runtimeRows.length === 0 && (
+                    <p className="settings-hint">{t('settings.runtimeUnavailable', 'Runtime status is unavailable.')}</p>
+                  )}
+                </div>
+              </div>
+            </>
           )}
 
           {/* ── ADVANCED TAB ── */}
