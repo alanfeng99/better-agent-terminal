@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::window_registry;
@@ -590,7 +590,7 @@ fn activate_notification_workspace(app: &AppHandle, window_id: &str, workspace_i
         let _ = app.emit_to(
             window_id,
             "notification:activate-workspace",
-            workspace_id.to_string(),
+            json!({ "windowId": window_id, "workspaceId": workspace_id }),
         );
     }
 }

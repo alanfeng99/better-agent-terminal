@@ -267,6 +267,41 @@ function listenAdapter<T>(
   }
 }
 
+let currentWindowIdForEventPromise: Promise<string | null> | null = null
+function getCurrentWindowIdForEvent(): Promise<string | null> {
+  if (!currentWindowIdForEventPromise) {
+    currentWindowIdForEventPromise = getInvoke()<string | null>('app_get_window_id')
+      .catch(() => null)
+  }
+  return currentWindowIdForEventPromise
+}
+
+function listenTargetedStringPayload(
+  event: string,
+  valueKey: string,
+  cb: (value: string) => void,
+): UnlistenFn {
+  return listenAdapter<unknown>(event, payload => {
+    let value: string | null = null
+    let targetWindowId: string | null = null
+    if (typeof payload === 'string') {
+      value = payload
+    } else if (payload && typeof payload === 'object') {
+      const record = payload as Record<string, unknown>
+      value = typeof record[valueKey] === 'string' ? record[valueKey] : null
+      targetWindowId = typeof record.windowId === 'string' ? record.windowId : null
+    }
+    if (!value) return
+    if (!targetWindowId) {
+      cb(value)
+      return
+    }
+    void getCurrentWindowIdForEvent().then(currentWindowId => {
+      if (currentWindowId === targetWindowId) cb(value)
+    })
+  })
+}
+
 // Stamp the agent session's workspace identity onto the start/resume
 // options. The notification center needs this to label and route entries
 // by workspace — several workspaces can share one cwd and window, so the
@@ -529,11 +564,11 @@ function createTauriHost(): BatAppAPI {
         return new URLSearchParams(search).get('detached')
       },
       onDetached: (callback: (workspaceId: string) => void) =>
-        listenAdapter<string>('workspace:detached', callback),
+        listenTargetedStringPayload('workspace:detached', 'workspaceId', callback),
       onReattached: (callback: (workspaceId: string) => void) =>
-        listenAdapter<string>('workspace:reattached', callback),
-      onReload: (callback: (data?: string) => void) =>
-        listenAdapter<string | undefined>('workspace:reload', callback),
+        listenTargetedStringPayload('workspace:reattached', 'workspaceId', callback),
+      onReload: (callback: (data?: unknown) => void) =>
+        listenAdapter<unknown>('workspace:reload', callback),
     },
     profile: {
       // Tauri persists profile metadata and local profile snapshots using the
@@ -600,7 +635,7 @@ function createTauriHost(): BatAppAPI {
       // the workspace id the agent ran in, so the renderer can switch to
       // that workspace tab (focusing the OS window alone isn't enough).
       onActivateWorkspace: (cb: (workspaceId: string) => void) =>
-        listenAdapter<string>('notification:activate-workspace', cb),
+        listenTargetedStringPayload('notification:activate-workspace', 'workspaceId', cb),
     },
     system: {
       // Tauri does not expose a power-monitor resume event here.
@@ -652,7 +687,12 @@ function createTauriHost(): BatAppAPI {
       resolveProfileWindowClose: (action: ProfileWindowCloseAction) =>
         getInvoke()<boolean>('app_resolve_profile_window_close', { action }),
       onProfileWindowCloseRequested: (callback: (request: ProfileWindowCloseRequest) => void) =>
-        listenAdapter<ProfileWindowCloseRequest>('app:profile-window-close-requested', callback),
+        listenAdapter<ProfileWindowCloseRequest>('app:profile-window-close-requested', request => {
+          if (!request?.windowId) return
+          void getCurrentWindowIdForEvent().then(currentWindowId => {
+            if (currentWindowId === request.windowId) callback(request)
+          })
+        }),
       newWindow: () => getInvoke()<string>('app_new_window'),
       takeFreshWindowFlag: () => getInvoke()<boolean>('app_take_fresh_window_flag'),
       focusNextWindow: () => getInvoke()<boolean>('app_focus_next_window'),

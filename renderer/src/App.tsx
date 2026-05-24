@@ -191,6 +191,7 @@ export default function App() {
   // Track workspaces that have been visited (for lazy mounting)
   const [mountedWorkspaces, setMountedWorkspaces] = useState<Set<string>>(new Set())
   const lastRenderSummaryRef = useRef<string>('')
+  const [currentWindowId, setCurrentWindowId] = useState<string | null>(null)
   const currentWindowIdRef = useRef<string | null>(null)
   const activeProfileIdRef = useRef<string | null>(null)
   const activeRemoteProfileIdRef = useRef<string | null>(null)
@@ -241,6 +242,7 @@ export default function App() {
       const windowId = await host.app.getWindowId().catch(() => null)
       if (!disposed && windowId) {
         currentWindowIdRef.current = windowId
+        setCurrentWindowId(windowId)
         workspaceStore.setWindowId(windowId)
       }
       return windowId
@@ -493,6 +495,13 @@ export default function App() {
     const initProfile = async () => {
       const t0 = performance.now()
       try {
+        const initWindowId = currentWindowIdRef.current || await host.app.getWindowId().catch(() => null)
+        if (initWindowId) {
+          currentWindowIdRef.current = initWindowId
+          setCurrentWindowId(initWindowId)
+          workspaceStore.setWindowId(initWindowId)
+        }
+
         const launchProfileId = await host.app.getLaunchProfile()
         dlog(`[init] getLaunchProfile: ${(performance.now() - t0).toFixed(0)}ms`)
 
@@ -500,12 +509,25 @@ export default function App() {
         const result = await host.profile.list()
         dlog(`[init] profile.list: ${(performance.now() - t1).toFixed(0)}ms`)
 
-        // Determine which profile this window should use:
-        // 1. Launch profile (--profile= argument) takes priority
-        // 2. Window registry's profileId (per-window binding)
-        // 3. First active profile as fallback
         const windowProfileId = await host.app.getWindowProfile()
-        const profileId = launchProfileId || windowProfileId || result.activeProfileIds[0]
+        const freshEmptyWindow = typeof host.app.takeFreshWindowFlag === 'function'
+          ? await host.app.takeFreshWindowFlag().catch(() => false)
+          : false
+        const windowProfileTakesPriority = Boolean(
+          windowProfileId && initWindowId && initWindowId !== 'main',
+        )
+        const effectiveLaunchProfileId = (freshEmptyWindow || windowProfileTakesPriority)
+          ? null
+          : launchProfileId
+
+        // Determine which profile this window should use:
+        // 1. Launch profile (--profile= argument) takes priority for the initial process window.
+        // 2. Fresh Ctrl+N windows ignore the process launch profile and use their registry binding.
+        // 3. Profile windows created by Tauri use their registry binding over the process launch profile.
+        // 4. First active profile as fallback
+        const profileId = windowProfileTakesPriority
+          ? windowProfileId
+          : effectiveLaunchProfileId || windowProfileId || result.activeProfileIds[0]
         let active = result.profiles.find(p => p.id === profileId)
 
         // If the id doesn't match anything in `result` (which is the REMOTE
@@ -523,7 +545,7 @@ export default function App() {
         }
 
         if (host.debug.isDebugMode === true) {
-          dlog(`[init] profile selection launch=${launchProfileId || 'none'} window=${windowProfileId || 'none'} firstActive=${result.activeProfileIds[0] || 'none'} selected=${profileId || 'none'} active=${active ? `${active.id}/${active.name}/${active.type}` : 'none'}`)
+          dlog(`[init] profile selection windowId=${initWindowId || 'none'} launch=${launchProfileId || 'none'} effectiveLaunch=${effectiveLaunchProfileId || 'none'} window=${windowProfileId || 'none'} windowPriority=${windowProfileTakesPriority} freshEmpty=${freshEmptyWindow} firstActive=${result.activeProfileIds[0] || 'none'} selected=${profileId || 'none'} active=${active ? `${active.id}/${active.name}/${active.type}` : 'none'}`)
         }
 
         if (active?.type === 'remote' && active.remoteHost && active.remoteToken && active.remoteFingerprint) {
@@ -537,7 +559,7 @@ export default function App() {
           )
           dlog(`[init] remote.connect: ${(performance.now() - tRemote).toFixed(0)}ms`)
           if ('error' in connectResult) {
-            if (launchProfileId) {
+            if (effectiveLaunchProfileId) {
               // New window launch failed — show error and close instead of corrupting shared state
               setAppNotification(t('app.remoteConnectionFailed', { error: connectResult.error }))
               setTimeout(() => window.close(), 3000)
@@ -563,7 +585,7 @@ export default function App() {
           }
         } else if (active?.type === 'remote') {
           // Remote profile missing connection info — fall back
-          if (launchProfileId) {
+          if (effectiveLaunchProfileId) {
             setAppNotification(t('app.remoteMissingInfo'))
             setTimeout(() => window.close(), 3000)
             return
@@ -583,17 +605,14 @@ export default function App() {
           // Skip when the window was just opened via Cmd+N (app_new_window) — those
           // windows are intentionally empty, and profile.load would overwrite the
           // empty snapshot with the bound profile's saved workspaces.
-          if (launchProfileId || windowProfileId) {
-            const freshEmpty = !launchProfileId && typeof host.app.takeFreshWindowFlag === 'function'
-              ? await host.app.takeFreshWindowFlag().catch(() => false)
-              : false
-            if (freshEmpty) {
+          if (effectiveLaunchProfileId || windowProfileId) {
+            if (freshEmptyWindow) {
               if (host.debug.isDebugMode === true) {
                 dlog(`[init] skip profile.load: window is fresh-empty (Cmd+N)`)
               }
             } else {
               if (host.debug.isDebugMode === true) {
-                dlog(`[init] profile.load local id=${active.id} reason=${launchProfileId ? 'launch' : 'window'}`)
+                dlog(`[init] profile.load local id=${active.id} reason=${effectiveLaunchProfileId ? 'launch' : 'window'}`)
               }
               await host.profile.load(active.id)
             }
@@ -614,10 +633,14 @@ export default function App() {
         }
 
         // Store windowId for cross-window workspace drag
-        const winId = await host.app.getWindowId()
-        if (winId) workspaceStore.setWindowId(winId)
+        const winId = initWindowId || await host.app.getWindowId()
+        if (winId) {
+          currentWindowIdRef.current = winId
+          setCurrentWindowId(winId)
+          workspaceStore.setWindowId(winId)
+        }
 
-        if (isTauri() && !launchProfileId) {
+        if (isTauri() && !effectiveLaunchProfileId) {
           const currentProfileId = (await host.app.getWindowProfile()) || active?.id || profileId || null
           const tRestore = performance.now()
           const restored = await host.app.restoreActiveProfiles(currentProfileId)
@@ -920,7 +943,7 @@ export default function App() {
         width={panelSettings.sidebar.width}
         workspaces={visibleWorkspaces}
         activeWorkspaceId={state.activeWorkspaceId}
-        windowId={workspaceStore.getWindowId()}
+        windowId={currentWindowId}
         groups={workspaceStore.getGroups()}
         activeGroup={workspaceStore.getActiveGroup()}
         onSetActiveGroup={(group) => workspaceStore.setActiveGroup(group)}

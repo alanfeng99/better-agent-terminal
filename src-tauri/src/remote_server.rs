@@ -1588,7 +1588,11 @@ fn invoke_rust_for_remote(
                     let payload = Value::String(data.clone());
                     for window_id in window_registry::live_window_ids_for_profile(app, &profile_id)
                     {
-                        let _ = app.emit_to(&window_id, "workspace:reload", payload.clone());
+                        let _ = app.emit_to(
+                            &window_id,
+                            "workspace:reload",
+                            json!({ "windowId": window_id, "data": data }),
+                        );
                     }
                     if let Some(remote_state) = app.try_state::<RustRemoteServerState>() {
                         remote_state.broadcast_event("workspace:reload", &payload);

@@ -308,8 +308,16 @@ pub async fn workspace_move_to_window(
             target_json.len()
         ),
     );
-    let _ = app.emit_to(&emit_source_window_id, "workspace:reload", source_json);
-    let _ = app.emit_to(&emit_target_window_id, "workspace:reload", target_json);
+    let _ = app.emit_to(
+        &emit_source_window_id,
+        "workspace:reload",
+        json!({ "windowId": emit_source_window_id, "data": source_json }),
+    );
+    let _ = app.emit_to(
+        &emit_target_window_id,
+        "workspace:reload",
+        json!({ "windowId": emit_target_window_id, "data": target_json }),
+    );
     Ok(true)
 }
 
@@ -318,7 +326,11 @@ fn emit_detached_closed(app: &tauri::AppHandle, workspace_id: &str) {
         return;
     };
     if let Some(parent_id) = entry.detached_parent_window_id {
-        let _ = app.emit_to(&parent_id, "workspace:reattached", workspace_id.to_string());
+        let _ = app.emit_to(
+            &parent_id,
+            "workspace:reattached",
+            json!({ "windowId": parent_id, "workspaceId": workspace_id }),
+        );
     }
 }
 
@@ -425,7 +437,7 @@ pub fn workspace_detach(
             let _ = schedule_app.emit_to(
                 &build_parent_window_id,
                 "workspace:detached",
-                build_workspace_id,
+                json!({ "windowId": build_parent_window_id, "workspaceId": build_workspace_id }),
             );
         }) {
             log_tauri(

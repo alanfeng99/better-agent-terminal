@@ -219,19 +219,35 @@ function exitFromChild(code, signal) {
   process.exit(code ?? 1)
 }
 
+function debugExecutablePath() {
+  const names = process.platform === 'win32'
+    ? ['BetterAgentTerminal.exe', 'better-agent-terminal.exe']
+    : ['BetterAgentTerminal', 'better-agent-terminal']
+  for (const name of names) {
+    const candidate = join(repoRoot, 'src-tauri', 'target', 'debug', name)
+    if (existsSync(candidate)) return candidate
+  }
+  return join(repoRoot, 'src-tauri', 'target', 'debug', names[0])
+}
+
 if (stableMode) {
   ensureIsolatedProfile()
-  const build = spawnProcess('pnpm', ['run', 'tauri:build:debug'])
-  build.on('exit', (code, signal) => {
+  const prepare = spawnProcess('pnpm', ['run', 'prepare:tauri-bundle'])
+  prepare.on('exit', (code, signal) => {
     if (signal || code !== 0) {
       exitFromChild(code, signal)
       return
     }
-    const exe = process.platform === 'win32'
-      ? join(repoRoot, 'src-tauri', 'target', 'debug', 'better-agent-terminal.exe')
-      : join(repoRoot, 'src-tauri', 'target', 'debug', 'better-agent-terminal')
-    const app = spawnProcess(exe, forwardedArgs)
-    app.on('exit', exitFromChild)
+    const build = spawnProcess('pnpm', ['exec', 'tauri', 'build', '--debug', '--no-bundle'])
+    build.on('exit', (code, signal) => {
+      if (signal || code !== 0) {
+        exitFromChild(code, signal)
+        return
+      }
+      const exe = debugExecutablePath()
+      const app = spawnProcess(exe, forwardedArgs)
+      app.on('exit', exitFromChild)
+    })
   })
 } else {
   ensureIsolatedProfile()

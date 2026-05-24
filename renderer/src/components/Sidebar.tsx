@@ -11,6 +11,7 @@ import {
   WORKSPACE_MOVE_MIME,
   WORKSPACE_MOVE_STORAGE_KEY,
   createWorkspaceMovePayload,
+  dataTransferHasType,
   isWorkspaceMoveDropMatch,
   parseWorkspaceMovePayload,
   resolveWorkspaceMoveDrop,
@@ -210,7 +211,45 @@ export function Sidebar({
 
   useEffect(() => {
     return listenTauriNativeDrop((detail) => {
+      const storedMove = readStoredWorkspaceMove()
+      const nativeWorkspaceMove = resolveWorkspaceMoveDrop(
+        { getData: () => '' },
+        windowId,
+        storedMove,
+      )
+      if (detail.type === 'drop' && detail.paths.length === 0 && isWorkspaceMoveDropMatch(nativeWorkspaceMove)) {
+        const inside = isTauriNativeDropInside(detail, workspaceListRef.current)
+        debugLog('[Sidebar] native workspace drop parsed', {
+          targetWindowId: windowId,
+          sourceWindowId: nativeWorkspaceMove.payload.sourceWindowId,
+          workspaceId: nativeWorkspaceMove.payload.workspaceId,
+          insideWorkspaceList: inside,
+          x: detail.x,
+          y: detail.y,
+        })
+        void moveWorkspaceToWindow(
+          nativeWorkspaceMove.payload.sourceWindowId,
+          windowId!,
+          nativeWorkspaceMove.payload.workspaceId,
+          workspaces.length,
+        )
+        setExternalDragOver(false)
+        setDragOverId(null)
+        setDragPosition(null)
+        return
+      }
+
       if (!isTauriNativeDropInside(detail, workspaceListRef.current)) {
+        if (detail.type === 'drop' && detail.paths.length === 0 && storedMove) {
+          debugLog('[Sidebar] native workspace drop ignored', {
+            targetWindowId: windowId,
+            reason: isWorkspaceMoveDropMatch(nativeWorkspaceMove) ? 'unexpected-match' : nativeWorkspaceMove.reason,
+            storedSourceWindowId: storedMove.sourceWindowId,
+            storedWorkspaceId: storedMove.workspaceId,
+            x: detail.x,
+            y: detail.y,
+          })
+        }
         if (detail.type === 'drop' || detail.type === 'leave') setExternalDragOver(false)
         return
       }
@@ -227,7 +266,7 @@ export function Sidebar({
       }
       void addDroppedWorkspaceFolders(detail.paths)
     })
-  }, [addDroppedWorkspaceFolders, draggedId, isRemoteConnected])
+  }, [addDroppedWorkspaceFolders, draggedId, isRemoteConnected, moveWorkspaceToWindow, windowId, workspaces.length])
 
   // Context menu handler
   const handleContextMenu = useCallback((e: React.MouseEvent, workspaceId: string) => {
@@ -372,8 +411,8 @@ export function Sidebar({
     // For cross-window drags (no local draggedId), check MIME type
     if (
       !draggedId
-      && !e.dataTransfer.types.includes(WORKSPACE_MOVE_MIME)
-      && !e.dataTransfer.types.includes('text/plain')
+      && !dataTransferHasType(e.dataTransfer, WORKSPACE_MOVE_MIME)
+      && !dataTransferHasType(e.dataTransfer, 'text/plain')
       && !readStoredWorkspaceMove()
     ) return
 
@@ -487,15 +526,15 @@ export function Sidebar({
           // Only react to external file drops or cross-window workspace drags (not internal workspace reorder)
           if (draggedId) return
           if (
-            e.dataTransfer.types.includes(WORKSPACE_MOVE_MIME)
-            || e.dataTransfer.types.includes('text/plain')
+            dataTransferHasType(e.dataTransfer, WORKSPACE_MOVE_MIME)
+            || dataTransferHasType(e.dataTransfer, 'text/plain')
             || readStoredWorkspaceMove()
           ) {
             e.preventDefault()
             e.dataTransfer.dropEffect = 'move'
             return
           }
-          if (e.dataTransfer.types.includes('Files')) {
+          if (dataTransferHasType(e.dataTransfer, 'Files')) {
             e.preventDefault()
             if (isRemoteConnected) {
               e.dataTransfer.dropEffect = 'none'
@@ -530,7 +569,7 @@ export function Sidebar({
             return
           }
           e.preventDefault()
-          if (isRemoteConnected && dataTransfer.types.includes('Files')) {
+          if (isRemoteConnected && dataTransferHasType(dataTransfer, 'Files')) {
             window.alert('Remote sessions can only add folders that exist on the host.')
             setDragOverId(null)
             setDragPosition(null)
@@ -542,7 +581,7 @@ export function Sidebar({
           // against an already-claimed cache entry and surface a spurious
           // "needs the host to expose paths" alert. Skip the DOM-path
           // workspace addition entirely under Tauri.
-          if (isTauri() && dataTransfer.types.includes('Files')) {
+          if (isTauri() && dataTransferHasType(dataTransfer, 'Files')) {
             setDragOverId(null)
             setDragPosition(null)
             return

@@ -3,6 +3,7 @@ import {
   WORKSPACE_MOVE_MIME,
   WORKSPACE_MOVE_TTL_MS,
   createWorkspaceMovePayload,
+  dataTransferHasType,
   isWorkspaceMoveDropMatch,
   parseWorkspaceMovePayload,
   resolveWorkspaceMoveDrop,
@@ -90,6 +91,13 @@ async function main() {
   assertMiss(
     resolveWorkspaceMoveDrop(dataTransfer({ 'text/plain': 'ws-chewing' }), 'window-n', null, now),
     'missing-payload',
+  )
+
+  assert.equal(dataTransferHasType({ types: [WORKSPACE_MOVE_MIME, 'text/plain'] }, WORKSPACE_MOVE_MIME), true)
+  assert.equal(dataTransferHasType({ types: ['text/plain'] }, WORKSPACE_MOVE_MIME), false)
+  assert.equal(
+    dataTransferHasType({ types: { contains: (type: string) => type === WORKSPACE_MOVE_MIME } }, WORKSPACE_MOVE_MIME),
+    true,
   )
 
   console.log('workspace-move-drag: passed')

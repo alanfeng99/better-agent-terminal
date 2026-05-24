@@ -687,10 +687,24 @@ class WorkspaceStore {
   getWindowId(): string | null { return this.windowId }
 
   listenForReload(): () => void {
-    return host.workspace.onReload((data?: string) => {
-      if (data) {
-        this.applySerializedData(data, { preserveActiveSelection: true })
+    return host.workspace.onReload((payload?: unknown) => {
+      if (typeof payload === 'string' && payload) {
+        this.applySerializedData(payload, { preserveActiveSelection: true })
         return
+      }
+      if (payload && typeof payload === 'object') {
+        const reload = payload as { windowId?: unknown; data?: unknown }
+        if (typeof reload.windowId === 'string' && reload.windowId !== this.windowId) {
+          debugLog('[workspace-store] reload ignored: target window mismatch', {
+            windowId: this.windowId,
+            targetWindowId: reload.windowId,
+          })
+          return
+        }
+        if (typeof reload.data === 'string' && reload.data) {
+          this.applySerializedData(reload.data, { preserveActiveSelection: true })
+          return
+        }
       }
       this.load()
     })

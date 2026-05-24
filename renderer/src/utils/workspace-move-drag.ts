@@ -28,6 +28,28 @@ export interface WorkspaceMoveDataTransferLike {
   getData(type: string): string
 }
 
+export interface WorkspaceMoveDataTransferTypesLike {
+  types?: Iterable<string> | ArrayLike<string> | {
+    contains?: (type: string) => boolean
+  } | null
+}
+
+export function dataTransferHasType(
+  dataTransfer: WorkspaceMoveDataTransferTypesLike,
+  type: string,
+): boolean {
+  const types = dataTransfer.types
+  if (!types) return false
+  if (typeof (types as { contains?: unknown }).contains === 'function') {
+    return (types as { contains: (value: string) => boolean }).contains(type)
+  }
+  try {
+    return Array.from(types as Iterable<string> | ArrayLike<string>).includes(type)
+  } catch {
+    return false
+  }
+}
+
 export function createWorkspaceMovePayload(
   workspaceId: string,
   sourceWindowId: string,
