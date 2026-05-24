@@ -770,12 +770,9 @@ pub async fn pty_create(
     worker_buffer: State<'_, WorkerBufferState>,
     options: CreatePtyOptions,
 ) -> Result<String, CommandError> {
-    if let Some(result) = remote_value_for_window(
-        &app,
-        &window,
-        "pty:create",
-        vec![json!(options.clone())],
-    ) {
+    if let Some(result) =
+        remote_value_for_window(&app, &window, "pty:create", vec![json!(options.clone())])
+    {
         return result;
     }
     let handle = state.handle();
@@ -1054,7 +1051,11 @@ pub fn pty_set_viewport_mode(
         &app,
         &window,
         "pty:set-viewport-mode",
-        vec![json!(id.clone()), json!(mode.clone()), json!(options.clone())],
+        vec![
+            json!(id.clone()),
+            json!(mode.clone()),
+            json!(options.clone()),
+        ],
     ) {
         return result;
     }
@@ -1094,8 +1095,7 @@ pub fn pty_kill(
     state: State<'_, PtyState>,
     id: String,
 ) -> Result<(), CommandError> {
-    if let Some(result) =
-        remote_unit_for_window(&app, &window, "pty:kill", vec![json!(id.clone())])
+    if let Some(result) = remote_unit_for_window(&app, &window, "pty:kill", vec![json!(id.clone())])
     {
         return result;
     }

@@ -207,6 +207,16 @@ fn clear_runtime_status(session: &mut CodexSession) {
     session.runtime_status_started_at = None;
 }
 
+fn clear_runtime_status_if_set(session: &mut CodexSession) -> bool {
+    let had_status = session.runtime_status.is_some()
+        || session.runtime_message.is_some()
+        || session.runtime_status_started_at.is_some();
+    if had_status {
+        clear_runtime_status(session);
+    }
+    had_status
+}
+
 fn remember_ignored_turn(session: &mut CodexSession, turn_id: String) {
     if !session.ignored_turn_ids.iter().any(|id| id == &turn_id) {
         session.ignored_turn_ids.push(turn_id);
@@ -2761,9 +2771,11 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
                     if session.abort_requested {
                         session.is_running = false;
                         session.active_turn_id = None;
+                        clear_runtime_status_if_set(session);
                         return session.thread_id.clone().zip(turn_id.clone());
                     }
                     session.is_running = true;
+                    clear_runtime_status_if_set(session);
                     if session.last_turn_started_at.is_none() {
                         session.num_turns += 1;
                         session.last_turn_started_at = Some(Instant::now());
@@ -2805,6 +2817,9 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
                         ),
                     }
                 });
+            }
+            if let Some(meta) = state.get_session_meta(&session_id) {
+                emit(app, "claude:status", &session_id, "meta", meta);
             }
         }
         "error" => {
@@ -3024,6 +3039,20 @@ fn handle_item_started(
     session_id: &str,
     item: &Value,
 ) {
+    let cleared_meta = {
+        let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
+        sessions.get_mut(session_id).and_then(|session| {
+            if clear_runtime_status_if_set(session) {
+                Some(session.metadata())
+            } else {
+                None
+            }
+        })
+    };
+    if let Some(meta) = cleared_meta {
+        emit(app, "claude:status", session_id, "meta", meta);
+    }
+
     match item_type(item) {
         Some("agentMessage") => {
             if let Some(session) = state
@@ -3682,6 +3711,53 @@ mod tests {
         let meta = session.metadata();
         assert_eq!(meta["contextWindow"], DEFAULT_CODEX_CONTEXT_WINDOW);
         assert_eq!(meta["contextTokens"], 175);
+    }
+
+    #[test]
+    fn codex_runtime_status_clear_reports_only_when_status_was_set() {
+        let mut session = CodexSession {
+            session_id: "s-1".to_string(),
+            thread_id: Some("thread-1".to_string()),
+            cwd: "/repo".to_string(),
+            model: "gpt-5.5".to_string(),
+            sandbox_mode: "workspace-write".to_string(),
+            approval_policy: "on-request".to_string(),
+            effort: "high".to_string(),
+            start_time: Instant::now(),
+            active_turn_id: None,
+            assistant_text: String::new(),
+            thinking_text: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            num_turns: 0,
+            last_turn_started_at: None,
+            last_turn_first_token_ms: None,
+            last_turn_duration_ms: None,
+            messages: Vec::new(),
+            temporary_image_paths: Vec::new(),
+            command_outputs: HashMap::new(),
+            command_output_last_emit: HashMap::new(),
+            runtime_status: None,
+            runtime_message: None,
+            runtime_status_started_at: None,
+            is_running: false,
+            is_resting: false,
+            abort_requested: false,
+            ignored_turn_ids: Vec::new(),
+        };
+
+        assert!(!clear_runtime_status_if_set(&mut session));
+        set_runtime_status(
+            &mut session,
+            "waiting_for_api",
+            "Still waiting for Codex API response.",
+        );
+        assert!(clear_runtime_status_if_set(&mut session));
+        assert_eq!(session.runtime_status, None);
+        assert_eq!(session.runtime_message, None);
+        assert_eq!(session.runtime_status_started_at, None);
+        assert!(!clear_runtime_status_if_set(&mut session));
     }
 
     #[test]

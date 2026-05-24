@@ -813,10 +813,7 @@ mod tests {
 
     #[test]
     fn find_node_in_dirs_finds_candidate_without_path_env() {
-        let tmp = std::env::temp_dir().join(format!(
-            "bat-node-dir-test-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("bat-node-dir-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
