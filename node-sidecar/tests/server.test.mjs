@@ -1080,8 +1080,11 @@ async function inProcess() {
       assert.equal(typeof sdkStatus.payload.meta[numKey], 'number',
         `claude:status meta.${numKey} must be a number`)
     }
-    // message payload.message.content shape preserved
-    assert.equal(events[4].payload.message.message.content[0].text, 'hello back')
+    // Renderer-facing assistant messages are normalized to the same
+    // ClaudeMessage shape used in session state.
+    assert.equal(events[4].payload.message.role, 'assistant')
+    assert.equal(events[4].payload.message.content, 'hello back')
+    assert.ok(events[4].payload.message.id.startsWith('assistant-'))
     const sendState = await dispatch({ jsonrpc: '2.0', id: 2211, method: 'claude.getSessionState', params: { sessionId: 'send-1' } })
     assert.equal(sendState.result.messages[0].role, 'user')
     assert.equal(sendState.result.messages[0].content, 'hi')
