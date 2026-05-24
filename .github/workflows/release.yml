@@ -106,6 +106,15 @@ jobs:
             bundle_mode: all-in-one
             asset_mode: ''
             prerelease: false
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+            artifact: release-mac-x64-lightweight
+            release_exts: '.dmg'
+            bundle: dmg
+            bundle_mode: lightweight
+            asset_mode: lightweight
+            prerelease: false
           - os: macos-14
             platform: mac
             arch: arm64
