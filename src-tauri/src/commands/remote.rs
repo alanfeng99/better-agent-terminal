@@ -12,7 +12,7 @@ use crate::{app_data, sidecar};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
 struct RemoteAutoStartSettings {
@@ -148,6 +148,7 @@ pub async fn remote_server_status(
 #[tauri::command]
 pub async fn remote_connect(
     app: AppHandle,
+    window: WebviewWindow,
     client_state: State<'_, RustRemoteClientState>,
     host: String,
     port: u16,
@@ -156,9 +157,10 @@ pub async fn remote_connect(
     label: Option<String>,
 ) -> Result<Value, BridgeError> {
     let state = (*client_state).clone();
+    let window_id = Some(window.label().to_string());
     tauri::async_runtime::spawn_blocking(move || {
         Ok(state
-            .connect(app, host, port, token, fingerprint, label)
+            .connect(app, host, port, token, fingerprint, label, window_id)
             .unwrap_or_else(|error| json!({ "connected": false, "error": error })))
     })
     .await

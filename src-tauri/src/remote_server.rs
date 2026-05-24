@@ -2,10 +2,10 @@ use crate::account_store;
 use crate::app_data;
 use crate::codex_app_server::{should_handle_codex, CodexAppServerState};
 use crate::commands::{
-    agent as agent_cmd, claude as claude_cmd, fs as fs_cmd, git as git_cmd, github as github_cmd,
-    image as image_cmd, notification as notification_cmd, profile as profile_cmd, pty as pty_cmd,
-    settings as settings_cmd, snippet as snippet_cmd, worker_buffer::WorkerBufferState,
-    worktree as worktree_cmd,
+    agent as agent_cmd, app as app_cmd, claude as claude_cmd, fs as fs_cmd, git as git_cmd,
+    github as github_cmd, image as image_cmd, notification as notification_cmd,
+    profile as profile_cmd, pty as pty_cmd, settings as settings_cmd, snippet as snippet_cmd,
+    worker_buffer::WorkerBufferState, worktree as worktree_cmd,
 };
 use crate::electron_safe_storage::{
     read_secret_json, read_secret_string, write_secret_json, write_secret_string, SecretJsonRead,
@@ -1180,6 +1180,8 @@ fn invoke_rust_for_remote(
             "version": app.package_info().version.to_string(),
             "protocol": REMOTE_PROTOCOL_V2,
         })),
+        "app:new-window" => profile_id_from_params(channel, params)
+            .map(|profile_id| Value::String(app_cmd::app_new_window_for_profile(app, &profile_id))),
         "agent:get-supported-session-types" | "agent:list-presets" => {
             Ok(agent_cmd::agent_supported_session_type_ids())
         }
@@ -1572,6 +1574,13 @@ fn invoke_rust_for_remote(
             let profile_id = optional_string_param(params, "profileId")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "default".to_string());
+            if let Some(window_id) =
+                optional_string_param(params, "windowId").filter(|value| !value.trim().is_empty())
+            {
+                if let Some(data) = window_registry::workspace_json(app, &window_id) {
+                    return Some(Ok(Value::String(data)));
+                }
+            }
             Ok(
                 profile_cmd::profile_workspace_json_for_remote(app, &profile_id)
                     .map(Value::String)
@@ -1583,17 +1592,38 @@ fn invoke_rust_for_remote(
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "default".to_string());
             string_param(params, "data", channel).map(|data| {
-                let saved = profile_cmd::profile_save_workspace_for_remote(app, &profile_id, &data);
+                let window_id = optional_string_param(params, "windowId")
+                    .filter(|value| !value.trim().is_empty());
+                let saved = if let Some(window_id) = window_id.as_deref() {
+                    window_registry::save_workspace_json(app, window_id, &data)
+                } else {
+                    profile_cmd::profile_save_workspace_for_remote(app, &profile_id, &data)
+                };
                 if saved {
-                    let payload = Value::String(data.clone());
-                    for window_id in window_registry::live_window_ids_for_profile(app, &profile_id)
-                    {
-                        let _ = app.emit_to(
-                            &window_id,
-                            "workspace:reload",
-                            json!({ "windowId": window_id, "data": data }),
+                    let payload = if let Some(window_id) = window_id.as_deref() {
+                        let payload = json!({ "windowId": window_id, "data": data });
+                        let _ = app.emit_to(window_id, "workspace:reload", payload.clone());
+                        remote_debug_log(
+                            app,
+                            format!(
+                                "workspace:save targeted profile={} window={}",
+                                profile_id, window_id
+                            ),
                         );
-                    }
+                        payload
+                    } else {
+                        let payload = Value::String(data.clone());
+                        for window_id in
+                            window_registry::live_window_ids_for_profile(app, &profile_id)
+                        {
+                            let _ = app.emit_to(
+                                &window_id,
+                                "workspace:reload",
+                                json!({ "windowId": window_id, "data": data }),
+                            );
+                        }
+                        payload
+                    };
                     if let Some(remote_state) = app.try_state::<RustRemoteServerState>() {
                         remote_state.broadcast_event("workspace:reload", &payload);
                     }

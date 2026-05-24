@@ -121,13 +121,14 @@ impl RustRemoteClientState {
         token: String,
         fingerprint: String,
         label: Option<String>,
+        window_id: Option<String>,
     ) -> Result<Value, String> {
         validate_connection_fields(&host, port, &token, &fingerprint)?;
         let label = label
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(default_client_label);
         self.disconnect();
-        let connection = connect_socket(&host, port, &token, &fingerprint, &label)?;
+        let connection = connect_socket(&host, port, &token, &fingerprint, &label, window_id)?;
         let compression = connection.compression;
         let protocol = connection.protocol.clone();
         let (tx, rx) = mpsc::channel();
@@ -218,8 +219,14 @@ impl RustRemoteClientState {
         fingerprint: String,
     ) -> Result<Value, String> {
         validate_connection_fields(&host, port, &token, &fingerprint)?;
-        let mut connection =
-            connect_socket(&host, port, &token, &fingerprint, &default_client_label())?;
+        let mut connection = connect_socket(
+            &host,
+            port,
+            &token,
+            &fingerprint,
+            &default_client_label(),
+            None,
+        )?;
         let _ = connection.ws.close(None);
         Ok(json!({ "ok": true }))
     }
@@ -232,8 +239,14 @@ impl RustRemoteClientState {
         fingerprint: String,
     ) -> Result<Value, String> {
         validate_connection_fields(&host, port, &token, &fingerprint)?;
-        let mut connection =
-            connect_socket(&host, port, &token, &fingerprint, &default_client_label())?;
+        let mut connection = connect_socket(
+            &host,
+            port,
+            &token,
+            &fingerprint,
+            &default_client_label(),
+            None,
+        )?;
         let result = invoke_socket(
             &mut connection.ws,
             connection.compression,
@@ -410,6 +423,7 @@ fn connect_socket(
     token: &str,
     fingerprint: &str,
     label: &str,
+    window_id: Option<String>,
 ) -> Result<RemoteConnection, String> {
     let pinned_fingerprint = normalize_fingerprint(fingerprint);
     if pinned_fingerprint.is_empty() {
@@ -460,7 +474,7 @@ fn connect_socket(
             "token": token,
             "protocols": [REMOTE_PROTOCOL_V2, REMOTE_PROTOCOL_LEGACY_V1],
             "compression": [REMOTE_COMPRESSION_GZIP],
-            "args": [label],
+            "args": [label, { "windowId": window_id }],
         }),
         RemoteCompression::None,
     )?;

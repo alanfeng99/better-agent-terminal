@@ -1247,6 +1247,38 @@ pub fn create_empty_entry_for_profile(app: &AppHandle, profile_id: &str) -> Wind
     entry
 }
 
+pub fn create_empty_entry_with_id_for_profile(
+    app: &AppHandle,
+    window_id: &str,
+    profile_id: &str,
+) -> WindowEntry {
+    let state = app.state::<WindowRegistryState>();
+    let entry = {
+        let mut entries = state.entries.lock().unwrap();
+        ensure_entries_ready(app, &mut entries);
+        let entry = WindowEntry {
+            id: window_id.to_string(),
+            profile_id: profile_id.to_string(),
+            snapshot: empty_snapshot(),
+            detached_workspace_id: None,
+            detached_parent_window_id: None,
+            last_active_at: now_millis(),
+        };
+        if let Some(slot) = entries
+            .iter_mut()
+            .find(|candidate| candidate.id == window_id)
+        {
+            *slot = entry.clone();
+        } else {
+            entries.push(entry.clone());
+        }
+        persist_entries(app, &entries);
+        entry
+    };
+    state.fresh_windows.lock().unwrap().insert(entry.id.clone());
+    entry
+}
+
 pub fn take_fresh_window_flag(app: &AppHandle, window_id: &str) -> bool {
     let state = app.state::<WindowRegistryState>();
     let mut fresh = state.fresh_windows.lock().unwrap();

@@ -156,11 +156,12 @@ fn legacy_v1_param_keys(channel: &str) -> Option<&'static [&'static str]> {
     let canonical = canonical_remote_channel(channel);
     match canonical.as_str() {
         "app:get-version" => Some(&[]),
+        "app:new-window" => Some(&["profileId"]),
         "agent:get-supported-session-types" | "agent:list-presets" => Some(&[]),
         "settings:save" => Some(&["data"]),
         "settings:get-shell-path" => Some(&["shellType"]),
-        "workspace:load" => Some(&["profileId"]),
-        "workspace:save" => Some(&["profileId", "data"]),
+        "workspace:load" => Some(&["profileId", "windowId"]),
+        "workspace:save" => Some(&["profileId", "data", "windowId"]),
         "image:read-as-data-url" => Some(&["filePath"]),
         "pty:create" => Some(&["options"]),
         "pty:write" => Some(&["id", "data"]),
@@ -690,11 +691,26 @@ mod tests {
             json!({ "profileId": "hyper" })
         );
         assert_eq!(
+            legacy_v1_args_to_params("workspace:load", &[json!("hyper"), json!("win-2")]),
+            json!({ "profileId": "hyper", "windowId": "win-2" })
+        );
+        assert_eq!(
             legacy_v1_args_to_params(
                 "workspace:save",
                 &[json!("hyper"), json!("{\"workspaces\":[]}")]
             ),
             json!({ "profileId": "hyper", "data": "{\"workspaces\":[]}" })
+        );
+        assert_eq!(
+            legacy_v1_args_to_params(
+                "workspace:save",
+                &[json!("hyper"), json!("{\"workspaces\":[]}"), json!("win-2")]
+            ),
+            json!({ "profileId": "hyper", "data": "{\"workspaces\":[]}", "windowId": "win-2" })
+        );
+        assert_eq!(
+            legacy_v1_args_to_params("app:new-window", &[json!("hyper")]),
+            json!({ "profileId": "hyper" })
         );
     }
 

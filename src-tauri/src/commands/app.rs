@@ -8,8 +8,10 @@
 use super::profile as profile_cmd;
 use crate::app_data;
 use crate::log_file::append_line;
+use crate::remote_client::RustRemoteClientState;
 use crate::window_registry;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,6 +48,7 @@ enum ProfileWindowCloseAction {
 static ACTIVE_PROFILE_RESTORE_DONE: OnceLock<Mutex<bool>> = OnceLock::new();
 static PROFILE_CLOSE_PROMPTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static PROFILE_CLOSE_ALLOWED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+const REMOTE_APP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn active_profile_restore_done() -> &'static Mutex<bool> {
     ACTIVE_PROFILE_RESTORE_DONE.get_or_init(|| Mutex::new(false))
@@ -440,10 +443,58 @@ pub fn app_resolve_profile_window_close(
 #[tauri::command]
 pub fn app_new_window(app: AppHandle, window: WebviewWindow) -> String {
     let current = window_registry::get_entry(&app, window.label());
-    let entry = window_registry::create_empty_entry_for_profile(&app, &current.profile_id);
+    if let Some(id) = remote_app_new_window(&app, &current.profile_id) {
+        let _ =
+            window_registry::create_empty_entry_with_id_for_profile(&app, &id, &current.profile_id);
+        let _ = build_window(&app, &id);
+        return id;
+    }
+    app_new_window_for_profile(&app, &current.profile_id)
+}
+
+pub(crate) fn app_new_window_for_profile(app: &AppHandle, profile_id: &str) -> String {
+    let entry = window_registry::create_empty_entry_for_profile(app, profile_id);
     let id = entry.id;
-    let _ = build_window(&app, &id);
+    let _ = build_window(app, &id);
     id
+}
+
+fn remote_app_new_window(app: &AppHandle, profile_id: &str) -> Option<String> {
+    let profile = profile_cmd::profile_get(app.clone(), profile_id.to_string())?;
+    if profile.kind != "remote" {
+        return None;
+    }
+    let target_profile_id = profile
+        .remote_profile_id
+        .unwrap_or_else(|| "default".to_string());
+    let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let result = remote_client.invoke(
+        "app:new-window",
+        vec![Value::String(target_profile_id)],
+        REMOTE_APP_TIMEOUT,
+    );
+    match result {
+        Ok(Value::String(id)) if !id.trim().is_empty() => Some(id),
+        Ok(Value::Object(obj)) => obj
+            .get("windowId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string),
+        Ok(other) => {
+            log_tauri(
+                app,
+                &format!("[remote-client] app:new-window returned unexpected payload={other}"),
+            );
+            None
+        }
+        Err(err) => {
+            log_tauri(
+                app,
+                &format!("[remote-client] app:new-window failed: {err}"),
+            );
+            None
+        }
+    }
 }
 
 // Returns true exactly once for a window that was just created via
