@@ -34,6 +34,20 @@ function platformKey(platform = process.platform, arch = process.arch) {
   return `${platform}-${arch}`
 }
 
+export function codexRuntimeLayoutCandidates(codexSource, codexTriple, exeName, rgName) {
+  const vendorRoot = join(codexSource, 'vendor', codexTriple)
+  return {
+    binary: [
+      join(vendorRoot, 'bin', exeName),
+      join(vendorRoot, 'codex', exeName),
+    ],
+    ripgrep: [
+      join(vendorRoot, 'codex-path', rgName),
+      join(vendorRoot, 'path', rgName),
+    ],
+  }
+}
+
 async function firstExistingDirectory(candidates, label) {
   for (const candidate of candidates) {
     try {
@@ -88,12 +102,11 @@ export async function prepareTauriCodexRuntime(options = {}) {
 
   const codexSource = await realpath(await firstExistingDirectory(codexSourceCandidates, '@openai Codex native package'))
   const exeName = platform === 'win32' ? 'codex.exe' : 'codex'
-  const sourceBinary = join(codexSource, 'vendor', codexTriple, 'codex', exeName)
-  await assertFile(sourceBinary, '@openai Codex native binary')
   const rgName = platform === 'win32' ? 'rg.exe' : 'rg'
-  const sourceRipgrep = await firstExistingFile([
-    join(codexSource, 'vendor', codexTriple, 'path', rgName),
-  ], '@openai Codex vendored ripgrep')
+  const sourceFiles = codexRuntimeLayoutCandidates(codexSource, codexTriple, exeName, rgName)
+  const sourceBinary = await firstExistingFile(sourceFiles.binary, '@openai Codex native binary')
+  await assertFile(sourceBinary, '@openai Codex native binary')
+  const sourceRipgrep = await firstExistingFile(sourceFiles.ripgrep, '@openai Codex vendored ripgrep')
 
   await rm(outputRoot, { recursive: true, force: true })
   await mkdir(outputRoot, { recursive: true })
