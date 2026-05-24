@@ -5,8 +5,8 @@
 // here instead of relying on shell-specific `source` syntax, so Procfile.tauri
 // works from macOS/Linux shells and Windows shells.
 
-import { readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 
@@ -49,20 +49,156 @@ function readEnvLocal() {
 
 const args = process.argv.slice(2)
 const stableMode = args.includes('--stable')
-const forwardedArgs = args.filter(arg => arg !== '--stable' && arg !== '--print-env')
+const isolatedProfileMode = args.includes('--isolated-profile')
+const forwardedArgs = args.filter(arg => (
+  arg !== '--stable' && arg !== '--isolated-profile' && arg !== '--print-env'
+))
 
 const env = {
   ...process.env,
   ...readEnvLocal(),
 }
 
-const defaultDataDir = join(repoRoot, '.bat-tauri-dev-profile')
-if (!env.BAT_TAURI_DATA_DIR) env.BAT_TAURI_DATA_DIR = defaultDataDir
-if (!env.BAT_SIDECAR_DATA_DIR) env.BAT_SIDECAR_DATA_DIR = env.BAT_TAURI_DATA_DIR
+const defaultDataDir = isolatedProfileMode
+  ? join(repoRoot, '.bat-tauri-dev-local-profile')
+  : join(repoRoot, '.bat-tauri-dev-profile')
+if (isolatedProfileMode) {
+  env.BAT_TAURI_DATA_DIR = env.BAT_TAURI_DEV_DATA_DIR || defaultDataDir
+  env.BAT_SIDECAR_DATA_DIR = env.BAT_TAURI_DEV_SIDECAR_DATA_DIR || env.BAT_TAURI_DATA_DIR
+} else {
+  if (!env.BAT_TAURI_DATA_DIR) env.BAT_TAURI_DATA_DIR = defaultDataDir
+  if (!env.BAT_SIDECAR_DATA_DIR) env.BAT_SIDECAR_DATA_DIR = env.BAT_TAURI_DATA_DIR
+}
+
+const isolatedProfileId = env.BAT_TAURI_DEV_PROFILE_ID || 'tauri-dev-local'
+const isolatedProfileName = env.BAT_TAURI_DEV_PROFILE_NAME || 'Tauri Dev Local'
+
+function readJson(filePath, fallback) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+function writeJson(filePath, value) {
+  mkdirSync(dirname(filePath), { recursive: true })
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+function profileEntry(id, name, now) {
+  return {
+    id,
+    name,
+    type: 'local',
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function hasProfileArg(commandArgs) {
+  return commandArgs.some((arg, index) => (
+    arg === '--profile' ||
+    arg.startsWith('--profile=') ||
+    commandArgs[index - 1] === '--profile'
+  ))
+}
+
+function isolatedWorkspaceState(now) {
+  const workspacePath = env.BAT_TAURI_DEV_WORKSPACE_PATH
+    ? resolve(repoRoot, env.BAT_TAURI_DEV_WORKSPACE_PATH)
+    : repoRoot
+  const workspaceName = env.BAT_TAURI_DEV_WORKSPACE_NAME || basename(workspacePath) || 'Workspace'
+  const workspaceId = env.BAT_TAURI_DEV_WORKSPACE_ID || 'tauri-dev-workspace'
+  return {
+    workspaces: [{
+      id: workspaceId,
+      name: workspaceName,
+      folderPath: workspacePath,
+      createdAt: now,
+    }],
+    activeWorkspaceId: workspaceId,
+    activeGroup: null,
+    terminals: [],
+    activeTerminalId: null,
+  }
+}
+
+function snapshotFromWorkspace(profileId, profileName, workspace) {
+  return {
+    id: profileId,
+    name: profileName,
+    version: 2,
+    windows: [{
+      workspaces: workspace.workspaces,
+      activeWorkspaceId: workspace.activeWorkspaceId,
+      activeGroup: workspace.activeGroup,
+      terminals: workspace.terminals,
+      activeTerminalId: workspace.activeTerminalId,
+    }],
+  }
+}
+
+function ensureIsolatedProfile() {
+  if (!isolatedProfileMode) return
+
+  const dataDir = env.BAT_TAURI_DATA_DIR
+  const profilesDir = join(dataDir, 'profiles')
+  const now = Date.now()
+  mkdirSync(profilesDir, { recursive: true })
+
+  const indexPath = join(profilesDir, 'index.json')
+  const index = readJson(indexPath, { profiles: [], activeProfileIds: [] })
+  if (!Array.isArray(index.profiles)) index.profiles = []
+  if (!index.profiles.some(profile => profile?.id === 'default')) {
+    index.profiles.unshift(profileEntry('default', 'Default', 0))
+  }
+  const existing = index.profiles.find(profile => profile?.id === isolatedProfileId)
+  if (existing) {
+    existing.name = existing.name || isolatedProfileName
+    existing.type = 'local'
+    existing.updatedAt = existing.updatedAt || now
+  } else {
+    index.profiles.push(profileEntry(isolatedProfileId, isolatedProfileName, now))
+  }
+  index.activeProfileIds = [isolatedProfileId]
+  delete index.activeProfileId
+  writeJson(indexPath, index)
+
+  const workspace = isolatedWorkspaceState(now)
+  const profilePath = join(profilesDir, `${isolatedProfileId}.json`)
+  if (!existsSync(profilePath)) {
+    writeJson(profilePath, snapshotFromWorkspace(isolatedProfileId, isolatedProfileName, workspace))
+  }
+  const workspacePath = join(dataDir, 'workspaces.json')
+  if (!existsSync(workspacePath)) {
+    writeJson(workspacePath, workspace)
+  }
+  const windowsPath = join(dataDir, 'windows.json')
+  if (!existsSync(windowsPath)) {
+    writeJson(windowsPath, [{
+      id: 'main',
+      profileId: isolatedProfileId,
+      workspaces: workspace.workspaces,
+      activeWorkspaceId: workspace.activeWorkspaceId,
+      activeGroup: workspace.activeGroup,
+      terminals: workspace.terminals,
+      activeTerminalId: workspace.activeTerminalId,
+      lastActiveAt: now,
+    }])
+  }
+}
+
+if (isolatedProfileMode && !hasProfileArg(forwardedArgs)) {
+  forwardedArgs.push(`--profile=${isolatedProfileId}`)
+}
 
 if (process.argv.includes('--print-env')) {
   console.log(`BAT_TAURI_DATA_DIR=${env.BAT_TAURI_DATA_DIR}`)
   console.log(`BAT_SIDECAR_DATA_DIR=${env.BAT_SIDECAR_DATA_DIR}`)
+  if (isolatedProfileMode) {
+    console.log(`BAT_TAURI_DEV_PROFILE_ID=${isolatedProfileId}`)
+  }
   process.exit(0)
 }
 
@@ -84,6 +220,7 @@ function exitFromChild(code, signal) {
 }
 
 if (stableMode) {
+  ensureIsolatedProfile()
   const build = spawnProcess('pnpm', ['run', 'tauri:build:debug'])
   build.on('exit', (code, signal) => {
     if (signal || code !== 0) {
@@ -97,6 +234,7 @@ if (stableMode) {
     app.on('exit', exitFromChild)
   })
 } else {
+  ensureIsolatedProfile()
   const child = spawnProcess('pnpm', ['run', 'tauri:dev:latest', ...forwardedArgs])
   child.on('exit', exitFromChild)
 }

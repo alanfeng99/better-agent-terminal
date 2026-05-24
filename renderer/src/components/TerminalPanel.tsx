@@ -9,6 +9,7 @@ import { workspaceStore } from '../stores/workspace-store'
 import { settingsStore } from '../stores/settings-store'
 import type { AgentPresetId } from '../types/agent-presets'
 import { createPtyInputWriter, type PtyInputWriter } from '../utils/pty-input-writer'
+import { getTerminalKeyInputOverride, shouldBlockForImeComposition } from '../utils/terminal-key-input'
 import '@xterm/xterm/css/xterm.css'
 
 const dlog = (...args: unknown[]) => host.debug.log(...args)
@@ -21,18 +22,6 @@ const DEFAULT_VIEWPORT_STATE: TerminalViewportState = {
   updatedBy: 'desktop',
   updatedAt: 0,
 }
-const IME_SAFE_EDIT_KEYS = new Set([
-  'Backspace',
-  'Delete',
-  'ArrowLeft',
-  'ArrowRight',
-  'ArrowUp',
-  'ArrowDown',
-  'Home',
-  'End',
-  'Escape',
-])
-
 interface TerminalPanelProps {
   terminalId: string
   onClose?: (id: string) => void
@@ -547,12 +536,15 @@ export const TerminalPanel = memo(function TerminalPanel({
       // Only handle keydown events to prevent duplicate actions
       if (event.type !== 'keydown') return true
 
-      const isPlainBackspace = !event.ctrlKey && !event.metaKey && !event.altKey && (
-        event.key === 'Backspace' ||
-        event.code === 'Backspace' ||
-        event.keyCode === 8 ||
-        event.which === 8
-      )
+      const inputOverride = getTerminalKeyInputOverride(event, { imeComposing })
+      if (inputOverride !== null) {
+        event.preventDefault()
+        ptyInput.write(inputOverride)
+        if (terminalType === 'code-agent') {
+          workspaceStore.markHasUserInput(terminalId)
+        }
+        return false
+      }
 
       // During IME composition, block non-composition key events
       // to prevent CAPS LOCK etc. from committing partial input
@@ -561,25 +553,9 @@ export const TerminalPanel = memo(function TerminalPanel({
         // Editing/navigation keys must still reach xterm so Backspace can
         // delete composing text and recover if compositionend was missed.
         // Everything else (CAPS LOCK, modifiers, etc.) should be blocked.
-        return event.keyCode === 229 || IME_SAFE_EDIT_KEYS.has(event.key)
+        return !shouldBlockForImeComposition(event, imeComposing)
       }
 
-      if (isPlainBackspace) {
-        event.preventDefault()
-        ptyInput.write('\x7f')
-        if (terminalType === 'code-agent') {
-          workspaceStore.markHasUserInput(terminalId)
-        }
-        return false
-      }
-
-      // Shift+Enter for newline (multiline input)
-      if (event.shiftKey && event.key === 'Enter') {
-        event.preventDefault()
-        // Send newline character to allow multiline input
-        ptyInput.write('\n')
-        return false
-      }
       // Ctrl+Shift+C for copy
       if (event.ctrlKey && event.shiftKey && event.key === 'C') {
         const selection = terminal.getSelection()

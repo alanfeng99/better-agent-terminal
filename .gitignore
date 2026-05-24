@@ -13,6 +13,7 @@ src-tauri/gen/
 .envrc
 .env.local
 .bat-tauri-dev-profile/
+.bat-tauri-dev-local-profile/
 
 # Windows reserved device names (accidentally created by /dev/null redirects)
 nul

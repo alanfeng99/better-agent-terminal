@@ -7,37 +7,19 @@ import { workspaceStore } from '../stores/workspace-store'
 import { ActivityIndicator } from './ActivityIndicator'
 import { NotificationBell } from './NotificationBell'
 import { isTauriNativeDropInside, listenTauriNativeDrop } from '../utils/tauri-native-drop'
-
-const WORKSPACE_MOVE_MIME = 'application/x-bat-workspace-move'
-const WORKSPACE_MOVE_STORAGE_KEY = 'bat-workspace-move-drag'
-const WORKSPACE_MOVE_TTL_MS = 30_000
-
-interface WorkspaceMovePayload {
-  workspaceId: string
-  sourceWindowId: string
-  timestamp?: number
-}
+import {
+  WORKSPACE_MOVE_MIME,
+  WORKSPACE_MOVE_STORAGE_KEY,
+  createWorkspaceMovePayload,
+  isWorkspaceMoveDropMatch,
+  parseWorkspaceMovePayload,
+  resolveWorkspaceMoveDrop,
+  type WorkspaceMovePayload,
+} from '../utils/workspace-move-drag'
 
 function debugLog(...args: unknown[]): void {
   if (host.debug.isDebugMode !== true) return
   void host.debug.log(...args).catch(() => {})
-}
-
-function parseWorkspaceMovePayload(raw: string | null): WorkspaceMovePayload | null {
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as Partial<WorkspaceMovePayload>
-    if (typeof parsed.workspaceId !== 'string' || !parsed.workspaceId) return null
-    if (typeof parsed.sourceWindowId !== 'string' || !parsed.sourceWindowId) return null
-    if (typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp > WORKSPACE_MOVE_TTL_MS) return null
-    return {
-      workspaceId: parsed.workspaceId,
-      sourceWindowId: parsed.sourceWindowId,
-      timestamp: parsed.timestamp,
-    }
-  } catch {
-    return null
-  }
 }
 
 function readStoredWorkspaceMove(): WorkspaceMovePayload | null {
@@ -71,6 +53,10 @@ function clearStoredWorkspaceMove(payload?: WorkspaceMovePayload): void {
   } catch {
     // ignore unavailable storage
   }
+}
+
+function dataTransferTypes(dataTransfer: DataTransfer): string[] {
+  return Array.from(dataTransfer.types ?? [])
 }
 
 interface SidebarProps {
@@ -295,13 +281,32 @@ export function Sidebar({
     }
   }, [handleGroupEditSubmit])
 
-  // Parse cross-window workspace move data from a DragEvent
-  const parseCrossWindowDrop = useCallback((dataTransfer: DataTransfer): { workspaceId: string; sourceWindowId: string } | null => {
-    if (!windowId) return null
-    const parsed = parseWorkspaceMovePayload(dataTransfer.getData(WORKSPACE_MOVE_MIME))
-      || parseWorkspaceMovePayload(dataTransfer.getData('text/plain'))
-      || readStoredWorkspaceMove()
-    if (parsed?.sourceWindowId && parsed.sourceWindowId !== windowId) return parsed
+  const parseCrossWindowDrop = useCallback((dataTransfer: DataTransfer, context: string, logMiss = false): { workspaceId: string; sourceWindowId: string } | null => {
+    const stored = readStoredWorkspaceMove()
+    const result = resolveWorkspaceMoveDrop(dataTransfer, windowId, stored)
+    if (isWorkspaceMoveDropMatch(result)) {
+      debugLog('[Sidebar] cross-window workspace drop parsed', {
+        context,
+        targetWindowId: windowId,
+        sourceWindowId: result.payload.sourceWindowId,
+        workspaceId: result.payload.workspaceId,
+        source: result.source,
+        dataTransferTypes: dataTransferTypes(dataTransfer),
+        hasStoredPayload: Boolean(stored),
+      })
+      return result.payload
+    }
+    if (logMiss) {
+      debugLog('[Sidebar] cross-window workspace drop ignored', {
+        context,
+        targetWindowId: windowId,
+        reason: result.reason,
+        dataTransferTypes: dataTransferTypes(dataTransfer),
+        hasStoredPayload: Boolean(stored),
+        storedSourceWindowId: stored?.sourceWindowId,
+        storedWorkspaceId: stored?.workspaceId,
+      })
+    }
     return null
   }, [windowId])
 
@@ -312,22 +317,28 @@ export function Sidebar({
     e.dataTransfer.setData('text/plain', workspaceId)
     // Custom MIME for cross-window workspace moves
     if (windowId) {
-      const payload = {
-        workspaceId,
-        sourceWindowId: windowId,
-        timestamp: Date.now(),
-      }
+      const payload = createWorkspaceMovePayload(workspaceId, windowId)
       e.dataTransfer.setData(WORKSPACE_MOVE_MIME, JSON.stringify(payload))
       // macOS/Tauri cross-window drags may preserve text/plain while dropping
       // custom MIME data, so keep the same payload in the plain fallback too.
       e.dataTransfer.setData('text/plain', JSON.stringify(payload))
       writeStoredWorkspaceMove(payload)
+      debugLog('[Sidebar] workspace dragStart cross-window payload', {
+        sourceWindowId: windowId,
+        workspaceId,
+        dataTransferTypes: dataTransferTypes(e.dataTransfer),
+      })
       void workspaceStore.save().catch((error) => {
         debugLog('[Sidebar] source save on dragStart failed', {
           sourceWindowId: windowId,
           workspaceId,
           error: error instanceof Error ? error.message : String(error),
         })
+      })
+    } else {
+      debugLog('[Sidebar] workspace dragStart missing windowId; cross-window move disabled', {
+        workspaceId,
+        dataTransferTypes: dataTransferTypes(e.dataTransfer),
       })
     }
     requestAnimationFrame(() => {
@@ -342,6 +353,11 @@ export function Sidebar({
     const payload = windowId && draggedId
       ? { workspaceId: draggedId, sourceWindowId: windowId }
       : undefined
+    debugLog('[Sidebar] workspace dragEnd', {
+      sourceWindowId: windowId,
+      workspaceId: draggedId,
+      clearStoredPayload: Boolean(payload),
+    })
     window.setTimeout(() => clearStoredWorkspaceMove(payload), 1000)
     setDraggedId(null)
     setDragOverId(null)
@@ -378,15 +394,15 @@ export function Sidebar({
     e.preventDefault()
 
     // Check for cross-window drop
-    const crossWindow = parseCrossWindowDrop(e.dataTransfer)
-      if (crossWindow) {
-        e.stopPropagation() // prevent container onDrop from firing a second moveToWindow
-        const targetIndex = workspaces.findIndex(w => w.id === targetId)
-        const insertIndex = dragPosition === 'after' ? targetIndex + 1 : targetIndex
-        void moveWorkspaceToWindow(
-          crossWindow.sourceWindowId, windowId!, crossWindow.workspaceId, Math.max(0, insertIndex)
-        )
-        setDraggedId(null)
+    const crossWindow = parseCrossWindowDrop(e.dataTransfer, 'workspace-item-drop', true)
+    if (crossWindow) {
+      e.stopPropagation() // prevent container onDrop from firing a second moveToWindow
+      const targetIndex = workspaces.findIndex(w => w.id === targetId)
+      const insertIndex = dragPosition === 'after' ? targetIndex + 1 : targetIndex
+      void moveWorkspaceToWindow(
+        crossWindow.sourceWindowId, windowId!, crossWindow.workspaceId, Math.max(0, insertIndex)
+      )
+      setDraggedId(null)
       setDragOverId(null)
       setDragPosition(null)
       return
@@ -503,7 +519,7 @@ export function Sidebar({
           if (draggedId) return
           const dataTransfer = e.dataTransfer
           // Cross-window drop on container (append at end)
-          const crossWindow = parseCrossWindowDrop(dataTransfer)
+          const crossWindow = parseCrossWindowDrop(dataTransfer, 'workspace-list-drop', true)
           if (crossWindow) {
             e.preventDefault()
             void moveWorkspaceToWindow(

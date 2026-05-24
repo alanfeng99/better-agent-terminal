@@ -1,9 +1,10 @@
 # Tauri development and verification tasks.
 # WorkerPanel auto-start is off by default, so start only the task you need.
 # tauri-dev launches a debug build instead of tauri dev, so local file changes
-# do not trigger Vite/Tauri refreshes while the app is running.
+# do not trigger Vite/Tauri refreshes while the app is running. It also uses
+# an isolated local test profile/data dir so it will not touch real app state.
 
-tauri-dev: pnpm run tauri:dev:local -- --stable
+tauri-dev: pnpm run tauri:dev:local -- --stable --isolated-profile
 typecheck: pnpm exec tsc --noEmit --pretty false
 tauri-rust-check: pnpm run check:tauri-rust
 sidecar-test: pnpm run test:sidecar
