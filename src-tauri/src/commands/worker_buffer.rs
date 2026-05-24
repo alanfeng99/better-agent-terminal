@@ -7,9 +7,7 @@
 // rough order of magnitude as the Electron implementation but keeps memory
 // from blowing up if a runaway producer never calls clear().
 
-use crate::commands::pty::{
-    kill_pty_session, start_pty_session, write_pty_session, CreatePtyOptions, PtyState,
-};
+use crate::commands::pty::{start_pty_session, write_pty_session, CreatePtyOptions, PtyState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -276,13 +274,16 @@ pub async fn worker_procfile_start(
 
 #[tauri::command]
 pub fn worker_procfile_stop(
+    app: AppHandle,
     pty_state: State<'_, PtyState>,
     panel_id: String,
     name: String,
 ) -> Result<bool, CommandError> {
     let pty_id = worker_pty_id(&panel_id, &name);
-    kill_pty_session(&pty_state, &pty_id).map_err(|err| CommandError {
-        message: format!("{err:?}"),
+    crate::commands::pty::kill_pty_session_with_exit(&app, &pty_state, &pty_id).map_err(|err| {
+        CommandError {
+            message: format!("{err:?}"),
+        }
     })?;
     Ok(true)
 }

@@ -1099,7 +1099,7 @@ pub fn pty_kill(
     {
         return result;
     }
-    kill_pty_session(&state, &id)
+    kill_pty_session_with_exit(&app, &state, &id)
 }
 
 pub(crate) fn kill_pty_session(state: &PtyState, id: &str) -> Result<(), CommandError> {
@@ -1108,6 +1108,29 @@ pub(crate) fn kill_pty_session(state: &PtyState, id: &str) -> Result<(), Command
     })?;
     if let Some(mut session) = map.remove(id) {
         let _ = session.child.kill();
+    }
+    Ok(())
+}
+
+pub(crate) fn kill_pty_session_with_exit(
+    app: &AppHandle,
+    state: &PtyState,
+    id: &str,
+) -> Result<(), CommandError> {
+    let mut map = state.inner.lock().map_err(|e| CommandError {
+        message: e.to_string(),
+    })?;
+    if let Some(mut session) = map.remove(id) {
+        let _ = session.child.kill();
+        crate::event_hub::publish_runtime_event(
+            app,
+            "pty:exit",
+            json!(PtyExitEvent {
+                id: id.to_string(),
+                exit_code: 0,
+            }),
+            "rust-pty",
+        );
     }
     Ok(())
 }
