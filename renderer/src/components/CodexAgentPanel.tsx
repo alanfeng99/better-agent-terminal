@@ -25,7 +25,7 @@ import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } f
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
-import { buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, stringifyToolResult, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
+import { autoContinueTurnEndKey, buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, stringifyToolResult, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
 
@@ -424,6 +424,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const autoContinueRef = useRef<{ enabled: boolean; max: number; used: number; prompt: string }>({
     enabled: false, max: 3, used: 0, prompt: '繼續',
   })
+  const autoContinueHandledTurnKeysRef = useRef<Set<string>>(new Set())
+  const autoContinueTimerRef = useRef<number | null>(null)
+  const clearPendingAutoContinue = useCallback(() => {
+    if (autoContinueTimerRef.current !== null) {
+      window.clearTimeout(autoContinueTimerRef.current)
+      autoContinueTimerRef.current = null
+    }
+  }, [])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const streamingThinkingRef = useRef<HTMLPreElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -447,6 +455,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const claudeFontSize = useSettings(s => s.fontSize)
   const userMsgRefsMap = useRef<Map<string, HTMLDivElement>>(new Map())
   const observerRef = useRef<IntersectionObserver | null>(null)
+
+  useEffect(() => clearPendingAutoContinue, [clearPendingAutoContinue])
 
   // Check if scrolled near bottom (within 80px)
   const checkIfNearBottom = useCallback(() => {
@@ -1040,23 +1050,38 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         // Auto-continue: continue on success and specific recoverable Codex timeout errors.
         if (!shouldAutoContinueAfterTurnEnd(payload)) return
         const ac = autoContinueRef.current
-        if (ac.enabled && ac.used < ac.max) {
-          ac.used++
-          const acPrompt = ac.prompt
-          const acMsgId = `sys-ac-${Date.now()}`
-          currentTurnMsgIdRef.current = acMsgId
-          setMessages(prev => [...prev, {
-            id: acMsgId, sessionId, role: 'system' as const,
-            kind: 'auto-continue',
-            autoContinue: { used: ac.used, max: ac.max, prompt: acPrompt },
-            content: `Auto-continue ${ac.used}/${ac.max} · prompt: ${acPrompt}`,
-            timestamp: Date.now(),
-          }])
-          setIsStreaming(true)
-          setTimeout(() => {
-            void sendClaudeMessage(acPrompt)
-          }, 150)
+        if (!ac.enabled) return
+        const turnEndKey = autoContinueTurnEndKey(payload, currentTurnMsgIdRef.current)
+        if (autoContinueHandledTurnKeysRef.current.has(turnEndKey)) return
+        autoContinueHandledTurnKeysRef.current.add(turnEndKey)
+        if (autoContinueHandledTurnKeysRef.current.size > 64) {
+          const first = autoContinueHandledTurnKeysRef.current.values().next().value
+          if (first !== undefined) autoContinueHandledTurnKeysRef.current.delete(first)
         }
+        if (ac.used >= ac.max) {
+          autoContinueRef.current = { ...ac, enabled: false }
+          return
+        }
+        if (autoContinueTimerRef.current !== null) return
+        const nextUsed = ac.used + 1
+        ac.used = nextUsed
+        const acPrompt = ac.prompt
+        const acMsgId = `sys-ac-${Date.now()}`
+        setMessages(prev => [...prev, {
+          id: acMsgId, sessionId, role: 'system' as const,
+          kind: 'auto-continue',
+          autoContinue: { used: nextUsed, max: ac.max, prompt: acPrompt },
+          content: `Auto-continue ${nextUsed}/${ac.max} · prompt: ${acPrompt}`,
+          timestamp: Date.now(),
+        }])
+        setIsStreaming(true)
+        autoContinueTimerRef.current = window.setTimeout(() => {
+          autoContinueTimerRef.current = null
+          const latest = autoContinueRef.current
+          if (!latest.enabled || latest.used !== nextUsed) return
+          currentTurnMsgIdRef.current = acMsgId
+          void sendClaudeMessage(acPrompt)
+        }, 150)
       }),
 
       api.onResult((sid: string, resultData: unknown) => {
@@ -1927,6 +1952,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       const cmd = trimmed.startsWith('/auto-continue') ? '/auto-continue' : '/ac'
       const rest = trimmed.slice(cmd.length).trim()
       let content: string
+      clearPendingAutoContinue()
+      autoContinueHandledTurnKeysRef.current.clear()
       if (rest === 'off' || rest === 'stop') {
         autoContinueRef.current = { ...autoContinueRef.current, enabled: false, used: 0 }
         content = 'Auto-continue disabled.'
@@ -1967,6 +1994,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     // User manually sent a message — reset auto-continue counter so the
     // budget refreshes for the new request chain.
     if (autoContinueRef.current.enabled) {
+      clearPendingAutoContinue()
+      autoContinueHandledTurnKeysRef.current.clear()
       autoContinueRef.current.used = 0
     }
 
@@ -1988,6 +2017,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     if (trimmed === '/abort') {
       clearInput()
       // User explicitly stopping — also halt any pending auto-continue.
+      clearPendingAutoContinue()
+      autoContinueHandledTurnKeysRef.current.clear()
       autoContinueRef.current = { ...autoContinueRef.current, enabled: false, used: 0 }
       host.claude.abortSession(sessionId)
       setIsStreaming(false)
@@ -2016,6 +2047,9 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     // Intercept /new or /clear command — reset session (clear conversation, fresh start)
     if (!isStreaming && (trimmed === '/new' || trimmed === '/clear')) {
       clearInput()
+      clearPendingAutoContinue()
+      autoContinueHandledTurnKeysRef.current.clear()
+      autoContinueRef.current = { ...autoContinueRef.current, enabled: false, used: 0 }
       setMessages([])
       setLoadedArchive([])
       archivedCountRef.current = 0
@@ -2279,10 +2313,13 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         timestamp: Date.now(),
       }])
     }
-  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, sendClaudeMessage])
+  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, clearPendingAutoContinue, sendClaudeMessage])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return
+    clearPendingAutoContinue()
+    autoContinueHandledTurnKeysRef.current.clear()
+    autoContinueRef.current = { ...autoContinueRef.current, enabled: false, used: 0 }
     // abortSession (not stopSession) so the session record + cwd survive —
     // user can keep typing to continue this turn.
     if (host.debug.isDebugMode === true) {
@@ -2294,11 +2331,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     setStreamingThinking('')
     setPendingPermission(null)
     textareaRef.current?.focus()
-  }, [sessionId, isStreaming])
+  }, [clearPendingAutoContinue, sessionId, isStreaming])
 
   const handleStop = useCallback(() => {
     // Hard abort — always works, even when frontend state appears idle
     // (backend may still be stuck; this is the user's escape hatch)
+    clearPendingAutoContinue()
+    autoContinueHandledTurnKeysRef.current.clear()
+    autoContinueRef.current = { ...autoContinueRef.current, enabled: false, used: 0 }
     host.claude.abortSession(sessionId)
     setIsStreaming(false)
     setIsInterrupted(false)
@@ -2323,7 +2363,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     })
     // Focus textarea so user can type immediately
     textareaRef.current?.focus()
-  }, [sessionId, isStreaming, isInterrupted])
+  }, [clearPendingAutoContinue, sessionId, isStreaming, isInterrupted])
 
   const permissionModes = ['default', 'acceptEdits', 'bypassPermissions', 'bypassPlan', 'plan'] as const
   const permissionModeLabels: Record<string, string> = {

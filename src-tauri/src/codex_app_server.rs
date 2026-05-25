@@ -140,6 +140,7 @@ struct CodexSession {
     effort: String,
     start_time: Instant,
     active_turn_id: Option<String>,
+    active_turn_key: Option<String>,
     assistant_text: String,
     thinking_text: String,
     input_tokens: u64,
@@ -1729,6 +1730,7 @@ impl CodexAppServerState {
             effort,
             start_time: Instant::now(),
             active_turn_id: None,
+            active_turn_key: None,
             assistant_text: String::new(),
             thinking_text: String::new(),
             input_tokens: 0,
@@ -1884,6 +1886,7 @@ impl CodexAppServerState {
             effort: normalize_effort(options.get("effort").and_then(Value::as_str)),
             start_time: Instant::now(),
             active_turn_id: None,
+            active_turn_key: None,
             assistant_text: String::new(),
             thinking_text: String::new(),
             input_tokens: 0,
@@ -2054,6 +2057,7 @@ impl CodexAppServerState {
             session.is_resting = false;
             session.active_turn_id = None;
             session.num_turns += 1;
+            session.active_turn_key = Some(format!("local-{}-{}", session.session_id, session.num_turns));
             session.last_turn_started_at = Some(Instant::now());
             session.last_turn_first_token_ms = None;
             session.last_turn_duration_ms = None;
@@ -2227,6 +2231,7 @@ impl CodexAppServerState {
                 .get_mut(&session_id)
             {
                 session.active_turn_id = Some(turn_id.to_string());
+                session.active_turn_key = Some(turn_id.to_string());
             }
             log_codex(
                 app,
@@ -2245,12 +2250,18 @@ impl CodexAppServerState {
 
     fn fail_turn(&self, app: &AppHandle, session_id: &str, message: String) {
         log_codex(app, session_id, format!("fail_turn: {message}"));
-        let meta = {
+        let (meta, turn_id, thread_id) = {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             sessions.get_mut(session_id).map(|session| {
+                let turn_id = session
+                    .active_turn_id
+                    .clone()
+                    .or_else(|| session.active_turn_key.clone());
+                let thread_id = session.thread_id.clone();
                 session.abort_requested = false;
                 session.is_running = false;
                 session.active_turn_id = None;
+                session.active_turn_key = None;
                 clear_runtime_status(session);
                 if let Some(started_at) = session.last_turn_started_at {
                     session.last_turn_duration_ms = Some(started_at.elapsed().as_millis() as u64);
@@ -2258,9 +2269,10 @@ impl CodexAppServerState {
                 cleanup_session_temp_images(session);
                 session.command_outputs.clear();
                 session.command_output_last_emit.clear();
-                session.metadata()
+                (Some(session.metadata()), turn_id, thread_id)
             })
-        };
+        }
+        .unwrap_or_else(|| (None, None, None));
         if let Some(meta) = meta {
             emit(app, "claude:status", session_id, "meta", meta);
         }
@@ -2270,13 +2282,13 @@ impl CodexAppServerState {
             "claude:turn-end",
             session_id,
             "payload",
-            json!({ "reason": "error", "error": message }),
+            json!({ "reason": "error", "error": message, "turnId": turn_id, "sdkSessionId": thread_id }),
         );
     }
 
     pub fn abort_session(&self, app: &AppHandle, session_id: String) -> Result<Value, BridgeError> {
         log_codex(app, &session_id, "abort_session requested");
-        let (thread_id, turn_id) = {
+        let (thread_id, interrupt_turn_id, turn_end_id) = {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             let Some(session) = sessions.get_mut(&session_id) else {
                 log_codex(app, &session_id, "abort_session ignored: session not found");
@@ -2293,19 +2305,24 @@ impl CodexAppServerState {
                 ),
             );
             let thread_id = session.thread_id.clone();
-            let turn_id = session.active_turn_id.clone();
-            if let Some(turn_id) = turn_id.clone() {
+            let interrupt_turn_id = session.active_turn_id.clone();
+            let turn_end_id = session
+                .active_turn_id
+                .clone()
+                .or_else(|| session.active_turn_key.clone());
+            if let Some(turn_id) = interrupt_turn_id.clone() {
                 remember_ignored_turn(session, turn_id);
             }
             session.abort_requested = true;
             session.is_running = false;
             session.active_turn_id = None;
+            session.active_turn_key = None;
             cleanup_session_temp_images(session);
             session.command_outputs.clear();
             session.command_output_last_emit.clear();
-            (thread_id, turn_id)
+            (thread_id, interrupt_turn_id, turn_end_id)
         };
-        if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
+        if let (Some(thread_id), Some(turn_id)) = (thread_id.clone(), interrupt_turn_id.clone()) {
             let connection = self.ensure_connection(app).map_err(bridge_error)?;
             match connection.request(
                 "turn/interrupt",
@@ -2327,7 +2344,7 @@ impl CodexAppServerState {
             "claude:turn-end",
             &session_id,
             "payload",
-            json!({ "reason": "aborted" }),
+            json!({ "reason": "aborted", "turnId": turn_end_id }),
         );
         Ok(json!({ "ok": true }))
     }
@@ -2403,6 +2420,7 @@ impl CodexAppServerState {
                 .ok_or_else(|| bridge_error("Codex session not started"))?;
             session.thread_id = Some(new_thread_id.clone());
             session.active_turn_id = None;
+            session.active_turn_key = None;
             session.assistant_text.clear();
             session.thinking_text.clear();
             session.input_tokens = 0;
@@ -2444,6 +2462,7 @@ impl CodexAppServerState {
         session.is_resting = true;
         session.is_running = false;
         session.active_turn_id = None;
+        session.active_turn_key = None;
         session.abort_requested = false;
         let msg = make_system_message(
             session_id,
@@ -2771,6 +2790,7 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
                     if session.abort_requested {
                         session.is_running = false;
                         session.active_turn_id = None;
+                        session.active_turn_key = None;
                         clear_runtime_status_if_set(session);
                         return session.thread_id.clone().zip(turn_id.clone());
                     }
@@ -2783,6 +2803,9 @@ fn handle_notification(app: &AppHandle, state: &CodexAppServerState, method: &st
                         session.last_turn_duration_ms = None;
                     }
                     session.active_turn_id = turn_id.clone();
+                    if turn_id.is_some() {
+                        session.active_turn_key = turn_id.clone();
+                    }
                     None
                 })
             };
@@ -3307,18 +3330,24 @@ fn handle_turn_completed(
     session_id: &str,
     params: &Value,
 ) {
-    let (reason, result, meta, error_message) = {
+    let (reason, result, meta, error_message, turn_id, thread_id) = {
         let mut sessions = state.inner.sessions.lock().expect("codex sessions lock");
         let Some(session) = sessions.get_mut(session_id) else {
             return;
         };
+        let turn = params.get("turn").unwrap_or(params);
+        let turn_id = turn_id_from_params(params)
+            .or_else(|| session.active_turn_id.clone())
+            .or_else(|| turn.get("id").and_then(Value::as_str).map(str::to_string))
+            .or_else(|| session.active_turn_key.clone());
+        let thread_id = session.thread_id.clone();
         session.is_running = false;
         session.active_turn_id = None;
+        session.active_turn_key = None;
         session.abort_requested = false;
         clear_runtime_status(session);
         cleanup_session_temp_images(session);
         session.command_outputs.clear();
-        let turn = params.get("turn").unwrap_or(params);
         if let Some(usage) = turn.get("usage") {
             if let Some(v) = read_usage_u64(usage, &["inputTokens", "input_tokens", "input"]) {
                 session.input_tokens = v;
@@ -3362,6 +3391,8 @@ fn handle_turn_completed(
             result,
             session.metadata(),
             error_message,
+            turn_id,
+            thread_id,
         )
     };
     emit(app, "claude:status", session_id, "meta", meta);
@@ -3388,9 +3419,9 @@ fn handle_turn_completed(
         session_id,
         "payload",
         if reason == "error" {
-            json!({ "reason": reason, "error": error_message })
+            json!({ "reason": reason, "error": error_message, "turnId": turn_id, "sdkSessionId": thread_id })
         } else {
-            json!({ "reason": reason, "result": result })
+            json!({ "reason": reason, "result": result, "turnId": turn_id, "sdkSessionId": thread_id })
         },
     );
 }
@@ -3686,6 +3717,7 @@ mod tests {
             effort: "high".to_string(),
             start_time: Instant::now(),
             active_turn_id: None,
+            active_turn_key: None,
             assistant_text: String::new(),
             thinking_text: String::new(),
             input_tokens: 100,
@@ -3725,6 +3757,7 @@ mod tests {
             effort: "high".to_string(),
             start_time: Instant::now(),
             active_turn_id: None,
+            active_turn_key: None,
             assistant_text: String::new(),
             thinking_text: String::new(),
             input_tokens: 0,
@@ -3780,6 +3813,7 @@ mod tests {
                     effort: "high".to_string(),
                     start_time: Instant::now(),
                     active_turn_id: None,
+                    active_turn_key: None,
                     assistant_text: String::new(),
                     thinking_text: String::new(),
                     input_tokens: 150,

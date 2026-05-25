@@ -1,12 +1,31 @@
 import type { MessageItem } from './CodexAgentPanel.types'
 import { summarizeAskUserInput } from './AskUserQuestion.helpers'
 
-export function shouldAutoContinueAfterTurnEnd(payload: { reason?: string; error?: string } | null | undefined): boolean {
+export type AutoContinueTurnEndPayload = {
+  reason?: string
+  error?: string
+  result?: unknown
+  turnId?: string
+  turn_id?: string
+  sdkSessionId?: string
+}
+
+export function shouldAutoContinueAfterTurnEnd(payload: AutoContinueTurnEndPayload | null | undefined): boolean {
   if (!payload) return false
   if (payload.reason === 'completed') return true
   if (payload.reason !== 'error') return false
   const error = payload.error || ''
   return /codex:\s*no response from model after \d+s\.\s*please try again\./i.test(error)
+}
+
+export function autoContinueTurnEndKey(
+  payload: AutoContinueTurnEndPayload | null | undefined,
+  fallbackTurnId: string | null | undefined
+): string {
+  const turnId = payload?.turnId || payload?.turn_id || fallbackTurnId || ''
+  const result = typeof payload?.result === 'string' ? payload.result : ''
+  const error = typeof payload?.error === 'string' ? payload.error : ''
+  return [turnId, payload?.reason || '', result, error].join('\u001f')
 }
 
 export function toolInputSummary(_toolName: string, input: Record<string, unknown>): string {

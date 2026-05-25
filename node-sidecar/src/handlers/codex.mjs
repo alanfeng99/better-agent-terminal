@@ -85,6 +85,14 @@ function clearRuntimeStatus(session) {
   session.metadata.runtimeStatusStartedAt = null
 }
 
+function codexEventTurnId(event) {
+  return event?.turnId || event?.turn_id || event?.id || event?.turn?.id || event?.turn?.turnId || event?.turn?.turn_id || null
+}
+
+function localTurnId(sessionId) {
+  return `local-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 function normalizeEffort(effort) {
   return typeof effort === 'string' && CODEX_EFFORTS.has(effort) ? effort : 'high'
 }
@@ -478,6 +486,7 @@ export async function startCodexSession(params) {
     metadata: makeMetadata({ model, cwd, effort: normalizeEffort(options.effort) }),
     startTime: Date.now(),
     isRunning: false,
+    currentTurnId: null,
     messageQueue: [],
   }
   sessions.set(sessionId, session)
@@ -583,6 +592,7 @@ export async function sendCodexMessage(params) {
   }
   session.abortController = new AbortController()
   session.isRunning = true
+  session.currentTurnId = localTurnId(sessionId)
   session.state.isStreaming = true
   session.state.streamingText = ''
   session.state.streamingThinking = ''
@@ -627,6 +637,7 @@ export async function sendCodexMessage(params) {
           send('claude:status', sessionId, 'meta', { ...session.metadata })
         }
       } else if (type === 'turn.started') {
+        session.currentTurnId = codexEventTurnId(event) || session.currentTurnId
         session.metadata.numTurns += 1
       } else if (type === 'item.started') {
         clearRuntimeStatus(session)
@@ -638,6 +649,7 @@ export async function sendCodexMessage(params) {
         handleItemCompleted(sessionId, event.item || {}, state)
       } else if (type === 'turn.completed') {
         completed = true
+        const turnId = codexEventTurnId(event) || session.currentTurnId
         const usage = event.usage || {}
         session.metadata.inputTokens += usage.input_tokens || 0
         session.metadata.outputTokens += usage.output_tokens || 0
@@ -649,18 +661,22 @@ export async function sendCodexMessage(params) {
         clearRuntimeStatus(session)
         send('claude:status', sessionId, 'meta', { ...session.metadata })
         send('claude:result', sessionId, 'result', { subtype: 'success', result: state.assistantText || undefined, totalCost: session.metadata.totalCost })
-        send('claude:turn-end', sessionId, 'payload', { reason: 'completed', result: state.assistantText || undefined, sdkSessionId: session.threadId })
+        send('claude:turn-end', sessionId, 'payload', { reason: 'completed', result: state.assistantText || undefined, sdkSessionId: session.threadId, turnId })
+        session.currentTurnId = null
       } else if (type === 'turn.failed') {
+        const turnId = codexEventTurnId(event) || session.currentTurnId
         const message = stringifyCodexError(event.error, 'Turn failed')
         send('claude:error', sessionId, 'error', message)
-        send('claude:turn-end', sessionId, 'payload', { reason: 'error', error: message })
+        send('claude:turn-end', sessionId, 'payload', { reason: 'error', error: message, turnId, sdkSessionId: session.threadId })
+        session.currentTurnId = null
       } else if (type === 'error') {
         send('claude:error', sessionId, 'error', stringifyCodexError(event.message ?? event.error))
       }
     }
     if (!completed && !ctrl.signal.aborted) {
       send('claude:error', sessionId, 'error', 'Codex turn ended unexpectedly.')
-      send('claude:turn-end', sessionId, 'payload', { reason: 'error' })
+      send('claude:turn-end', sessionId, 'payload', { reason: 'error', turnId: session.currentTurnId, sdkSessionId: session.threadId })
+      session.currentTurnId = null
     }
     logInfo(`[codex:${sessionId.slice(0, 8)}] send end completed=${completed}`)
     return { ok: true }
@@ -678,10 +694,12 @@ export async function sendCodexMessage(params) {
       const message = `Codex error: ${stringifyCodexError(err)}`
       logError(`[codex:${sessionId.slice(0, 8)}] ${message}`)
       send('claude:error', sessionId, 'error', message)
-      send('claude:turn-end', sessionId, 'payload', { reason: 'error', error: message })
+      send('claude:turn-end', sessionId, 'payload', { reason: 'error', error: message, turnId: session.currentTurnId, sdkSessionId: session.threadId })
+      session.currentTurnId = null
       return { ok: false, error: message }
     }
-    send('claude:turn-end', sessionId, 'payload', { reason: 'aborted' })
+    send('claude:turn-end', sessionId, 'payload', { reason: 'aborted', turnId: session.currentTurnId, sdkSessionId: session.threadId })
+    session.currentTurnId = null
     return { ok: true, aborted: true }
   } finally {
     for (const file of tempImages) unlink(file).catch(() => {})
@@ -711,7 +729,8 @@ export function abortCodexSession(params) {
   session.abortController.abort()
   session.isRunning = false
   session.state.isStreaming = false
-  send('claude:turn-end', sessionId, 'payload', { reason: 'aborted' })
+  send('claude:turn-end', sessionId, 'payload', { reason: 'aborted', turnId: session.currentTurnId, sdkSessionId: session.threadId })
+  session.currentTurnId = null
   return { ok: true }
 }
 
@@ -724,6 +743,7 @@ export function resetCodexSession(params) {
   session.state = { sessionId, messages: [], isStreaming: false }
   session.metadata = makeMetadata({ model: session.model, cwd: session.cwd, effort: session.effort })
   session.threadId = undefined
+  session.currentTurnId = null
   session.metadata.sdkSessionId = null
   sdkThreadIds.delete(sessionId)
   rebuildThread(session)

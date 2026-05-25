@@ -1,5 +1,6 @@
 import * as assert from 'assert'
 import {
+  autoContinueTurnEndKey,
   buildCollapsedOutputPreview,
   shouldAutoContinueAfterTurnEnd,
   stringifyToolResult,
@@ -34,6 +35,18 @@ assert.strictEqual(
   shouldAutoContinueAfterTurnEnd({ reason: 'aborted' }),
   false,
   'aborted turns should not auto-continue'
+)
+
+assert.strictEqual(
+  autoContinueTurnEndKey({ reason: 'completed', turnId: 'turn-1', result: 'done' }, 'fallback-1'),
+  autoContinueTurnEndKey({ reason: 'completed', turnId: 'turn-1', result: 'done' }, 'fallback-2'),
+  'turn ids should make auto-continue dedupe independent of renderer fallback ids'
+)
+
+assert.notStrictEqual(
+  autoContinueTurnEndKey({ reason: 'completed', result: 'done' }, 'fallback-1'),
+  autoContinueTurnEndKey({ reason: 'completed', result: 'done' }, 'fallback-2'),
+  'fallback ids should distinguish turn-end events when the runtime provides no turn id'
 )
 
 assert.strictEqual(
