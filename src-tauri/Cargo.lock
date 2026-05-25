@@ -459,6 +459,7 @@ dependencies = [
  "image",
  "keyring",
  "keyring-core",
+ "libc",
  "notify",
  "pbkdf2",
  "portable-pty",

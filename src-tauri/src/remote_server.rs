@@ -846,6 +846,7 @@ fn handle_client(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            log_remote_pty_write_frame(&app, "remote-server.recv-frame", &channel, &frame);
             remote_debug_log(&app, format!("invoke start peer={peer} channel={channel}"));
             let invoke_app = app.clone();
             let invoke_sidecar = sidecar.clone();
@@ -902,6 +903,54 @@ fn remote_debug_enabled() -> bool {
 fn remote_debug_log(app: &AppHandle, message: impl AsRef<str>) {
     if remote_debug_enabled() {
         crate::commands::app::log_tauri(app, &format!("[remote-server] {}", message.as_ref()));
+    }
+}
+
+fn log_remote_pty_write_data(app: &AppHandle, phase: &str, id: &str, data: &str) {
+    if !pty_cmd::pty_input_trace_required(data) {
+        return;
+    }
+    pty_cmd::pty_input_debug_log(
+        app,
+        format!("{phase} id={id} {}", pty_cmd::describe_pty_input(data)),
+    );
+}
+
+fn log_remote_pty_write_args(app: &AppHandle, phase: &str, channel: &str, args: &[Value]) {
+    if canonical_remote_channel(channel) != "pty:write" {
+        return;
+    }
+    let Some(id) = args.first().and_then(Value::as_str) else {
+        return;
+    };
+    let Some(data) = args.get(1).and_then(Value::as_str) else {
+        return;
+    };
+    log_remote_pty_write_data(app, phase, id, data);
+}
+
+fn log_remote_pty_write_params(app: &AppHandle, phase: &str, channel: &str, params: &Value) {
+    if canonical_remote_channel(channel) != "pty:write" {
+        return;
+    }
+    let Some(id) = params.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(data) = params.get("data").and_then(Value::as_str) else {
+        return;
+    };
+    log_remote_pty_write_data(app, phase, id, data);
+}
+
+fn log_remote_pty_write_frame(app: &AppHandle, phase: &str, channel: &str, frame: &Value) {
+    let args = frame
+        .get("args")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    log_remote_pty_write_args(app, phase, channel, args);
+    if let Some(params) = frame.get("params") {
+        log_remote_pty_write_params(app, phase, channel, params);
     }
 }
 
@@ -1032,6 +1081,7 @@ fn invoke_sidecar_for_remote(
             .unwrap_or_else(|| legacy_v1_args_to_params(channel, &args)),
         RemoteProtocol::LegacyV1 => legacy_v1_args_to_params(channel, &args),
     };
+    log_remote_pty_write_params(app, "remote-server.decoded", channel, &params);
     if let Some(result) = invoke_rust_for_remote(app, channel, &params) {
         return result;
     }
@@ -1659,7 +1709,23 @@ fn invoke_rust_for_remote(
         "pty:write" => string_param(params, "id", channel).and_then(|id| {
             string_param(params, "data", channel).and_then(|data| {
                 let state = app.state::<pty_cmd::PtyState>();
-                pty_cmd::write_pty_session(&state, &id, &data)
+                log_remote_pty_write_data(app, "remote-server.pty-write.enqueue", &id, &data);
+                let result = pty_cmd::write_pty_session(&state, &id, &data);
+                match &result {
+                    Ok(()) => log_remote_pty_write_data(
+                        app,
+                        "remote-server.pty-write.enqueue-ok",
+                        &id,
+                        &data,
+                    ),
+                    Err(_) => log_remote_pty_write_data(
+                        app,
+                        "remote-server.pty-write.enqueue-err",
+                        &id,
+                        &data,
+                    ),
+                }
+                result
                     .map(|_| Value::Bool(true))
                     .map_err(|err| format!("{err:?}"))
             })

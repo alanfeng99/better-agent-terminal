@@ -503,6 +503,10 @@
   contain: layout style;
 }
 
+.terminal-panel:focus {
+  outline: none;
+}
+
 .terminal-panel-shell.mobile-layout .terminal-panel {
   max-width: 100%;
   flex: 0 0 auto;

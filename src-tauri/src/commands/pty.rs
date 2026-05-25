@@ -19,6 +19,7 @@ use crate::app_data;
 use crate::commands::profile as profile_cmd;
 use crate::commands::settings::resolve_shell_path;
 use crate::commands::worker_buffer::{append_worker_log_lines, WorkerBufferState};
+use crate::log_file::append_line;
 use crate::remote_client::RustRemoteClientState;
 use crate::window_registry;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -126,7 +127,7 @@ pub struct CreatePtyOptions {
 }
 
 pub struct PtySession {
-    writer: Box<dyn Write + Send>,
+    write_tx: Sender<String>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     cwd: String,
@@ -286,6 +287,170 @@ fn unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn pty_input_debug_enabled() -> bool {
+    matches!(
+        std::env::var("BAT_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+pub(crate) fn pty_input_trace_required(data: &str) -> bool {
+    pty_input_bytes_trace_required(data.as_bytes())
+}
+
+fn pty_input_bytes_trace_required(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    bytes.len() <= 256
+        || bytes.iter().any(|byte| matches!(*byte, 8 | 32 | 127))
+        || bytes == b"\x1b[3~"
+}
+
+fn pty_output_bytes_trace_required(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    bytes.len() <= 256 || bytes.iter().any(|byte| matches!(*byte, 8 | 127))
+}
+
+fn pty_input_byte_label(byte: u8) -> &'static str {
+    match byte {
+        8 => "BS",
+        10 => "LF",
+        13 => "CR",
+        27 => "ESC",
+        32 => "SPACE",
+        127 => "DEL",
+        _ => ".",
+    }
+}
+
+pub(crate) fn describe_pty_bytes(bytes: &[u8]) -> String {
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let labels = bytes
+        .iter()
+        .map(|byte| pty_input_byte_label(*byte))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("len={} bytes=[{}] labels=[{}]", bytes.len(), hex, labels)
+}
+
+pub(crate) fn describe_pty_input(data: &str) -> String {
+    describe_pty_bytes(data.as_bytes())
+}
+
+pub(crate) fn pty_input_debug_log(app: &AppHandle, message: impl AsRef<str>) {
+    if !pty_input_debug_enabled() {
+        return;
+    }
+    let message = format!("[pty-input] {}", message.as_ref());
+    eprintln!("{message}");
+    let Some(path) = app_data::app_data_dir_opt(app).map(|dir| dir.join("logs").join("debug.log"))
+    else {
+        return;
+    };
+    let line = format!("{} [rust] {message}\n", unix_ms());
+    let _ = append_line(&path, &line);
+}
+
+fn pty_output_debug_log(app: &AppHandle, message: impl AsRef<str>) {
+    if !pty_input_debug_enabled() {
+        return;
+    }
+    let message = format!("[pty-output] {}", message.as_ref());
+    eprintln!("{message}");
+    let Some(path) = app_data::app_data_dir_opt(app).map(|dir| dir.join("logs").join("debug.log"))
+    else {
+        return;
+    };
+    let line = format!("{} [rust] {message}\n", unix_ms());
+    let _ = append_line(&path, &line);
+}
+
+#[cfg(target_family = "unix")]
+fn pty_termios_debug_log(app: &AppHandle, message: impl AsRef<str>) {
+    if !pty_input_debug_enabled() {
+        return;
+    }
+    let message = format!("[pty-termios] {}", message.as_ref());
+    eprintln!("{message}");
+    let Some(path) = app_data::app_data_dir_opt(app).map(|dir| dir.join("logs").join("debug.log"))
+    else {
+        return;
+    };
+    let line = format!("{} [rust] {message}\n", unix_ms());
+    let _ = append_line(&path, &line);
+}
+
+#[cfg(target_family = "unix")]
+fn termios_flag(flags: libc::tcflag_t, flag: libc::tcflag_t) -> bool {
+    flags & flag != 0
+}
+
+#[cfg(target_family = "unix")]
+fn describe_termios(termios: &libc::termios) -> String {
+    let erase = termios.c_cc[libc::VERASE];
+    format!(
+        "erase={erase:02X} echo={} echoe={} echok={} echonl={} icanon={} isig={}",
+        termios_flag(termios.c_lflag, libc::ECHO),
+        termios_flag(termios.c_lflag, libc::ECHOE),
+        termios_flag(termios.c_lflag, libc::ECHOK),
+        termios_flag(termios.c_lflag, libc::ECHONL),
+        termios_flag(termios.c_lflag, libc::ICANON),
+        termios_flag(termios.c_lflag, libc::ISIG)
+    )
+}
+
+#[cfg(target_family = "unix")]
+fn configure_initial_pty_termios(app: &AppHandle, id: &str, master: &dyn MasterPty) {
+    let Some(fd) = master.as_raw_fd() else {
+        pty_termios_debug_log(app, format!("id={id} raw-fd=unavailable"));
+        return;
+    };
+
+    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
+        pty_termios_debug_log(
+            app,
+            format!(
+                "id={id} tcgetattr=error {}",
+                std::io::Error::last_os_error()
+            ),
+        );
+        return;
+    }
+
+    pty_termios_debug_log(
+        app,
+        format!("id={id} before {}", describe_termios(&termios)),
+    );
+    termios.c_cc[libc::VERASE] = 0x7f;
+    termios.c_lflag |= libc::ECHOE;
+
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &termios) } != 0 {
+        pty_termios_debug_log(
+            app,
+            format!(
+                "id={id} tcsetattr=error {}",
+                std::io::Error::last_os_error()
+            ),
+        );
+        return;
+    }
+
+    let mut updated: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut updated) } == 0 {
+        pty_termios_debug_log(app, format!("id={id} after {}", describe_termios(&updated)));
+    } else {
+        pty_termios_debug_log(app, format!("id={id} after tcgetattr=error"));
+    }
 }
 
 fn desktop_viewport_state(cols: u16, rows: u16) -> TerminalViewportState {
@@ -453,6 +618,11 @@ fn configure_per_terminal_history(
     }
 }
 
+fn configure_terminal_env(cmd: &mut CommandBuilder) {
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+}
+
 fn new_shell_command(shell: &str) -> CommandBuilder {
     #[cfg(target_family = "unix")]
     {
@@ -484,6 +654,7 @@ fn build_command(opts: &CreatePtyOptions, app_data_dir: Option<&Path>) -> Comman
             }
         }
         cmd.cwd(cwd);
+        configure_terminal_env(&mut cmd);
         if let Some(env) = &opts.custom_env {
             for (k, v) in env {
                 cmd.env(k, v);
@@ -496,6 +667,7 @@ fn build_command(opts: &CreatePtyOptions, app_data_dir: Option<&Path>) -> Comman
     let shell = select_shell(opts.shell.as_deref(), TARGET_OS, &exists);
     let mut cmd = new_shell_command(&shell);
     cmd.cwd(cwd);
+    configure_terminal_env(&mut cmd);
     if let Some(env) = &opts.custom_env {
         for (k, v) in env {
             cmd.env(k, v);
@@ -617,6 +789,50 @@ fn spawn_output_coalescer(
     tx
 }
 
+fn spawn_pty_input_writer(
+    app: AppHandle,
+    id: String,
+    mut writer: Box<dyn Write + Send>,
+) -> Sender<String> {
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut trace_seq = 0u64;
+        while let Ok(mut data) = rx.recv() {
+            while let Ok(next) = rx.try_recv() {
+                data.push_str(&next);
+            }
+            let trace_input = pty_input_trace_required(&data);
+            if trace_input {
+                trace_seq += 1;
+                pty_input_debug_log(
+                    &app,
+                    format!(
+                        "writer-thread seq={trace_seq} id={id} {}",
+                        describe_pty_input(&data)
+                    ),
+                );
+            }
+            let write_result = writer
+                .write_all(data.as_bytes())
+                .and_then(|_| writer.flush());
+            match write_result {
+                Ok(()) if trace_input => {
+                    pty_input_debug_log(
+                        &app,
+                        format!("writer-thread seq={trace_seq} id={id} write=ok"),
+                    );
+                }
+                Ok(()) => {}
+                Err(err) => {
+                    pty_input_debug_log(&app, format!("writer-thread id={id} write=error {err}"));
+                    break;
+                }
+            }
+        }
+    });
+    tx
+}
+
 pub(crate) fn start_pty_session(
     app: &AppHandle,
     map_handle: Arc<Mutex<HashMap<String, PtySession>>>,
@@ -657,8 +873,19 @@ pub(crate) fn start_pty_session(
         .map_err(|e| CommandError {
             message: e.to_string(),
         })?;
+    #[cfg(target_family = "unix")]
+    configure_initial_pty_termios(app, &options.id, pair.master.as_ref());
     let app_data_dir = app_data::app_data_dir_opt(&app);
     let cmd = build_command(&options, app_data_dir.as_deref());
+    pty_input_debug_log(
+        app,
+        format!(
+            "session-start id={} term={:?} colorterm={:?}",
+            options.id,
+            cmd.get_env("TERM").and_then(|value| value.to_str()),
+            cmd.get_env("COLORTERM").and_then(|value| value.to_str())
+        ),
+    );
     let child = pair.slave.spawn_command(cmd).map_err(|e| CommandError {
         message: e.to_string(),
     })?;
@@ -667,6 +894,7 @@ pub(crate) fn start_pty_session(
     let writer = pair.master.take_writer().map_err(|e| CommandError {
         message: e.to_string(),
     })?;
+    let write_tx = spawn_pty_input_writer(app.clone(), options.id.clone(), writer);
     let mut reader = pair.master.try_clone_reader().map_err(|e| CommandError {
         message: e.to_string(),
     })?;
@@ -680,7 +908,7 @@ pub(crate) fn start_pty_session(
         map.insert(
             options.id.clone(),
             PtySession {
-                writer,
+                write_tx,
                 master: pair.master,
                 child,
                 cwd: options.cwd.clone(),
@@ -696,6 +924,7 @@ pub(crate) fn start_pty_session(
     // Lossy UTF-8 because xterm.js consumes strings and PTYs can split
     // codepoints across reads; renderer can stitch via terminal state.
     let id_for_reader = options.id.clone();
+    let app_for_reader = app.clone();
     let output_tx = spawn_output_coalescer(
         app.clone(),
         id_for_reader.clone(),
@@ -708,6 +937,15 @@ pub(crate) fn start_pty_session(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if pty_output_bytes_trace_required(&buf[..n]) {
+                        pty_output_debug_log(
+                            &app_for_reader,
+                            format!(
+                                "reader id={id_for_reader} {}",
+                                describe_pty_bytes(&buf[..n])
+                            ),
+                        );
+                    }
                     let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
                     if output_tx.send(chunk).is_err() {
                         break;
@@ -794,15 +1032,38 @@ pub fn pty_write(
     id: String,
     data: String,
 ) -> Result<(), CommandError> {
+    let trace_input = pty_input_trace_required(&data);
     if let Some(result) = remote_unit_for_window(
         &app,
         &window,
         "pty:write",
         vec![json!(id.clone()), json!(data.clone())],
     ) {
+        if trace_input {
+            pty_input_debug_log(
+                &app,
+                format!("route=remote id={id} {}", describe_pty_input(&data)),
+            );
+        }
         return result;
     }
-    write_pty_session(&state, &id, &data)
+    if trace_input {
+        pty_input_debug_log(
+            &app,
+            format!("route=local id={id} {}", describe_pty_input(&data)),
+        );
+    }
+    let result = write_pty_session(&state, &id, &data);
+    if trace_input {
+        match &result {
+            Ok(()) => pty_input_debug_log(&app, format!("route=local id={id} enqueue=ok")),
+            Err(err) => pty_input_debug_log(
+                &app,
+                format!("route=local id={id} enqueue=error {}", err.message),
+            ),
+        }
+    }
+    result
 }
 
 pub(crate) fn write_pty_session(
@@ -811,14 +1072,11 @@ pub(crate) fn write_pty_session(
     data: &str,
 ) -> Result<(), CommandError> {
     state.with_session(&id, |s| {
-        s.writer
-            .write_all(data.as_bytes())
-            .map_err(|e| CommandError {
-                message: e.to_string(),
+        s.write_tx
+            .send(data.to_string())
+            .map_err(|_| CommandError {
+                message: format!("pty session {id} input writer closed"),
             })?;
-        s.writer.flush().map_err(|e| CommandError {
-            message: e.to_string(),
-        })?;
         Ok(())
     })
 }
@@ -1397,6 +1655,14 @@ mod tests {
             cmd.get_env("SHELL").and_then(|v| v.to_str()),
             Some("/bin/zsh")
         );
+        assert_eq!(
+            cmd.get_env("TERM").and_then(|value| value.to_str()),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            cmd.get_env("COLORTERM").and_then(|value| value.to_str()),
+            Some("truecolor")
+        );
     }
 
     #[test]
@@ -1442,6 +1708,40 @@ mod tests {
             cmd.get_env("CLAUDE_CODE_NO_FLICKER")
                 .and_then(|value| value.to_str()),
             Some("1")
+        );
+        assert_eq!(
+            cmd.get_env("TERM").and_then(|value| value.to_str()),
+            Some("xterm-256color")
+        );
+    }
+
+    #[test]
+    fn custom_env_can_override_terminal_env() {
+        let opts = CreatePtyOptions {
+            id: "term-env".into(),
+            cwd: ".".into(),
+            r#type: "terminal".into(),
+            shell: Some("/bin/zsh".into()),
+            command: None,
+            args: None,
+            cols: None,
+            rows: None,
+            agent_preset: None,
+            custom_env: Some(HashMap::from([
+                ("TERM".into(), "ansi".into()),
+                ("COLORTERM".into(), "false".into()),
+            ])),
+            per_terminal_history: None,
+            history_key: None,
+        };
+        let cmd = build_command(&opts, None);
+        assert_eq!(
+            cmd.get_env("TERM").and_then(|value| value.to_str()),
+            Some("ansi")
+        );
+        assert_eq!(
+            cmd.get_env("COLORTERM").and_then(|value| value.to_str()),
+            Some("false")
         );
     }
 }

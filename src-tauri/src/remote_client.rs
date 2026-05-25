@@ -1,3 +1,4 @@
+use crate::commands::pty as pty_cmd;
 use crate::event_hub::publish_runtime_event;
 use crate::remote_core::{
     canonical_remote_channel, decode_remote_binary_frame, decode_remote_text_frame,
@@ -308,6 +309,7 @@ fn client_loop(
                     args,
                     reply,
                 } => {
+                    log_remote_pty_write_args(&app, "remote-client.send", &channel, &args);
                     let frame =
                         json!({ "type": "invoke", "id": id, "channel": channel, "args": args });
                     match send_json_frame(&mut ws, frame, compression) {
@@ -354,6 +356,25 @@ fn client_loop(
     }
     connected.store(false, Ordering::SeqCst);
     drain_pending(&mut pending, "Connection closed");
+}
+
+fn log_remote_pty_write_args(app: &AppHandle, phase: &str, channel: &str, args: &[Value]) {
+    if canonical_remote_channel(channel) != "pty:write" {
+        return;
+    }
+    let Some(id) = args.first().and_then(Value::as_str) else {
+        return;
+    };
+    let Some(data) = args.get(1).and_then(Value::as_str) else {
+        return;
+    };
+    if !pty_cmd::pty_input_trace_required(data) {
+        return;
+    }
+    pty_cmd::pty_input_debug_log(
+        app,
+        format!("{phase} id={id} {}", pty_cmd::describe_pty_input(data)),
+    );
 }
 
 fn handle_frame(app: &AppHandle, pending: &mut HashMap<String, PendingInvoke>, frame: Value) {

@@ -9,7 +9,17 @@ import { workspaceStore } from '../stores/workspace-store'
 import { settingsStore } from '../stores/settings-store'
 import type { AgentPresetId } from '../types/agent-presets'
 import { createPtyInputWriter, type PtyInputWriter } from '../utils/pty-input-writer'
-import { getTerminalKeyInputOverride, shouldBlockForImeComposition } from '../utils/terminal-key-input'
+import {
+  describeTerminalInputData,
+  describeTerminalKeyEvent,
+  isBackspaceKeyEvent,
+  getExpectedPlainBackspaceInput,
+  getTerminalKeyInput,
+  getTerminalKeyInputOverride,
+  shouldBlockForImeComposition,
+  shouldTraceTerminalInputData,
+  shouldTraceTerminalKeyEvent,
+} from '../utils/terminal-key-input'
 import '@xterm/xterm/css/xterm.css'
 
 const dlog = (...args: unknown[]) => host.debug.log(...args)
@@ -49,6 +59,11 @@ function isClaudeCliPreset(agentPreset?: AgentPresetId): boolean {
   return agentPreset === 'claude-cli' || agentPreset === 'claude-cli-worktree'
 }
 
+function isTerminalKeyboardEventTarget(container: HTMLElement, target: EventTarget | null): boolean {
+  if (target instanceof Node && container.contains(target)) return true
+  return target === document.body || target === document.documentElement || target === document
+}
+
 export const TerminalPanel = memo(function TerminalPanel({
   terminalId,
   onClose,
@@ -73,6 +88,12 @@ export const TerminalPanel = memo(function TerminalPanel({
   const ptyInputRef = useRef<PtyInputWriter | null>(null)
   const onReadySizeRef = useRef(onReadySize)
   const viewportStateRef = useRef(viewportState)
+  const lastInputTraceKeyRef = useRef<{
+    at: number
+    event: Record<string, unknown>
+    isBackspace: boolean
+  } | null>(null)
+  const inputTraceSeqRef = useRef(0)
   const { t } = useTranslation()
 
   // Keep isActiveRef in sync with isActive prop
@@ -142,7 +163,82 @@ export const TerminalPanel = memo(function TerminalPanel({
 
   const pasteAbortRef = useRef<{ cancelled: boolean } | null>(null)
 
+  const shouldTracePtyInput = () => host.debug.isDebugMode === true
+
+  const traceTerminalKeyEvent = (event: KeyboardEvent) => {
+    if (!shouldTracePtyInput()) return
+    if (!shouldTraceTerminalKeyEvent(event)) return
+    const described = describeTerminalKeyEvent(event)
+    const expectedPlainBackspaceInput = isBackspaceKeyEvent(event)
+      ? getExpectedPlainBackspaceInput(host.platform)
+      : null
+    lastInputTraceKeyRef.current = {
+      at: performance.now(),
+      event: described,
+      isBackspace: isBackspaceKeyEvent(event),
+    }
+    dlog('[pty-input:key]', {
+      terminalId,
+      terminalType,
+      agentPreset,
+      event: described,
+      expectedPlainBackspaceInput: expectedPlainBackspaceInput === null
+        ? null
+        : describeTerminalInputData(expectedPlainBackspaceInput),
+    })
+  }
+
+  const traceTerminalInputData = (phase: string, data: string) => {
+    if (!shouldTracePtyInput()) return
+    const now = performance.now()
+    const lastKey = lastInputTraceKeyRef.current
+    const recentKey = lastKey && now - lastKey.at < 1000 ? lastKey : null
+    if (!shouldTraceTerminalInputData(data) && !recentKey?.isBackspace) return
+    const seq = ++inputTraceSeqRef.current
+    dlog(`[pty-input:${phase}]`, {
+      seq,
+      terminalId,
+      terminalType,
+      agentPreset,
+      data: describeTerminalInputData(data),
+      afterKeyMs: recentKey ? Math.round(now - recentKey.at) : null,
+      afterKey: recentKey?.event ?? null,
+    })
+  }
+
+  const getNativeTerminalKeyInput = (event: KeyboardEvent, imeComposing: boolean): string | null => {
+    return getTerminalKeyInput(event, {
+      imeComposing,
+      platform: host.platform,
+    })
+  }
+
+  const traceTextareaInputEvent = (phase: string, event: Event, textarea: HTMLTextAreaElement) => {
+    if (!shouldTracePtyInput()) return
+    const maybeInput = event as InputEvent
+    const maybeKey = event as KeyboardEvent
+    const payload: Record<string, unknown> = {
+      terminalId,
+      terminalType,
+      agentPreset,
+      type: event.type,
+      textareaValue: textarea.value ? describeTerminalInputData(textarea.value) : null,
+      selectionStart: textarea.selectionStart,
+      selectionEnd: textarea.selectionEnd,
+      isComposing: 'isComposing' in event ? Boolean((event as { isComposing?: boolean }).isComposing) : null,
+    }
+    if (event.type === 'keydown' || event.type === 'keyup') {
+      payload.event = describeTerminalKeyEvent(maybeKey)
+    }
+    if (event.type === 'beforeinput' || event.type === 'input') {
+      payload.inputType = maybeInput.inputType
+      payload.data = maybeInput.data ? describeTerminalInputData(maybeInput.data) : null
+    }
+    dlog(`[pty-input:textarea.${phase}]`, payload)
+  }
+
   const writePtyInput = (data: string) => {
+    traceTerminalInputData('writePtyInput', data)
     const writer = ptyInputRef.current
     if (writer) {
       writer.write(data)
@@ -383,6 +479,7 @@ export const TerminalPanel = memo(function TerminalPanel({
       convertEol: !isClaudeCliTerminal,
       allowProposedApi: true,
       allowTransparency: !isClaudeCliTerminal,
+      disableStdin: true,
       windowsPty: host.platform === 'win32'
         ? {
             backend: 'conpty',
@@ -401,6 +498,60 @@ export const TerminalPanel = memo(function TerminalPanel({
     terminal.loadAddon(webLinksAddon)
     terminal.loadAddon(unicode11Addon)
     terminal.unicode.activeVersion = '11'
+
+    const ptyInput = createPtyInputWriter((chunk) => {
+      traceTerminalInputData('host.pty.write', chunk)
+      return host.pty.write(terminalId, chunk)
+    })
+    ptyInputRef.current = ptyInput
+
+    let imeComposing = false
+    const handleNativeTerminalKeydown = (event: KeyboardEvent) => {
+      const container = containerRef.current
+      if (!container || !isActiveRef.current || !ptyReadyRef.current) return
+      if (!isTerminalKeyboardEventTarget(container, event.target)) return
+
+      const lowerKey = event.key.toLowerCase()
+      const copyModifier = event.ctrlKey || event.metaKey
+      if (copyModifier && event.shiftKey && lowerKey === 'c') {
+        const selection = terminal.getSelection()
+        if (selection) {
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          navigator.clipboard.writeText(selection)
+        }
+        return
+      }
+      if (copyModifier && lowerKey === 'v') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        handlePasteFromClipboard({ textOnly: event.shiftKey })
+        return
+      }
+      if (copyModifier && !event.shiftKey && lowerKey === 'c') {
+        const selection = terminal.getSelection()
+        if (selection) {
+          event.preventDefault()
+          event.stopImmediatePropagation()
+          navigator.clipboard.writeText(selection)
+          return
+        }
+      }
+
+      const input = getNativeTerminalKeyInput(event, imeComposing)
+      if (input === null) return
+
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      traceTerminalKeyEvent(event)
+      traceTerminalInputData('direct-key', input)
+      ptyInput.write(input)
+      if (terminalType === 'code-agent') {
+        workspaceStore.markHasUserInput(terminalId)
+      }
+    }
+    window.addEventListener('keydown', handleNativeTerminalKeydown, true)
+
     terminal.open(containerRef.current)
 
     // Register file:// URL link provider (WebLinksAddon only handles http/https)
@@ -510,19 +661,13 @@ export const TerminalPanel = memo(function TerminalPanel({
     fitAddonRef.current = fitAddon
     setTerminalReady(true)
 
-    const ptyInput = createPtyInputWriter((chunk) => host.pty.write(terminalId, chunk))
-    ptyInputRef.current = ptyInput
     terminal.onData((data) => {
       if (!ptyReadyRef.current) return
-      ptyInput.write(data)
-      if (terminalType === 'code-agent') {
-        workspaceStore.markHasUserInput(terminalId)
-      }
+      traceTerminalInputData('xterm.onData.ignored', data)
     })
 
     // Track IME composition state on xterm's hidden textarea
     // to prevent CAPS LOCK and other keys from committing partial IME input
-    let imeComposing = false
     const xtermTextarea = containerRef.current?.querySelector('.xterm-helper-textarea') as HTMLElement | null
     const onCompositionStart = () => { imeComposing = true }
     const onCompositionEnd = () => { imeComposing = false }
@@ -531,18 +676,32 @@ export const TerminalPanel = memo(function TerminalPanel({
       xtermTextarea.addEventListener('compositionend', onCompositionEnd)
     }
 
+    const xtermInputTextarea = xtermTextarea instanceof HTMLTextAreaElement ? xtermTextarea : null
+    const traceTextareaEvent = (event: Event) => {
+      if (!xtermInputTextarea) return
+      traceTextareaInputEvent(event.type, event, xtermInputTextarea)
+    }
+    if (xtermInputTextarea) {
+      xtermInputTextarea.addEventListener('keydown', traceTextareaEvent, true)
+      xtermInputTextarea.addEventListener('beforeinput', traceTextareaEvent, true)
+      xtermInputTextarea.addEventListener('input', traceTextareaEvent, true)
+      xtermInputTextarea.addEventListener('keyup', traceTextareaEvent, true)
+      xtermInputTextarea.addEventListener('compositionstart', traceTextareaEvent, true)
+      xtermInputTextarea.addEventListener('compositionend', traceTextareaEvent, true)
+    }
+
     // Handle copy and paste shortcuts
     terminal.attachCustomKeyEventHandler((event) => {
       // Only handle keydown events to prevent duplicate actions
       if (event.type !== 'keydown') return true
+      traceTerminalKeyEvent(event)
 
-      const inputOverride = getTerminalKeyInputOverride(event, { imeComposing })
+      const inputOverride = getTerminalKeyInputOverride(event, {
+        imeComposing,
+        platform: host.platform,
+      })
       if (inputOverride !== null) {
         event.preventDefault()
-        ptyInput.write(inputOverride)
-        if (terminalType === 'code-agent') {
-          workspaceStore.markHasUserInput(terminalId)
-        }
         return false
       }
 
@@ -591,6 +750,13 @@ export const TerminalPanel = memo(function TerminalPanel({
 
     // Right-click context menu for copy/paste
     const containerEl = containerRef.current
+    const onPaste = (e: ClipboardEvent) => {
+      if (!isActiveRef.current) return
+      const text = e.clipboardData?.getData('text/plain')
+      if (!text) return
+      e.preventDefault()
+      handlePasteText(text)
+    }
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault()
       const selection = terminal.getSelection()
@@ -600,6 +766,7 @@ export const TerminalPanel = memo(function TerminalPanel({
         hasSelection: !!selection
       })
     }
+    containerEl.addEventListener('paste', onPaste)
     containerEl.addEventListener('contextmenu', onContextMenu)
 
     // Handle terminal output
@@ -677,6 +844,7 @@ export const TerminalPanel = memo(function TerminalPanel({
     })
 
     return () => {
+      window.removeEventListener('keydown', handleNativeTerminalKeydown, true)
       unsubscribeOutput()
       unsubscribeExit()
       unsubscribeSettings()
@@ -689,10 +857,19 @@ export const TerminalPanel = memo(function TerminalPanel({
         xtermTextarea.removeEventListener('compositionstart', onCompositionStart)
         xtermTextarea.removeEventListener('compositionend', onCompositionEnd)
       }
+      if (xtermInputTextarea) {
+        xtermInputTextarea.removeEventListener('keydown', traceTextareaEvent, true)
+        xtermInputTextarea.removeEventListener('beforeinput', traceTextareaEvent, true)
+        xtermInputTextarea.removeEventListener('input', traceTextareaEvent, true)
+        xtermInputTextarea.removeEventListener('keyup', traceTextareaEvent, true)
+        xtermInputTextarea.removeEventListener('compositionstart', traceTextareaEvent, true)
+        xtermInputTextarea.removeEventListener('compositionend', traceTextareaEvent, true)
+      }
       ptyInput.dispose()
       if (ptyInputRef.current === ptyInput) {
         ptyInputRef.current = null
       }
+      containerEl.removeEventListener('paste', onPaste)
       containerEl.removeEventListener('contextmenu', onContextMenu)
       doResizeRef.current = null
       terminal.dispose()
@@ -748,7 +925,13 @@ export const TerminalPanel = memo(function TerminalPanel({
         </button>
       </div>
       <div className="terminal-panel-stage">
-        <div ref={containerRef} className="terminal-panel" style={mobilePanelStyle}>
+        <div
+          ref={containerRef}
+          className="terminal-panel"
+          style={mobilePanelStyle}
+          tabIndex={0}
+          onMouseDownCapture={() => containerRef.current?.focus({ preventScroll: true })}
+        >
           {contextMenu && (
             <div
               className="context-menu"

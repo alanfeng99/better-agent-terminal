@@ -3,24 +3,28 @@ export interface PtyInputWriter {
   dispose(): void
 }
 
+const INPUT_FLUSH_DELAY_MS = 4
+
 export function createPtyInputWriter(send: (data: string) => Promise<unknown> | unknown): PtyInputWriter {
   let pending = ''
   let inFlight = false
   let scheduled = false
   let disposed = false
+  let timer: ReturnType<typeof setTimeout> | null = null
 
-  const scheduleFlush = () => {
+  const scheduleFlush = (delayMs = INPUT_FLUSH_DELAY_MS) => {
     if (disposed || inFlight || scheduled) return
     scheduled = true
-    queueMicrotask(flush)
+    timer = setTimeout(flush, delayMs)
   }
 
   const finishWrite = () => {
     inFlight = false
-    if (pending) scheduleFlush()
+    if (pending) scheduleFlush(0)
   }
 
   const flush = () => {
+    timer = null
     scheduled = false
     if (disposed || inFlight || !pending) return
 
@@ -47,6 +51,10 @@ export function createPtyInputWriter(send: (data: string) => Promise<unknown> | 
       disposed = true
       pending = ''
       scheduled = false
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
     },
   }
 }
