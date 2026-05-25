@@ -1460,25 +1460,32 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       }
 
       if (savedSdkSessionId) {
-        dlog(`${stag} ensureSessionStarted: resume sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
-        const resumeResult = await host.claude.resumeSession(
-          sessionId,
-          savedSdkSessionId,
-          cwd,
-          effectiveModel || savedModel,
-          apiVersion,
-          useWorktree ? true : undefined,
-          terminalState?.worktreePath,
-          terminalState?.worktreeBranch,
-          terminalState?.agentPreset,
-          undefined,
-          undefined,
-          permissionMode,
-          effectiveEffort as EffortLevel,
-        ) as ResumeSessionResult | null
-        if (!resumeResult?.stale) return
-        dlog(`${stag} ensureSessionStarted: stale sdkSessionId=${savedSdkSessionId.slice(0, 8)}; starting fresh session`)
-        workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
+        const owner = workspaceStore.findSdkSessionOwner(savedSdkSessionId, terminalState?.agentPreset, sessionId)
+        if (owner) {
+          dlog(`${stag} ensureSessionStarted: sdkSessionId already owned by ${owner.id}; focusing existing session and starting fresh here`)
+          workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
+          workspaceStore.setFocusedTerminal(owner.id)
+        } else {
+          dlog(`${stag} ensureSessionStarted: resume sdkSessionId=${savedSdkSessionId.slice(0, 8)}`)
+          const resumeResult = await host.claude.resumeSession(
+            sessionId,
+            savedSdkSessionId,
+            cwd,
+            effectiveModel || savedModel,
+            apiVersion,
+            useWorktree ? true : undefined,
+            terminalState?.worktreePath,
+            terminalState?.worktreeBranch,
+            terminalState?.agentPreset,
+            undefined,
+            undefined,
+            permissionMode,
+            effectiveEffort as EffortLevel,
+          ) as ResumeSessionResult | null
+          if (!resumeResult?.stale) return
+          dlog(`${stag} ensureSessionStarted: stale sdkSessionId=${savedSdkSessionId.slice(0, 8)}; starting fresh session`)
+          workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
+        }
       }
 
       dlog(`${stag} ensureSessionStarted: startSession`)
@@ -1766,6 +1773,15 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   const handleResumeSelect = useCallback(async (sdkSessionId: string) => {
     host.debug.log(`[Claude:${sessionId.slice(0, 8)}] handleResumeSelect sdkSessionId=${sdkSessionId.slice(0, 8)}`)
+    const owner = workspaceStore.findSdkSessionOwner(sdkSessionId, terminal?.agentPreset, sessionId)
+    if (owner) {
+      workspaceStore.setFocusedTerminal(owner.id)
+      setShowResumeList(false)
+      setResumeSessions([])
+      setResumeLoading(false)
+      window.alert(`This Claude session is already open in "${owner.alias || owner.title}". Switched to that session instead.`)
+      return
+    }
     setResumeLoading(true)
     try {
       const latest = await host.claude.listSessions(cwd) || []

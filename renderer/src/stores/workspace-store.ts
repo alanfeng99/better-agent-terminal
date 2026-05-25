@@ -26,6 +26,12 @@ function normalizePersistedAgentPreset(value: unknown): AgentPresetId | undefine
   return undefined
 }
 
+export function sdkSessionRuntimeFamily(agentPreset?: AgentPresetId): 'claude' | 'codex' | null {
+  if (agentPreset === 'codex-agent' || agentPreset === 'codex-agent-worktree') return 'codex'
+  if (agentPreset === 'claude-code' || agentPreset === 'claude-code-v2' || agentPreset === 'claude-code-worktree') return 'claude'
+  return null
+}
+
 class WorkspaceStore {
   private state: AppState = {
     workspaces: [],
@@ -201,6 +207,21 @@ class WorkspaceStore {
   }
 
   // SDK session persistence — per terminal
+  findSdkSessionOwner(
+    sdkSessionId: string | undefined,
+    agentPreset: AgentPresetId | undefined,
+    excludeTerminalId?: string,
+  ): TerminalInstance | undefined {
+    if (!sdkSessionId) return undefined
+    const family = sdkSessionRuntimeFamily(agentPreset)
+    if (!family) return undefined
+    return this.state.terminals.find(t =>
+      t.id !== excludeTerminalId
+      && t.sdkSessionId === sdkSessionId
+      && sdkSessionRuntimeFamily(t.agentPreset) === family
+    )
+  }
+
   setTerminalSdkSessionId(terminalId: string, sdkSessionId: string | undefined): void {
     this.state = {
       ...this.state,
