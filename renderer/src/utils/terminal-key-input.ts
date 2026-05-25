@@ -27,7 +27,10 @@ export function shouldBlockForImeComposition(
   event: TerminalKeyEventLike,
   imeComposing: boolean,
 ): boolean {
-  if (!imeComposing && !event.isComposing) return false
+  // WebKit can report event.isComposing on ordinary keydown events after the
+  // local composition lifecycle has ended. Only the tracked composition state
+  // is reliable enough to block terminal input.
+  if (!imeComposing) return false
   if (event.keyCode === 229) return false
   return !IME_SAFE_EDIT_KEYS.has(event.key ?? '')
 }

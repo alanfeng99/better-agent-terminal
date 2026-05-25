@@ -547,7 +547,8 @@ export const TerminalPanel = memo(function TerminalPanel({
       }
 
       // During IME composition, block non-composition key events
-      // to prevent CAPS LOCK etc. from committing partial input
+      // to prevent CAPS LOCK etc. from committing partial input. A stale
+      // event.isComposing by itself must not block normal terminal typing.
       if (imeComposing || event.isComposing) {
         // keyCode 229 = IME composition event, let it through
         // Editing/navigation keys must still reach xterm so Backspace can

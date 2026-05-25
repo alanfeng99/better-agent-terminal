@@ -118,6 +118,14 @@ async function main() {
         keyCode: 65,
         isComposing: true,
       }, false),
+      false,
+    )
+    assert.equal(
+      shouldBlockForImeComposition({
+        type: 'keydown',
+        key: 'a',
+        keyCode: 65,
+      }, true),
       true,
     )
     assert.equal(
