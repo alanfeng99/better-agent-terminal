@@ -23,15 +23,6 @@ export const IME_SAFE_EDIT_KEYS = new Set([
   'Escape',
 ])
 
-export function isPlainBackspaceEvent(event: TerminalKeyEventLike): boolean {
-  return !event.ctrlKey && !event.metaKey && !event.altKey && (
-    event.key === 'Backspace' ||
-    event.code === 'Backspace' ||
-    event.keyCode === 8 ||
-    event.which === 8
-  )
-}
-
 export function shouldBlockForImeComposition(
   event: TerminalKeyEventLike,
   imeComposing: boolean,
@@ -46,12 +37,6 @@ export function getTerminalKeyInputOverride(
   options: { imeComposing?: boolean } = {},
 ): string | null {
   if (event.type !== 'keydown') return null
-
-  // WebKit can keep event.isComposing set after the local composition state
-  // has ended. Plain Backspace must still reach the PTY as DEL in that case.
-  if (!options.imeComposing && isPlainBackspaceEvent(event)) {
-    return '\x7f'
-  }
 
   if (shouldBlockForImeComposition(event, Boolean(options.imeComposing))) {
     return null

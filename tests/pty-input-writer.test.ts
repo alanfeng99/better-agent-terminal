@@ -100,7 +100,7 @@ async function main() {
         keyCode: 8,
         isComposing: true,
       }),
-      '\x7f',
+      null,
     )
     assert.equal(
       getTerminalKeyInputOverride({
