@@ -17,6 +17,27 @@ Version 3.0 is the Tauri-only release. The Electron runtime has been removed; th
 
 [Download Latest Release](https://github.com/tony1223/better-agent-terminal/releases/latest)
 
+### Mobile Apps
+
+Mobile apps require Better Agent Terminal **v3.1.3 or later**.
+
+<table>
+  <tr>
+    <th>iOS TestFlight</th>
+    <th>Android</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://l.tonyq.org/bat-ios">https://l.tonyq.org/bat-ios</a><br>
+      <img src="assets/mobile-ios-testflight-qr.png" width="160" height="160" alt="iOS TestFlight QR code">
+    </td>
+    <td align="center">
+      <a href="https://l.tonyq.org/bat-android">https://l.tonyq.org/bat-android</a><br>
+      <img src="assets/mobile-android-qr.png" width="160" height="160" alt="Android QR code">
+    </td>
+  </tr>
+</table>
+
 </div>
 
 ---
