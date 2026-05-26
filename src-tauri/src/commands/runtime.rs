@@ -538,19 +538,19 @@ fn resolve_node_status(app: &AppHandle) -> Result<RuntimeItemStatus, String> {
             can_install,
         ));
     }
-    if let Some(path) = first_ready(path_candidates(&exe_names), &["--version"]) {
+    if let Some(path) = bundled_node_candidate(app) {
         return Ok(ready_status(
             "node",
-            "system",
+            "bundled",
             path,
             &["--version"],
             can_install,
         ));
     }
-    if let Some(path) = bundled_node_candidate(app) {
+    if let Some(path) = first_ready(path_candidates(&exe_names), &["--version"]) {
         return Ok(ready_status(
             "node",
-            "bundled",
+            "system",
             path,
             &["--version"],
             can_install,

@@ -40,6 +40,23 @@ const RESTART_BACKOFF_LIMIT: usize = 3;
 const RESTART_BACKOFF_DURATION: Duration = Duration::from_secs(5);
 const NODE_RUNTIME_VERSION: &str = "20.18.1";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidecarLaunchMode {
+    DirectScriptArg,
+    #[cfg(windows)]
+    WindowsEvalBootstrap,
+}
+
+impl SidecarLaunchMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectScriptArg => "direct-script-arg",
+            #[cfg(windows)]
+            Self::WindowsEvalBootstrap => "windows-eval-bootstrap",
+        }
+    }
+}
+
 // Avoid launching the sidecar with cwd `/` (the default when a macOS .app is
 // started from Finder). Falls back to None when no usable home dir is found,
 // in which case the spawn keeps the parent's cwd unchanged.
@@ -123,6 +140,61 @@ fn timestamp_millis() -> u128 {
 
 fn format_sidecar_log_line(line: &str) -> String {
     format!("{} [stderr] {}\n", timestamp_millis(), line)
+}
+
+fn format_sidecar_spawn_log_line(
+    node_path: &Path,
+    script_path: &Path,
+    cwd: Option<&Path>,
+    mode: SidecarLaunchMode,
+) -> String {
+    let cwd = cwd
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<inherit>".into());
+    format!(
+        "{} [spawn] node={} script={} cwd={} mode={}\n",
+        timestamp_millis(),
+        node_path.display(),
+        script_path.display(),
+        cwd,
+        mode.as_str(),
+    )
+}
+
+#[cfg(windows)]
+fn windows_sidecar_eval_bootstrap() -> &'static str {
+    r#"
+const { pathToFileURL } = await import('node:url');
+const entry = process.env.BAT_SIDECAR_ENTRY_PATH;
+if (!entry || !entry.trim()) {
+  throw new Error('BAT_SIDECAR_ENTRY_PATH is required');
+}
+process.argv[1] = entry;
+await import(pathToFileURL(entry).href);
+"#
+}
+
+fn configure_sidecar_entry(command: &mut Command, script_path: &Path) -> SidecarLaunchMode {
+    #[cfg(windows)]
+    {
+        // Avoid passing an absolute C:\... path as Node's argv[1]. Some
+        // Windows launch paths can still mangle that script argument into a
+        // bare drive prefix ("C:"), causing Node to fail during resolveMainPath.
+        // The env var is not parsed as part of the child command line, and the
+        // bootstrap restores process.argv[1] before importing the real entry so
+        // server.mjs still detects itself as the main module.
+        command
+            .arg("--input-type=module")
+            .arg("--eval")
+            .arg(windows_sidecar_eval_bootstrap())
+            .env("BAT_SIDECAR_ENTRY_PATH", script_path);
+        SidecarLaunchMode::WindowsEvalBootstrap
+    }
+    #[cfg(not(windows))]
+    {
+        command.arg(script_path);
+        SidecarLaunchMode::DirectScriptArg
+    }
 }
 
 impl SidecarHandle {
@@ -414,12 +486,13 @@ fn emit_sidecar_metric(
 
 fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHandle, BridgeError> {
     let mut command = Command::new(&cfg.node_path);
+    let launch_mode = configure_sidecar_entry(&mut command, &cfg.script_path);
     command
-        .arg(&cfg.script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(dir) = safe_default_cwd() {
+    let cwd = safe_default_cwd();
+    if let Some(dir) = cwd.as_ref() {
         command.current_dir(dir);
     }
     hide_console_window(&mut command);
@@ -428,6 +501,21 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
     }
     for (k, v) in &cfg.extra_env {
         command.env(k, v);
+    }
+    let stderr_log_path = cfg
+        .data_dir
+        .as_ref()
+        .map(|dir| dir.join("logs").join("sidecar.log"));
+    if let Some(path) = stderr_log_path.as_ref() {
+        let _ = append_line(
+            path,
+            &format_sidecar_spawn_log_line(
+                &cfg.node_path,
+                &cfg.script_path,
+                cwd.as_deref(),
+                launch_mode,
+            ),
+        );
     }
     let spawn_started = Instant::now();
     let mut child = match command.spawn() {
@@ -459,11 +547,6 @@ fn spawn_sidecar(cfg: &SpawnConfig, emit: Option<EventSink>) -> Result<SidecarHa
     let stderr_tail_for_stdout_reader = Arc::clone(&stderr_tail);
     let stderr_tail_for_stderr_reader = Arc::clone(&stderr_tail);
     let emit_for_stderr = emit.clone();
-    let stderr_log_path = cfg
-        .data_dir
-        .as_ref()
-        .map(|dir| dir.join("logs").join("sidecar.log"));
-
     // Stderr reader: append to the tail buffer (capped) and fan out as
     // a `sidecar:stderr` event so the renderer / DevTools can show
     // diagnostic output in real time. The tail is also surfaced in the
@@ -585,10 +668,11 @@ struct SidecarReplyError {
 pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, BridgeError> {
     use tauri::Manager;
 
-    // Runtime setup prefers app-data managed Node, then a user-managed PATH
-    // Node, then the all-in-one bundled runtime.
+    // Runtime setup prefers app-data managed Node, then the all-in-one
+    // bundled runtime, then a user-managed PATH Node. Packaged builds should
+    // not accidentally route Claude sidecar startup through an unrelated
+    // system Node when the bundled runtime is present.
     let managed = find_managed_node(app);
-    let system = which_node();
     let bundled = app
         .path()
         .resource_dir()
@@ -597,15 +681,14 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     let cwd_bundled = std::env::current_dir()
         .ok()
         .and_then(|cwd| find_bundled_node(&cwd));
-    let node_path = managed
-        .or(system)
-        .or(bundled)
-        .or(cwd_bundled)
-        .ok_or_else(|| BridgeError {
+    let system = which_node();
+    let node_path = choose_node_path(managed, bundled, cwd_bundled, system).ok_or_else(|| {
+        BridgeError {
             message:
-                "sidecar: could not find `node` (no managed runtime, no PATH runtime, no bundled runtime)"
+                "sidecar: could not find `node` (no managed runtime, no bundled runtime, no PATH runtime)"
                     .into(),
-        })?;
+        }
+    })?;
     // Tauri app data dir, if available. We pass it to the sidecar via env
     // so file-backed handlers land in the same directory the Rust side
     // uses (e.g. claude-accounts.json written by the Electron build).
@@ -647,6 +730,15 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
     Err(BridgeError {
         message: "sidecar: could not locate node-sidecar dist/server.mjs or src/server.mjs".into(),
     })
+}
+
+fn choose_node_path(
+    managed: Option<PathBuf>,
+    bundled: Option<PathBuf>,
+    cwd_bundled: Option<PathBuf>,
+    system: Option<PathBuf>,
+) -> Option<PathBuf> {
+    managed.or(bundled).or(cwd_bundled).or(system)
 }
 
 fn find_sidecar_script(base_dir: &Path, prefer_dist: bool) -> Option<PathBuf> {
@@ -866,6 +958,112 @@ mod tests {
     fn sidecar_log_line_has_stderr_prefix() {
         let line = format_sidecar_log_line("boom");
         assert!(line.contains(" [stderr] boom\n"));
+    }
+
+    #[test]
+    fn sidecar_spawn_log_line_includes_launch_paths_and_mode() {
+        let node = PathBuf::from("/opt/node/bin/node");
+        let script =
+            PathBuf::from("/Applications/Better Agent Terminal/node-sidecar/dist/server.mjs");
+        let cwd = PathBuf::from("/Users/example");
+        let line = format_sidecar_spawn_log_line(
+            &node,
+            &script,
+            Some(&cwd),
+            SidecarLaunchMode::DirectScriptArg,
+        );
+
+        assert!(line.contains(" [spawn] "));
+        assert!(line.contains("node=/opt/node/bin/node"));
+        assert!(line
+            .contains("script=/Applications/Better Agent Terminal/node-sidecar/dist/server.mjs"));
+        assert!(line.contains("cwd=/Users/example"));
+        assert!(line.contains("mode=direct-script-arg"));
+        #[cfg(windows)]
+        assert_eq!(
+            SidecarLaunchMode::WindowsEvalBootstrap.as_str(),
+            "windows-eval-bootstrap",
+        );
+    }
+
+    #[test]
+    fn choose_node_path_prefers_bundled_before_system() {
+        let managed = None;
+        let bundled = Some(PathBuf::from("bundled-node"));
+        let cwd_bundled = Some(PathBuf::from("cwd-bundled-node"));
+        let system = Some(PathBuf::from("system-node"));
+
+        assert_eq!(
+            choose_node_path(managed, bundled, cwd_bundled, system),
+            Some(PathBuf::from("bundled-node")),
+        );
+    }
+
+    #[test]
+    fn choose_node_path_keeps_managed_first_and_system_fallback() {
+        assert_eq!(
+            choose_node_path(
+                Some(PathBuf::from("managed-node")),
+                Some(PathBuf::from("bundled-node")),
+                Some(PathBuf::from("cwd-bundled-node")),
+                Some(PathBuf::from("system-node")),
+            ),
+            Some(PathBuf::from("managed-node")),
+        );
+        assert_eq!(
+            choose_node_path(None, None, None, Some(PathBuf::from("system-node"))),
+            Some(PathBuf::from("system-node")),
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_eval_bootstrap_imports_entry_from_env_and_restores_argv() {
+        let Some(node) = require_node() else {
+            eprintln!("skipped: no node on PATH");
+            return;
+        };
+        let tmp =
+            std::env::temp_dir().join(format!("bat-sidecar-bootstrap-{}", std::process::id()));
+        let script_dir = tmp.join("path with spaces");
+        let script = script_dir.join("entry.mjs");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&script_dir).unwrap();
+        std::fs::write(
+            &script,
+            "console.log(JSON.stringify({ argv: process.argv[1], href: import.meta.url }))\n",
+        )
+        .unwrap();
+
+        let output = Command::new(node)
+            .arg("--input-type=module")
+            .arg("--eval")
+            .arg(windows_sidecar_eval_bootstrap())
+            .env("BAT_SIDECAR_ENTRY_PATH", &script)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let payload: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(
+            __normalize_windows_test_path(payload["argv"].as_str().unwrap()),
+            __normalize_windows_test_path(&script.to_string_lossy()),
+        );
+        assert!(payload["href"].as_str().unwrap().starts_with("file:///"));
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[cfg(windows)]
+    fn __normalize_windows_test_path(path: &str) -> String {
+        path.replace("\\\\?\\", "")
+            .replace('\\', "/")
+            .to_lowercase()
     }
 
     #[test]
