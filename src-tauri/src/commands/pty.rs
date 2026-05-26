@@ -289,11 +289,19 @@ fn unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn pty_input_debug_enabled() -> bool {
+fn env_flag_enabled(name: &str) -> bool {
     matches!(
-        std::env::var("BAT_DEBUG").as_deref(),
+        std::env::var(name).as_deref(),
         Ok("1") | Ok("true") | Ok("TRUE")
     )
+}
+
+fn pty_input_debug_enabled() -> bool {
+    env_flag_enabled("BAT_DEBUG")
+}
+
+fn pty_output_debug_enabled() -> bool {
+    env_flag_enabled("BAT_PTY_OUTPUT_DEBUG")
 }
 
 pub(crate) fn pty_input_trace_required(data: &str) -> bool {
@@ -361,7 +369,7 @@ pub(crate) fn pty_input_debug_log(app: &AppHandle, message: impl AsRef<str>) {
 }
 
 fn pty_output_debug_log(app: &AppHandle, message: impl AsRef<str>) {
-    if !pty_input_debug_enabled() {
+    if !pty_output_debug_enabled() {
         return;
     }
     let message = format!("[pty-output] {}", message.as_ref());
@@ -937,7 +945,7 @@ pub(crate) fn start_pty_session(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if pty_output_bytes_trace_required(&buf[..n]) {
+                    if pty_output_debug_enabled() && pty_output_bytes_trace_required(&buf[..n]) {
                         pty_output_debug_log(
                             &app_for_reader,
                             format!(

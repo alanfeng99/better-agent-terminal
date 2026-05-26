@@ -509,6 +509,7 @@ export const TerminalPanel = memo(function TerminalPanel({
     ptyInputRef.current = ptyInput
 
     let imeComposing = false
+    let imeCompositionEndTimer: ReturnType<typeof setTimeout> | null = null
     const writeTerminalUserInput = (phase: string, data: string) => {
       traceTerminalInputData(phase, data)
       ptyInput.write(data)
@@ -522,6 +523,12 @@ export const TerminalPanel = memo(function TerminalPanel({
       const container = containerRef.current
       if (!container || !isActiveRef.current || !ptyReadyRef.current) return
       if (!isTerminalKeyboardEventTarget(container, event.target)) return
+
+      if (imeComposing && event.key === 'Enter') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        return
+      }
 
       const lowerKey = event.key.toLowerCase()
       const copyModifier = event.ctrlKey || event.metaKey
@@ -682,14 +689,25 @@ export const TerminalPanel = memo(function TerminalPanel({
     // to prevent CAPS LOCK and other keys from committing partial IME input
     const xtermTextarea = containerRef.current?.querySelector('.xterm-helper-textarea') as HTMLElement | null
     const onCompositionStart = () => {
+      if (imeCompositionEndTimer !== null) {
+        clearTimeout(imeCompositionEndTimer)
+        imeCompositionEndTimer = null
+      }
       imeComposing = true
     }
     const onCompositionEnd = (event: CompositionEvent) => {
-      imeComposing = false
-      if (!useDirectTerminalKeyInput || !isActiveRef.current || !ptyReadyRef.current) return
-      if (isPrintableTerminalInputData(event.data)) {
+      if (
+        useDirectTerminalKeyInput &&
+        isActiveRef.current &&
+        ptyReadyRef.current &&
+        isPrintableTerminalInputData(event.data)
+      ) {
         writeTerminalUserInput('compositionend', event.data)
       }
+      imeCompositionEndTimer = setTimeout(() => {
+        imeComposing = false
+        imeCompositionEndTimer = null
+      }, 0)
     }
     if (xtermTextarea) {
       xtermTextarea.addEventListener('compositionstart', onCompositionStart)
@@ -876,6 +894,7 @@ export const TerminalPanel = memo(function TerminalPanel({
       unsubscribeExit()
       unsubscribeSettings()
       if (resizeTimer) clearTimeout(resizeTimer)
+      if (imeCompositionEndTimer !== null) clearTimeout(imeCompositionEndTimer)
       if (readySizeRaf !== null) cancelAnimationFrame(readySizeRaf)
       if (refreshRaf !== null) cancelAnimationFrame(refreshRaf)
       resizeObserver.disconnect()
