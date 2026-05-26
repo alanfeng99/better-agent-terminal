@@ -224,6 +224,7 @@ jobs:
 
       - name: Cache Cargo registry base
         if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
         uses: actions/cache@v4
         with:
           path: |
@@ -236,6 +237,7 @@ jobs:
 
       - name: Cache Rust build outputs
         if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -252,6 +254,7 @@ jobs:
 
       - name: Cache Tauri bundle tools
         if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
         uses: actions/cache@v4
         with:
           path: |
@@ -264,6 +267,7 @@ jobs:
 
       - name: Cache root node_modules
         if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
         uses: actions/cache@v4
         with:
           path: node_modules
@@ -273,6 +277,7 @@ jobs:
 
       - name: Cache sidecar node_modules
         if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
         uses: actions/cache@v4
         with:
           path: node-sidecar/node_modules
@@ -287,6 +292,7 @@ jobs:
 
       - name: Cache bundled Node runtime
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        continue-on-error: true
         id: node-runtime-cache
         uses: actions/cache@v4
         with:
@@ -297,6 +303,7 @@ jobs:
 
       - name: Cache prepared sidecar resources
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        continue-on-error: true
         id: sidecar-resource-cache
         uses: actions/cache@v4
         with:
@@ -309,6 +316,7 @@ jobs:
 
       - name: Cache prepared Codex runtime
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        continue-on-error: true
         id: codex-runtime-cache
         uses: actions/cache@v4
         with:
