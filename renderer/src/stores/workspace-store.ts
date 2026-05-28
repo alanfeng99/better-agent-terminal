@@ -663,6 +663,7 @@ class WorkspaceStore {
   private lastActivityNotify: number = 0
   private _savePromise: Promise<void> = Promise.resolve()
   private _savePending = false
+  private _lastSavedData: string | null = null
 
   updateTerminalActivity(id: string): void {
     const now = Date.now()
@@ -738,14 +739,6 @@ class WorkspaceStore {
   async save(): Promise<void> {
     // If a save is already queued, skip — the queued save will capture the latest state
     if (this._savePending) {
-      debugLog('[workspace-store] save skipped: pending write will capture latest state', {
-        windowId: this.windowId,
-        workspaceCount: this.state.workspaces.length,
-        terminalCount: this.state.terminals.length,
-        activeWorkspaceId: this.state.activeWorkspaceId,
-        activeTerminalId: this.state.activeTerminalId,
-        focusedTerminalId: this.state.focusedTerminalId,
-      })
       return
     }
     this._savePending = true
@@ -787,33 +780,30 @@ class WorkspaceStore {
         terminals: savedTerminals,
         activeTerminalId: this.state.activeTerminalId,
       })
-      const activeWorkspace = wsWithFocus.find(w => w.id === this.state.activeWorkspaceId)
-      const activeWorkspaceTerminals = savedTerminals.filter(t => t.workspaceId === this.state.activeWorkspaceId)
+      if (data === this._lastSavedData) {
+        return
+      }
       debugLog('[workspace-store] save start', {
         windowId: this.windowId,
         workspaceCount: wsWithFocus.length,
         terminalCount: savedTerminals.length,
         activeWorkspaceId: this.state.activeWorkspaceId,
-        activeWorkspaceName: activeWorkspace?.name,
-        activeWorkspaceFolder: activeWorkspace?.folderPath,
         activeTerminalId: this.state.activeTerminalId,
         focusedTerminalId: this.state.focusedTerminalId,
-        activeWorkspaceTerminals: activeWorkspaceTerminals.map(t => ({
-          id: t.id,
-          title: t.title,
-          agentPreset: t.agentPreset || 'none',
-          cwd: t.cwd,
-        })),
         dataLength: data.length,
       })
       const ok = await host.workspace.save(data)
-      debugLog('[workspace-store] save done', {
-        windowId: this.windowId,
-        ok,
-        elapsedMs: Date.now() - saveStartedAt,
-        workspaceCount: wsWithFocus.length,
-        terminalCount: savedTerminals.length,
-      })
+      if (ok) this._lastSavedData = data
+      const elapsedMs = Date.now() - saveStartedAt
+      if (elapsedMs >= 250 || ok !== true) {
+        debugLog('[workspace-store] save done', {
+          windowId: this.windowId,
+          ok,
+          elapsedMs,
+          workspaceCount: wsWithFocus.length,
+          terminalCount: savedTerminals.length,
+        })
+      }
     }).catch(e => {
       debugLog('[workspace-store] save failed', {
         windowId: this.windowId,
@@ -922,6 +912,7 @@ class WorkspaceStore {
         focusedTerminalId: restoredFocus,
       }
       this.activeGroup = parsed.activeGroup || null
+      this._lastSavedData = data
       debugLog('[workspace-store] load applied', {
         windowId: this.windowId,
         workspaceCount: workspaces.length,

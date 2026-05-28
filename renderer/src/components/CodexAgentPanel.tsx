@@ -661,7 +661,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
     const summary = `live=${messages.length} archived=${loadedArchive.length} all=${allMessages.length} hasMore=${hasMoreArchived} loadingMore=${isLoadingMore}`
     const now = Date.now()
     if (summary === lastRenderDlogRef.current.summary) return
-    if (now - lastRenderDlogRef.current.at < 1000) return
+    if (now - lastRenderDlogRef.current.at < 5000) return
     lastRenderDlogRef.current = { at: now, summary }
     host.debug.log(`[Codex:${sessionId.slice(0, 8)}] render messages ${summary}`)
   }, [allMessages.length, hasMoreArchived, isLoadingMore, loadedArchive.length, messages.length, sessionId])
@@ -1329,15 +1329,41 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           }
         }
         const historyItems = mainItems
+        const archiveHistoryItems = historyItems.length > ARCHIVE_TRIGGER
+          ? historyItems.slice(0, -VISIBLE_LIMIT)
+          : []
+        const liveHistoryItems = archiveHistoryItems.length > 0
+          ? historyItems.slice(-VISIBLE_LIMIT)
+          : historyItems
         archiveDlog(
-          `${tag} onHistory reset archive items=${historyItems.length} loadedArchive=${loadedArchive.length} archivedCount=${archivedCountRef.current} loadedFromArchive=${loadedFromArchiveRef.current}`
+          `${tag} onHistory reset archive items=${historyItems.length} live=${liveHistoryItems.length} archive=${archiveHistoryItems.length} loadedArchive=${loadedArchive.length} archivedCount=${archivedCountRef.current} loadedFromArchive=${loadedFromArchiveRef.current}`
         )
         if (historyItems.length > 0 || loadedFromArchiveRef.current === 0) {
           setLoadedArchive([])
-          archivedCountRef.current = 0
+          archivedCountRef.current = archiveHistoryItems.length
           loadedFromArchiveRef.current = 0
           setHasMoreArchived(false)
-          host.claude.clearArchive(sessionId).catch(() => {})
+          window.setTimeout(() => {
+            const resetArchive = host.claude.clearArchive(sessionId)
+            if (archiveHistoryItems.length === 0) {
+              resetArchive.catch(() => {})
+              return
+            }
+            resetArchive
+              .then(() => host.claude.archiveMessages(sessionId, archiveHistoryItems))
+              .then((ok) => {
+                if (ok) {
+                  setHasMoreArchived(true)
+                } else {
+                  archivedCountRef.current = 0
+                  archiveDlog(`${tag} onHistory archive history failed`)
+                }
+              })
+              .catch((err) => {
+                archivedCountRef.current = 0
+                host.debug.log?.('[CodexAgentPanel] archive history failed:', String(err))
+              })
+          }, 0)
         } else {
           archiveDlog(`${tag} onHistory empty; keeping auto-loaded archive`)
         }
@@ -1353,7 +1379,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           workspaceStore.setTerminalPendingPrompt(sessionId, '')
           host.debug.log(`${tag} onHistory AUTO-SENDING pending prompt: "${prompt}" images=${images?.length ?? 0}`)
           // Set history + user message together so it doesn't get overwritten
-          setMessages([...historyItems, {
+          setMessages([...liveHistoryItems, {
             id: `user-fork-${Date.now()}`,
             sessionId,
             role: 'user' as const,
@@ -1365,7 +1391,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
           void sendClaudeMessage(prompt, images)
         } else {
           archiveDlog(`${tag} onHistory setting messages (history only, no pending prompt)`)
-          setMessages(historyItems)
+          setMessages(liveHistoryItems)
           scrollToBottomAfterRender()
         }
       }),
