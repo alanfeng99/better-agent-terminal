@@ -2451,46 +2451,6 @@
 }
 
 /* ============================================
-   Background tasks / dynamic-workflow indicator
-   ============================================ */
-.claude-bg-tasks {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--border-color);
-  font-size: calc(var(--claude-font-size) - 2px);
-  color: var(--text-secondary);
-  overflow: hidden;
-}
-.claude-bg-tasks.interrupted {
-  color: var(--claude-accent);
-}
-.claude-bg-tasks-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--claude-accent);
-  flex-shrink: 0;
-  animation: claude-bg-tasks-pulse 1.4s ease-in-out infinite;
-}
-.claude-bg-tasks-label {
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.claude-bg-tasks-names {
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.85;
-}
-@keyframes claude-bg-tasks-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-/* ============================================
    Slash Command Autocomplete Menu
    ============================================ */
 .claude-slash-menu {
