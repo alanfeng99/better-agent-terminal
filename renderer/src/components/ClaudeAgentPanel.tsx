@@ -1193,18 +1193,22 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         }
         setSessionMeta(m)
         // Track cache efficiency history (only push when values change)
-        if (m.inputTokens > 0 && m.cacheReadTokens !== undefined) {
+        if (m.cacheReadTokens !== undefined && (m.inputTokens > 0 || m.cacheReadTokens > 0)) {
           const hist = cacheHistoryRef.current
           const lastEntry = hist[hist.length - 1]
           const hasModelUsage = m.modelUsage && Object.keys(m.modelUsage).length > 0
           const isResult = !!hasModelUsage
-          if (!lastEntry || lastEntry.cacheRead !== m.cacheReadTokens || lastEntry.totalInput !== m.inputTokens || (isResult !== lastEntry.isResult)) {
-            const pct = Math.round((m.cacheReadTokens / m.inputTokens) * 100)
-            const entry = { pct, cacheRead: m.cacheReadTokens, cacheCreate: m.cacheCreationTokens || 0, totalInput: m.inputTokens, contextSize: m.contextTokens || 0, callCacheRead: m.callCacheRead || 0, callCacheWrite: m.callCacheWrite || 0, calls: isResult ? (m.lastQueryCalls || 0) : 1, isResult, modelUsage: m.modelUsage ? { ...m.modelUsage } : undefined, model: m.model, outputTokens: m.outputTokens || 0, cacheWrite5mTokens: m.cacheWrite5mTokens, cacheWrite1hTokens: m.cacheWrite1hTokens, timestamp: Date.now(), messageCount: messageCountRef.current, turnStartMsgId: currentTurnMsgIdRef.current, apiTotalCost: m.totalCost || 0, firstTokenMs: m.lastTurnFirstTokenMs, durationMs: m.lastTurnDurationMs }
+          // Full input total = uncached input + cache read + cache write. The API's
+          // input_tokens is only the uncached delta (a few tokens under heavy caching),
+          // so cache efficiency must divide by this total, not by input_tokens alone.
+          const totalInput = m.inputTokens + m.cacheReadTokens + (m.cacheCreationTokens || 0)
+          if (!lastEntry || lastEntry.cacheRead !== m.cacheReadTokens || lastEntry.totalInput !== totalInput || (isResult !== lastEntry.isResult)) {
+            const pct = totalInput > 0 ? Math.round((m.cacheReadTokens / totalInput) * 100) : 0
+            const entry = { pct, cacheRead: m.cacheReadTokens, cacheCreate: m.cacheCreationTokens || 0, totalInput, contextSize: m.contextTokens || 0, callCacheRead: m.callCacheRead || 0, callCacheWrite: m.callCacheWrite || 0, calls: isResult ? (m.lastQueryCalls || 0) : 1, isResult, modelUsage: m.modelUsage ? { ...m.modelUsage } : undefined, model: m.model, outputTokens: m.outputTokens || 0, cacheWrite5mTokens: m.cacheWrite5mTokens, cacheWrite1hTokens: m.cacheWrite1hTokens, timestamp: Date.now(), messageCount: messageCountRef.current, turnStartMsgId: currentTurnMsgIdRef.current, apiTotalCost: m.totalCost || 0, firstTokenMs: m.lastTurnFirstTokenMs, durationMs: m.lastTurnDurationMs }
             hist.push(entry)
             // Update last result ref for cache expiry warning
             if (isResult) {
-              lastResultRef.current = { timestamp: Date.now(), totalInput: m.inputTokens }
+              lastResultRef.current = { timestamp: Date.now(), totalInput }
             }
             // Trim: keep max 20 non-result entries; result entries are extra
             while (hist.filter(h => !h.isResult).length > 20) {
@@ -5255,9 +5259,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             </span>
           ),
           cacheEff: () => {
-            if (!sessionMeta || sessionMeta.inputTokens <= 0) return null
+            if (!sessionMeta) return null
             const cacheRead = sessionMeta.cacheReadTokens || 0
-            const totalInput = sessionMeta.inputTokens
+            const totalInput = (sessionMeta.inputTokens || 0) + cacheRead + (sessionMeta.cacheCreationTokens || 0)
+            if (totalInput <= 0) return null
             const currentPct = Math.round((cacheRead / totalInput) * 100)
             // Color is determined by the lowest reading >= 50k in last 20
             const hist = cacheHistoryRef.current
