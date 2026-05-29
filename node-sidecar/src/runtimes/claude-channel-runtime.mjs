@@ -212,6 +212,13 @@ function buildClaudeArgs(session, files) {
     args.push('--settings', JSON.stringify({ ultracode: true, enableWorkflows: true }))
   }
   if (session.permissionMode) args.push('--permission-mode', session.permissionMode)
+  log('[claude-channel:create]', session.sessionId, JSON.stringify({
+    model: session.model || null,
+    permissionMode: session.permissionMode || null,
+    effort: runtimeEffort || null,
+    effortMode: session.effort || null,
+    ultracode: isUltracodeMode(session.effort) || session.ultracode === true,
+  }))
   return args
 }
 

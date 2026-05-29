@@ -649,6 +649,10 @@ async function ensureLiveQuery(s, sessionId, sdk, prompt) {
     continue: queryOptions.continue === true,
     model: queryOptions.model || null,
     permissionMode: queryOptions.permissionMode || 'default',
+    effort: queryOptions.effort || null,
+    effortMode: s.effort || null,
+    ultracode: queryOptions.settings?.ultracode === true,
+    enableWorkflows: queryOptions.settings?.enableWorkflows === true,
     hasClaudePath: typeof queryOptions.pathToClaudeCodeExecutable === 'string',
     pluginCount: Array.isArray(queryOptions.plugins) ? queryOptions.plugins.length : 0,
   })
