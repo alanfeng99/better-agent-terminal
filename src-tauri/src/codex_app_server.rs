@@ -3544,6 +3544,10 @@ fn handle_item_started(
             emit(app, "claude:tool-use", session_id, "toolCall", tool_call);
         }
         Some("fileChange") => {
+            let changes = item
+                .get("changes")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
             let path = item
                 .get("changes")
                 .and_then(Value::as_array)
@@ -3555,7 +3559,7 @@ fn handle_item_started(
                 "id": item_id(item),
                 "sessionId": session_id,
                 "toolName": "Edit",
-                "input": { "file_path": path },
+                "input": { "file_path": path, "changes": changes },
                 "status": tool_status(item),
                 "timestamp": now_millis(),
             });

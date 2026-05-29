@@ -161,6 +161,91 @@ function includeCurrentOption(values: readonly string[], current: string): strin
   return current && !filtered.includes(current) ? [current, ...filtered] : filtered
 }
 
+type CodexFileChange = Record<string, unknown>
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function codexFileChanges(input: Record<string, unknown>): CodexFileChange[] {
+  const changes = input.changes
+  return Array.isArray(changes)
+    ? changes.filter(isObjectRecord)
+    : []
+}
+
+function firstStringValue(record: CodexFileChange, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim().length > 0) return value
+  }
+  return ''
+}
+
+function firstNumberValue(record: CodexFileChange, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value)
+  }
+  return null
+}
+
+function codexChangePath(change: CodexFileChange): string {
+  return firstStringValue(change, ['path', 'file_path', 'filePath', 'uri'])
+}
+
+function codexChangeAction(change: CodexFileChange): string {
+  return firstStringValue(change, ['action', 'kind', 'type', 'status', 'operation']) || 'modified'
+}
+
+function codexChangeCounts(change: CodexFileChange): string {
+  const added = firstNumberValue(change, ['additions', 'added', 'addedLines', 'linesAdded', 'insertions'])
+  const removed = firstNumberValue(change, ['deletions', 'deleted', 'removed', 'removedLines', 'linesDeleted'])
+  const parts: string[] = []
+  if (added !== null) parts.push(`+${added}`)
+  if (removed !== null) parts.push(`-${removed}`)
+  return parts.join(' ')
+}
+
+function codexChangeSummaryLine(change: CodexFileChange): string {
+  const path = codexChangePath(change)
+  const action = codexChangeAction(change)
+  const counts = codexChangeCounts(change)
+  const base = path ? `${action} ${path}` : action
+  return counts ? `${base} (${counts})` : base
+}
+
+function codexChangesSummary(changes: CodexFileChange[], fallbackPath: string): string {
+  if (changes.length === 0) return fallbackPath
+  if (changes.length === 1) return codexChangeSummaryLine(changes[0])
+  const firstPath = codexChangePath(changes[0]) || fallbackPath
+  return `${changes.length} files${firstPath ? `, first: ${firstPath}` : ''}`
+}
+
+function codexChangeDiffText(changes: CodexFileChange[]): string {
+  const diffKeys = ['diff', 'patch', 'unified_diff', 'unifiedDiff']
+  return changes
+    .map(change => firstStringValue(change, diffKeys))
+    .filter(Boolean)
+    .join('\n')
+}
+
+function codexDiffLineClass(line: string): string {
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'claude-diff-line claude-diff-add'
+  if (line.startsWith('-') && !line.startsWith('---')) return 'claude-diff-line claude-diff-del'
+  if (line.startsWith('@@')) return 'claude-diff-line claude-diff-hunk'
+  if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
+    return 'claude-diff-line claude-diff-file'
+  }
+  return 'claude-diff-line'
+}
+
+function isCodexDiffChangeLine(line: string): boolean {
+  return (line.startsWith('+') && !line.startsWith('+++'))
+    || (line.startsWith('-') && !line.startsWith('---'))
+}
+
 export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose, showUserMsg = true, showAssistantMsg = true, showToolMsg = true, showThinkingMsg = true, isRemoteConnected = false }: Readonly<CodexAgentPanelProps>) {
   const { t } = useTranslation()
   const terminal = workspaceStore.getState().terminals.find(t => t.id === sessionId)
@@ -3374,15 +3459,20 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         )
       }
 
-      // Edit tool: show diff view
-      if (item.toolName === 'Edit' && item.input.old_string !== undefined) {
+      // Edit tool: show diff/change view
+      const editChanges = item.toolName === 'Edit' ? codexFileChanges(item.input) : []
+      if (item.toolName === 'Edit' && (item.input.old_string !== undefined || editChanges.length > 0)) {
         const filePath = String(item.input.file_path || '')
         const oldStr = String(item.input.old_string || '')
         const newStr = String(item.input.new_string || '')
+        const hasOldNewDiff = item.input.old_string !== undefined
+        const unifiedDiff = codexChangeDiffText(editChanges)
         const isDiffExpanded = expandedTools.has(`diff-${item.id}`)
         const oldLines = oldStr.split('\n')
         const newLines = newStr.split('\n')
-        const totalLines = oldLines.length + newLines.length
+        const unifiedDiffLines = unifiedDiff.split(/\r?\n/)
+        const changeSummaryLines = editChanges.map(codexChangeSummaryLine)
+        const totalLines = hasOldNewDiff ? oldLines.length + newLines.length : unifiedDiffLines.length
         const isLongDiff = totalLines > 12
         const resultRaw = item.result ? (stringifyToolResult(item.result)) : ''
         const { content: resultText, errors: resultErrors } = splitSystemReminders(resultRaw)
@@ -3392,28 +3482,53 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
             <div className="tl-content">
               <div className="claude-tool-header" onClick={() => toggleTool(item.id)}>
                 <span className="claude-tool-name">Edit</span>
-                <span className="claude-tool-desc"><LinkedText text={filePath} /></span>
+                <span className="claude-tool-desc"><LinkedText text={codexChangesSummary(editChanges, filePath)} /></span>
                 {item.timestamp > 0 && <span className="claude-tool-time" title={formatFullTimestamp(item.timestamp)}>{formatTimestamp(item.timestamp)}</span>}
               </div>
-              <div className="claude-diff-block">
-                {(isDiffExpanded || !isLongDiff ? oldLines : oldLines.slice(0, 3)).map((line, i) => (
-                  <div key={`o${i}`} className="claude-diff-line claude-diff-del">
-                    <span className="claude-diff-sign">-</span>
-                    <span className="claude-diff-text">{line}</span>
+              {hasOldNewDiff ? (
+                <div className="claude-diff-block">
+                  {(isDiffExpanded || !isLongDiff ? oldLines : oldLines.slice(0, 3)).map((line, i) => (
+                    <div key={`o${i}`} className="claude-diff-line claude-diff-del">
+                      <span className="claude-diff-sign">-</span>
+                      <span className="claude-diff-text">{line}</span>
+                    </div>
+                  ))}
+                  {(isDiffExpanded || !isLongDiff ? newLines : newLines.slice(0, 3)).map((line, i) => (
+                    <div key={`n${i}`} className="claude-diff-line claude-diff-add">
+                      <span className="claude-diff-sign">+</span>
+                      <span className="claude-diff-text">{line}</span>
+                    </div>
+                  ))}
+                  {isLongDiff && (
+                    <div className="claude-diff-toggle" onClick={() => toggleTool(`diff-${item.id}`)}>
+                      {isDiffExpanded ? 'Collapse' : `Show all ${totalLines} lines...`}
+                    </div>
+                  )}
+                </div>
+              ) : unifiedDiff ? (
+                <div className="claude-diff-block">
+                  {(isDiffExpanded || !isLongDiff ? unifiedDiffLines : unifiedDiffLines.slice(0, 12)).map((line, i) => (
+                    <div key={i} className={codexDiffLineClass(line)}>
+                      <span className="claude-diff-sign">{isCodexDiffChangeLine(line) ? line[0] : ' '}</span>
+                      <span className="claude-diff-text">{isCodexDiffChangeLine(line) ? line.slice(1) : line}</span>
+                    </div>
+                  ))}
+                  {isLongDiff && (
+                    <div className="claude-diff-toggle" onClick={() => toggleTool(`diff-${item.id}`)}>
+                      {isDiffExpanded ? 'Collapse' : `Show all ${totalLines} lines...`}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="claude-tool-blocks">
+                  <div className="claude-tool-row">
+                    <span className="claude-tool-row-label">EDIT</span>
+                    <span className="claude-tool-row-content">
+                      {changeSummaryLines.length > 0 ? <LinkedText text={changeSummaryLines.join('\n')} /> : <LinkedText text={filePath} />}
+                    </span>
                   </div>
-                ))}
-                {(isDiffExpanded || !isLongDiff ? newLines : newLines.slice(0, 3)).map((line, i) => (
-                  <div key={`n${i}`} className="claude-diff-line claude-diff-add">
-                    <span className="claude-diff-sign">+</span>
-                    <span className="claude-diff-text">{line}</span>
-                  </div>
-                ))}
-                {isLongDiff && (
-                  <div className="claude-diff-toggle" onClick={() => toggleTool(`diff-${item.id}`)}>
-                    {isDiffExpanded ? 'Collapse' : `Show all ${totalLines} lines...`}
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
               {resultErrors.length > 0 && resultErrors.map((err, i) => (
                 <div key={`err${i}`} className="claude-tool-blocks"><div className="claude-tool-row claude-tool-error-row">
                   <span className="claude-tool-row-label claude-error-label">{t('claude.err')}</span>
@@ -4718,13 +4833,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         // Ref: https://platform.claude.com/docs/en/about-claude/pricing
         const P = (input: number, output: number) => ({ input, output, cacheRead: input * 0.1, cacheWrite5m: input * 1.25, cacheWrite1h: input * 2 })
         const MODEL_PRICING: Record<string, ReturnType<typeof P>> = {
-          'opus-4-7':  P(5, 25),    'opus-4-6':  P(5, 25),    'opus-4-5':  P(5, 25),
+          'opus-4-8':  P(5, 25),    'opus-4-7':  P(5, 25),    'opus-4-6':  P(5, 25),    'opus-4-5':  P(5, 25),
           'opus-4-1':  P(15, 75),   'opus-4':    P(15, 75),   'opus-3': P(15, 75),
           'sonnet-4-6': P(3, 15),   'sonnet-4-5': P(3, 15),   'sonnet-4': P(3, 15),
           'sonnet-3-7': P(3, 15),   'sonnet-3-5': P(3, 15),
           'haiku-4-5': P(1, 5),     'haiku-3-5': P(0.80, 4),  'haiku-3': P(0.25, 1.25),
         }
         const getModelPricing = (model: string) => {
+          if (model.includes('opus-4-8')) return MODEL_PRICING['opus-4-8']
           if (model.includes('opus-4-7')) return MODEL_PRICING['opus-4-7']
           if (model.includes('opus-4-6')) return MODEL_PRICING['opus-4-6']
           if (model.includes('opus-4-5')) return MODEL_PRICING['opus-4-5']

@@ -440,11 +440,11 @@ async function inProcess() {
   const arrayMatch = presetsFile.match(/CLAUDE_BUILTIN_MODELS:[^=]*=\s*\[([\s\S]*?)\n\]/m)
   assert.ok(arrayMatch, 'could not locate CLAUDE_BUILTIN_MODELS array in source')
   const arrayBody = arrayMatch[1]
-  const tsValues = [...arrayBody.matchAll(/value:\s*(?:CLAUDE_OPUS_47_(\w+)|'([^']+)')/g)]
+  const tsValues = [...arrayBody.matchAll(/value:\s*(?:(CLAUDE_OPUS_(?:47|48)_\w+)|'([^']+)')/g)]
     .map(m => {
       if (m[1]) {
         // Resolve the symbolic constant via a regex-extracted assignment.
-        const constMatch = presetsFile.match(new RegExp(`CLAUDE_OPUS_47_${m[1]}\\s*=\\s*'([^']+)'`))
+        const constMatch = presetsFile.match(new RegExp(`${m[1]}\\s*=\\s*'([^']+)'`))
         return constMatch ? constMatch[1] : null
       }
       return m[2]
@@ -2761,6 +2761,9 @@ async function inProcess() {
   const { sdkModelForClaudeSelection, dataUrlToContentBlock } = mod
   assert.equal(sdkModelForClaudeSelection(undefined), undefined)
   assert.equal(sdkModelForClaudeSelection('claude-sonnet-4-6'), 'claude-sonnet-4-6')
+  assert.equal(sdkModelForClaudeSelection('claude-opus-4-8:auto-compact-200k'), 'claude-opus-4-8')
+  assert.equal(sdkModelForClaudeSelection('claude-opus-4-8:auto-compact-300k'), 'claude-opus-4-8')
+  assert.equal(sdkModelForClaudeSelection('claude-opus-4-8:1m'), 'claude-opus-4-8')
   assert.equal(sdkModelForClaudeSelection('claude-opus-4-7:auto-compact-200k'), 'claude-opus-4-7')
   assert.equal(sdkModelForClaudeSelection('claude-opus-4-7:auto-compact-300k'), 'claude-opus-4-7')
   assert.equal(sdkModelForClaudeSelection('claude-opus-4-7:1m'), 'claude-opus-4-7')
@@ -2774,8 +2777,8 @@ async function inProcess() {
   // Drift guard: sidecar CLAUDE_MODEL_CONTEXT_WINDOWS must agree with
   // renderer/src/utils/claude-model-presets.ts CLAUDE_BUILTIN_MODEL_CONTEXT_WINDOWS
   // for every base-id key + value, AND must contain entries for all
-  // four auto-compact preset ids (values are hand-derived from
-  // OPUS_47_PRESET_AUTO_COMPACT and don't exactly mirror that map —
+  // auto-compact preset ids (values are hand-derived from
+  // CLAUDE_PRESET_AUTO_COMPACT and don't exactly mirror that map —
   // :1m has TS-side null (no auto-compact) but the actual context
   // window is 1M, which is what we surface to maxTokens).
   // Scope the match to the same map literal we located earlier (ctxMatch[1]).
@@ -2792,6 +2795,9 @@ async function inProcess() {
   }
   // Preset entries must exist with a positive number.
   for (const presetId of [
+    'claude-opus-4-8:auto-compact-200k',
+    'claude-opus-4-8:auto-compact-300k',
+    'claude-opus-4-8:1m',
     'claude-opus-4-7:auto-compact-200k',
     'claude-opus-4-7:auto-compact-300k',
     'claude-opus-4-7:auto-compact-400k',
@@ -2803,12 +2809,14 @@ async function inProcess() {
 
   // Spot-check a few well-known values + expectedContextWindowForModel
   // base-id fallback semantics.
+  assert.equal(CLAUDE_MODEL_CONTEXT_WINDOWS.get('claude-opus-4-8'), 1000000)
   assert.equal(CLAUDE_MODEL_CONTEXT_WINDOWS.get('claude-opus-4-7'), 1000000)
   assert.equal(CLAUDE_MODEL_CONTEXT_WINDOWS.get('claude-haiku-4-5-20251001'), 200000)
   assert.equal(CLAUDE_MODEL_CONTEXT_WINDOWS.get('claude-opus-4-7:auto-compact-200k'), 200000)
   assert.equal(CLAUDE_MODEL_CONTEXT_WINDOWS.get('claude-opus-4-7:1m'), 1000000)
   // expectedContextWindowForModel: hits map; falls back to base id by
   // stripping [1m]; returns null for unknown.
+  assert.equal(expectedContextWindowForModel('claude-opus-4-8[1m]'), 1000000)
   assert.equal(expectedContextWindowForModel('claude-opus-4-7'), 1000000)
   assert.equal(expectedContextWindowForModel('claude-opus-4-7[1m]'), 1000000)
   assert.equal(expectedContextWindowForModel('claude-opus-4-6[1m]'), 1000000)

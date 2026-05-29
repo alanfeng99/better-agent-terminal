@@ -977,6 +977,14 @@
 .claude-diff-add .claude-diff-sign {
   color: #22c55e;
 }
+.claude-diff-hunk {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.1);
+}
+.claude-diff-file {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+}
 .claude-diff-toggle {
   padding: 4px 8px;
   font-size: calc(var(--claude-font-size) - 2px);
