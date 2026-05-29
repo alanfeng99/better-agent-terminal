@@ -85,6 +85,16 @@ function formatUnknownError(error: unknown): string {
   }
 }
 
+// The host caps the claude.sendMessage RPC at SESSION_TIMEOUT (~5 min), but a
+// long agent turn (e.g. one that triggers a slow auto-compaction) legitimately
+// runs past that: it keeps streaming over claude:* events and completes on
+// claude:turn-end. A timeout on the send RPC therefore does NOT mean the turn
+// failed — it only means the turn's result frame has not arrived yet. Treat it
+// as non-fatal so we don't stop the UI mid-turn; the events drive completion.
+function isSendMessageTimeout(message: string): boolean {
+  return /timeout waiting for claude\.sendMessage/i.test(message)
+}
+
 function runtimeWaitingMessage(meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
@@ -2317,7 +2327,11 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow),
           { id: userMsgId, displayContent: trimmed },
         )
-      } catch {
+      } catch (err) {
+        if (isSendMessageTimeout(formatUnknownError(err))) {
+          host.debug.log(`[Claude:${sessionId.slice(0, 8)}] snippet sendMessage RPC timed out; turn still active, letting claude:* events drive completion.`)
+          return
+        }
         setMessages(prev => [...prev, {
           id: `error-${Date.now()}`,
           sessionId,
@@ -2396,6 +2410,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       )
     } catch (err) {
       const message = formatUnknownError(err)
+      if (isSendMessageTimeout(message)) {
+        host.debug.log(`[Claude:${sessionId.slice(0, 8)}] sendMessage RPC timed out; turn still active, letting claude:* events drive completion. detail=${message}`)
+        return
+      }
       setIsStreaming(false)
       setIsInterrupted(false)
       setStreamingText('')

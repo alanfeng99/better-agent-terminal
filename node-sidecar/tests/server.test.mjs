@@ -1128,6 +1128,58 @@ async function inProcess() {
     restoreSendEvent()
   }
 
+  // Status correctness across a MULTI-FRAME turn. As new responses keep
+  // streaming in, the runtime status must be written correctly: it is set to
+  // 'waiting_for_api' on push, CLEARED the moment the first response frame
+  // arrives, re-set to 'compacting' if the SDK compacts mid-turn, then
+  // CLEARED again on the next frame. Crucially markRuntimeResponded must be
+  // idempotent — extra frames after a clear must NOT re-broadcast claude:status
+  // (no per-frame churn). Feed: init → 2 deltas → status/compacting →
+  // compact_boundary → 1 delta → assistant → result.
+  const multiCaptured = []
+  const restoreMultiSend = mod.__setSendEventForTests((name, payload) => multiCaptured.push({ name, payload }))
+  const fakeSdkMultiFrame = {
+    query() {
+      const messages = [
+        { type: 'system', subtype: 'init', session_id: 'sdk-multi', cwd: '/x', model: 'claude-sonnet-4-6', permissionMode: 'default' },
+        { type: 'stream_event', session_id: 'sdk-multi', event: { type: 'content_block_delta', delta: { text: 'one ' } } },
+        { type: 'stream_event', session_id: 'sdk-multi', event: { type: 'content_block_delta', delta: { text: 'two ' } } },
+        { type: 'system', subtype: 'status', session_id: 'sdk-multi', status: 'compacting' },
+        { type: 'system', subtype: 'compact_boundary', session_id: 'sdk-multi', compact_metadata: { trigger: 'auto', pre_tokens: 1000, post_tokens: 200, duration_ms: 1234 } },
+        { type: 'stream_event', session_id: 'sdk-multi', event: { type: 'content_block_delta', delta: { text: 'three' } } },
+        { type: 'assistant', session_id: 'sdk-multi', message: { role: 'assistant', content: [{ type: 'text', text: 'one two three' }] } },
+        { type: 'result', subtype: 'success', session_id: 'sdk-multi', result: 'one two three', stop_reason: 'end_turn' },
+      ]
+      return (async function*() { for (const m of messages) yield m })()
+    },
+  }
+  __setSdkOverrideForTests(fakeSdkMultiFrame)
+  try {
+    await dispatch({ jsonrpc: '2.0', id: 2240, method: 'claude.startSession',
+      params: { sessionId: 'send-multi', options: { cwd: '/x' } } })
+    const multiReply = await dispatch({ jsonrpc: '2.0', id: 2241, method: 'claude.sendMessage',
+      params: { sessionId: 'send-multi', prompt: 'hi' } })
+    assert.equal(multiReply.result.ok, true)
+    const statusRuntime = multiCaptured
+      .filter(c => c.name === 'claude:status' && c.payload?.sessionId === 'send-multi')
+      .map(e => e.payload.meta.runtimeStatus)
+    // starting → waiting_for_api → (init keeps waiting_for_api) → cleared on the
+    // first stream frame → compacting → cleared again on the next stream frame.
+    // Exactly 6: the 2nd delta and the assistant frame must NOT emit a status.
+    assert.deepEqual(statusRuntime,
+      ['starting', 'waiting_for_api', 'waiting_for_api', null, 'compacting', null],
+      `unexpected runtimeStatus sequence: ${JSON.stringify(statusRuntime)}`)
+    // Each text delta produced exactly one claude:stream; status frames did not.
+    const streamCount = multiCaptured.filter(c => c.name === 'claude:stream' && c.payload?.sessionId === 'send-multi').length
+    assert.equal(streamCount, 3, `expected 3 claude:stream, got ${streamCount}`)
+    // Turn ends cleanly; session no longer streaming.
+    const multiState = await dispatch({ jsonrpc: '2.0', id: 2242, method: 'claude.getSessionState', params: { sessionId: 'send-multi' } })
+    assert.equal(multiState.result.isStreaming, false)
+  } finally {
+    __setSdkOverrideForTests(undefined)
+    restoreMultiSend()
+  }
+
   // Non-success SDK results should surface the useful nested error text,
   // not only "query error" / subtype noise.
   const errorCaptured = []
