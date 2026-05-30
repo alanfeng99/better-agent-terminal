@@ -582,13 +582,29 @@
 
 .profile-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   padding: 10px 12px;
   border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s;
+}
+
+.profile-item-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.profile-remote-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
 }
 
 .profile-item:hover {

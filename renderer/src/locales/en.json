@@ -229,7 +229,7 @@
     "testConnection": "Test connection",
     "connected": "Connected",
     "connectionFailed": "Connection failed",
-    "editConnection": "Edit connection",
+    "editProfile": "Edit",
     "openRemoteSibling": "Open another profile on this remote",
     "noRemoteProfiles": "No profiles found on this remote.",
     "rename": "Rename",

@@ -229,7 +229,7 @@
     "testConnection": "測試連線",
     "connected": "已連線",
     "connectionFailed": "連線失敗",
-    "editConnection": "編輯連線",
+    "editProfile": "編輯",
     "openRemoteSibling": "開啟此遠端的其他設定檔",
     "noRemoteProfiles": "此遠端沒有可用設定檔。",
     "rename": "重新命名",

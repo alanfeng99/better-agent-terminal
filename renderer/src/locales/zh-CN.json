@@ -221,7 +221,7 @@
     "testConnection": "测试连接",
     "connected": "已连接",
     "connectionFailed": "连接失败",
-    "editConnection": "编辑连接",
+    "editProfile": "编辑",
     "openRemoteSibling": "打开此远程的其他配置文件",
     "noRemoteProfiles": "此远程没有可用配置文件。",
     "rename": "重命名",
