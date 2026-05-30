@@ -981,6 +981,24 @@ pub fn profile_workspace_from_existing_window(app: &AppHandle, profile_id: &str)
     latest_profile_workspace_value(&entries, profile_id)
 }
 
+// Window id whose snapshot `profile_workspace_from_existing_window` would serve,
+// so a remote save can target the same window the matching load reads back.
+// Keep the predicate in sync with `latest_profile_workspace_value`.
+pub fn latest_profile_window_id(app: &AppHandle, profile_id: &str) -> Option<String> {
+    let state = app.state::<WindowRegistryState>();
+    let mut entries = state.entries.lock().unwrap();
+    ensure_entries_ready(app, &mut entries);
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.profile_id == profile_id
+                && entry.detached_workspace_id.is_none()
+                && snapshot_has_content(&entry.snapshot)
+        })
+        .max_by_key(|entry| entry.last_active_at)
+        .map(|entry| entry.id.clone())
+}
+
 pub fn move_workspace(
     app: &AppHandle,
     source_window_id: &str,

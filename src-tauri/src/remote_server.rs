@@ -1645,12 +1645,22 @@ fn invoke_rust_for_remote(
                     .filter(|value| !value.trim().is_empty());
                 let saved = if let Some(window_id) = window_id.as_deref() {
                     window_registry::save_workspace_json(app, window_id, &data)
+                } else if let Some(target) =
+                    window_registry::latest_profile_window_id(app, &profile_id)
+                {
+                    // workspace:load serves this profile from its live window, so
+                    // a profile-targeted save must update that same window or the
+                    // live snapshot would shadow it on the next load (a session the
+                    // client just added would vanish). Fall back to the persisted
+                    // profile snapshot only when no live window exists.
+                    window_registry::save_workspace_json(app, &target, &data)
                 } else {
                     profile_cmd::profile_save_workspace_for_remote(app, &profile_id, &data)
                 };
                 if saved {
                     let payload = if let Some(window_id) = window_id.as_deref() {
-                        let payload = json!({ "windowId": window_id, "data": data });
+                        let payload =
+                            json!({ "profileId": profile_id, "windowId": window_id, "data": data });
                         let _ = app.emit_to(window_id, "workspace:reload", payload.clone());
                         remote_debug_log(
                             app,
@@ -1661,7 +1671,7 @@ fn invoke_rust_for_remote(
                         );
                         payload
                     } else {
-                        let payload = Value::String(data.clone());
+                        let payload = json!({ "profileId": profile_id, "data": data });
                         for window_id in
                             window_registry::live_window_ids_for_profile(app, &profile_id)
                         {

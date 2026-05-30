@@ -18,6 +18,7 @@ use super::app::{log_tauri, renderer_url};
 use crate::app_data;
 use crate::commands::profile as profile_cmd;
 use crate::remote_client::RustRemoteClientState;
+use crate::remote_server::RustRemoteServerState;
 use crate::window_registry;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -233,6 +234,8 @@ pub async fn workspace_save(
     }
     let app_for_log = app.clone();
     let log_window_label = window_label.clone();
+    let event_window_label = window_label.clone();
+    let event_data = data.clone();
     let result =
         tauri::async_runtime::spawn_blocking(move || workspace_save_impl(app, window_label, data))
             .await
@@ -251,6 +254,24 @@ pub async fn workspace_save(
                 error.message
             ),
         ),
+    }
+    // The desktop renderer persists its own workspace changes (add/close/rename
+    // a session) through this command without going through the remote server,
+    // so remote clients otherwise never hear about them and only catch up on
+    // their next reload. Broadcast the same workspace:reload a remote-originated
+    // save would emit so a phone sitting on this profile updates live. This is
+    // remote-only on purpose: the originating window already holds this state,
+    // and echoing it back to local windows risks a reload -> save loop.
+    if matches!(&result, Ok(true)) {
+        if let Some(remote_state) = app_for_log.try_state::<RustRemoteServerState>() {
+            let mut payload = json!({ "windowId": event_window_label, "data": event_data });
+            if let Some(profile_id) =
+                window_registry::profile_id_for_window(&app_for_log, &event_window_label)
+            {
+                payload["profileId"] = json!(profile_id);
+            }
+            remote_state.broadcast_event("workspace:reload", &payload);
+        }
     }
     result
 }
@@ -309,16 +330,26 @@ pub async fn workspace_move_to_window(
             target_json.len()
         ),
     );
-    let _ = app.emit_to(
-        &emit_source_window_id,
-        "workspace:reload",
-        json!({ "windowId": emit_source_window_id, "data": source_json }),
-    );
-    let _ = app.emit_to(
-        &emit_target_window_id,
-        "workspace:reload",
-        json!({ "windowId": emit_target_window_id, "data": target_json }),
-    );
+    let mut source_payload =
+        json!({ "windowId": emit_source_window_id, "data": source_json });
+    if let Some(profile_id) = window_registry::profile_id_for_window(&app, &emit_source_window_id) {
+        source_payload["profileId"] = json!(profile_id);
+    }
+    let mut target_payload =
+        json!({ "windowId": emit_target_window_id, "data": target_json });
+    if let Some(profile_id) = window_registry::profile_id_for_window(&app, &emit_target_window_id) {
+        target_payload["profileId"] = json!(profile_id);
+    }
+    let _ = app.emit_to(&emit_source_window_id, "workspace:reload", source_payload.clone());
+    let _ = app.emit_to(&emit_target_window_id, "workspace:reload", target_payload.clone());
+    // Like workspace_save, this desktop-driven move never reaches the remote
+    // server, so broadcast both windows' reloads to remote clients. Each payload
+    // carries its profileId so a phone applies only the one for the profile it
+    // is currently viewing.
+    if let Some(remote_state) = app.try_state::<RustRemoteServerState>() {
+        remote_state.broadcast_event("workspace:reload", &source_payload);
+        remote_state.broadcast_event("workspace:reload", &target_payload);
+    }
     Ok(true)
 }
 
