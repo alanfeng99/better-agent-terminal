@@ -324,7 +324,15 @@ class WorkspaceStore {
   }
 
   // Terminal actions
-  addTerminal(workspaceId: string, agentPreset?: AgentPresetId): TerminalInstance {
+  // `init` lets a caller pre-seed identity/location before the panel mounts.
+  // Worktree agents use it so the terminal is born with cwd = worktree folder
+  // (created in Rust first), and the SDK session then starts through the normal
+  // path — no post-hoc cwd rewrite or worktree special-casing at start time.
+  addTerminal(
+    workspaceId: string,
+    agentPreset?: AgentPresetId,
+    init?: { id?: string; cwd?: string; worktreePath?: string; worktreeBranch?: string },
+  ): TerminalInstance {
     const workspace = this.state.workspaces.find(w => w.id === workspaceId)
     if (!workspace) throw new Error('Workspace not found')
 
@@ -339,12 +347,14 @@ class WorkspaceStore {
       : 'New Terminal'
 
     const terminal: TerminalInstance = {
-      id: uuidv4(),
+      id: init?.id ?? uuidv4(),
       workspaceId,
       type: 'terminal',
       agentPreset,
       title,
-      cwd: workspace.folderPath,
+      cwd: init?.cwd ?? workspace.folderPath,
+      ...(init?.worktreePath ? { worktreePath: init.worktreePath } : {}),
+      ...(init?.worktreeBranch ? { worktreeBranch: init.worktreeBranch } : {}),
       scrollbackBuffer: [],
       lastActivityTime: Date.now(),
       historyKey: uuidv4().replace(/-/g, '').slice(0, 12),
