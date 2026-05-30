@@ -2255,6 +2255,10 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       cacheHistoryRef.current = []
       lastResultRef.current = null
       setCacheCountdown(null)
+      // Forget the resumed SDK session synchronously so the next message starts
+      // fresh. The onSessionReset event also clears this, but relying on it alone
+      // races a message sent right after /new (it could re-resume the old id).
+      workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
       await host.claude.resetSession(sessionId)
       return
     }

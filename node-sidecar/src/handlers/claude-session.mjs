@@ -12,7 +12,6 @@ import {
   ensureSession,
   buildSessionMeta,
   saveSessionConfig,
-  clearSessionSdkId,
   appendSessionMessage,
   clearSessionStream,
   resetSessionTranscript,
@@ -408,11 +407,10 @@ registerHandler('claude.resetSession', async (params) => {
   }
   closeLiveQuery(prior)
   // Drop the session record entirely. Next startSession recreates it.
+  // sdkSessionId is not persisted in sessionConfigs (see state.mjs CONFIG_KEYS),
+  // so the rebuilt session starts a fresh SDK conversation; the renderer's
+  // disk store is cleared on /new /clear and owns cross-restart resume.
   const existed = sessions.delete(sessionId)
-  // Also drop the persisted sdkSessionId so the rebuilt session starts a
-  // fresh SDK conversation instead of resuming the one we just cleared
-  // (ensureSession rehydrates from sessionConfigs). cwd/model/effort stay.
-  clearSessionSdkId(sessionId)
   // Mirror Electron's claude:session-reset notification so renderer
   // panels can clear messages / status without polling.
   if (existed) sendEvent('claude:session-reset', { sessionId })

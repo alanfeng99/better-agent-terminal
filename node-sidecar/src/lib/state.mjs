@@ -14,6 +14,11 @@ const MAX_SESSION_MESSAGES = 300
 // instead of falling back to process.cwd() or throwing "session has no cwd".
 export const sessionConfigs = new Map()
 
+// sdkSessionId is intentionally NOT persisted here: the renderer's
+// workspace store (on disk) is the single durable owner and drives resume
+// via ensureSessionStarted -> resumeSession. Persisting it in the sidecar
+// too made reset have to clear two places and let a deleted session silently
+// resume a just-cleared (possibly poisoned) SDK transcript.
 const CONFIG_KEYS = [
   'options',
   'model',
@@ -24,7 +29,6 @@ const CONFIG_KEYS = [
   'agentPreset',
   'codexSandboxMode',
   'codexApprovalPolicy',
-  'sdkSessionId',
 ]
 
 export function saveSessionConfig(sessionId, session) {
@@ -38,15 +42,6 @@ export function saveSessionConfig(sessionId, session) {
 
 export function clearSessionConfig(sessionId) {
   sessionConfigs.delete(sessionId)
-}
-
-// Drop only the persisted sdkSessionId so a reset starts a brand-new SDK
-// conversation, while keeping cwd/model/effort so the next sendMessage
-// still knows the project. Without this, ensureSession would rehydrate the
-// old sdkSessionId and the next turn would resume the just-cleared session.
-export function clearSessionSdkId(sessionId) {
-  const cfg = sessionConfigs.get(sessionId)
-  if (cfg) delete cfg.sdkSessionId
 }
 
 export function ensureSession(sessionId) {
@@ -105,7 +100,9 @@ export function ensureSession(sessionId) {
     }
     sessions.set(sessionId, s)
     // Rehydrate from the persistent config so a subsequent sendMessage after
-    // stopSession/resetSession still knows the cwd, model, sdkSessionId, etc.
+    // stopSession/resetSession still knows the cwd, model, effort, etc.
+    // (sdkSessionId is deliberately excluded — see CONFIG_KEYS — so a rebuilt
+    // session never silently resumes a deleted SDK conversation.)
     const saved = sessionConfigs.get(sessionId)
     if (saved) {
       for (const key of CONFIG_KEYS) {
