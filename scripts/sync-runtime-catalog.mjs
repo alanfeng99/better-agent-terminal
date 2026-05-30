@@ -169,4 +169,4 @@ if (isMain) {
   })
 }
 
-export { buildClaudeSection, buildCodexSection, buildNodeSection, PLATFORMS }
+export { buildClaudeSection, buildCodexSection, buildNodeSection, expectedVersions, PLATFORMS, outFile }
