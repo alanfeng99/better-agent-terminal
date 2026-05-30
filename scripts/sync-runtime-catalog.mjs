@@ -15,7 +15,10 @@
 //   - node    <- scripts/fetch-node-runtime.mjs DEFAULT_VERSION
 // Integrity is fetched fresh from the npm registry (dist.integrity) and from
 // nodejs.org SHASUMS256.txt, so a dependency bump propagates automatically on
-// the next build (this runs inside prepare:tauri-bundle:*).
+// the next CI build (this runs inside prepare:tauri-bundle:ci:*). Local builds
+// reuse the committed catalog; the test:runtime-catalog-sync guard fails if the
+// committed versions drift from the installed deps, prompting a manual
+// `pnpm run sync:runtime-catalog`.
 
 import { readFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
