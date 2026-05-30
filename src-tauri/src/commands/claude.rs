@@ -53,7 +53,6 @@ const PREVIEW_LINE_LIMIT: usize = 200;
 const PREVIEW_CHARS: usize = 120;
 const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
-const CLAUDE_AGENT_SDK_NATIVE_VERSION: &str = "0.3.150";
 const WORKTREE_DIFF_MAX_BYTES: usize = 10 * 1024 * 1024;
 const CLAUDE_CLI_HOOK_SCRIPT: &str = r#"import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -244,7 +243,7 @@ fn managed_claude_cli_path(data_dir: &Path, target_os: &str, arch: &str) -> Opti
         data_dir
             .join("runtimes")
             .join("claude-agent-sdk")
-            .join(CLAUDE_AGENT_SDK_NATIVE_VERSION)
+            .join(crate::runtime_catalog::claude_version())
             .join(claude_runtime_platform_dir(target_os, arch)?)
             .join(claude_exe_name(target_os)),
     )
@@ -4563,7 +4562,7 @@ mod tests {
         let expected = base
             .join("runtimes")
             .join("claude-agent-sdk")
-            .join(CLAUDE_AGENT_SDK_NATIVE_VERSION)
+            .join(crate::runtime_catalog::claude_version())
             .join("darwin-arm64")
             .join("claude");
 

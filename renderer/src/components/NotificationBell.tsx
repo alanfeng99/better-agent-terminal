@@ -42,7 +42,13 @@ export function NotificationBell() {
   const unread = entries.reduce((n, e) => (e.read ? n : n + 1), 0)
 
   const onEntryClick = (entry: NotificationEntry) => {
-    notificationStore.focusEntry(entry.id)
+    // Remote-client entries have no window/workspace to focus — just
+    // mark them read. Agent entries focus their owning window/workspace.
+    if (entry.kind === 'remote-client') {
+      notificationStore.markRead(entry.id)
+    } else {
+      notificationStore.focusEntry(entry.id)
+    }
     setOpen(false)
   }
 
@@ -152,12 +158,14 @@ export function NotificationBell() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {!entry.read && <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4caf50', flexShrink: 0 }} />}
                   <span style={{ fontSize: 13, color: 'var(--text-primary, #ddd)', fontWeight: entry.read ? 'normal' : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {entry.workspaceName} {t('notifications.ends')}
+                    {entry.kind === 'remote-client'
+                      ? t('notifications.clientConnected', { name: entry.title })
+                      : `${entry.workspaceName} ${t('notifications.ends')}`}
                   </span>
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-secondary, #888)' }}>
                   {formatRelative(entry.timestamp, t)}
-                  {entry.agentKind ? ` · ${entry.agentKind}` : ''}
+                  {entry.kind === 'remote-client' ? '' : entry.agentKind ? ` · ${entry.agentKind}` : ''}
                 </div>
               </div>
             ))

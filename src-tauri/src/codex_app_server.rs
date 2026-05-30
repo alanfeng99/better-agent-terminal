@@ -32,7 +32,6 @@ const MSG_BUFFER_CAP: usize = 300;
 const DEFAULT_CODEX_CONTEXT_WINDOW: u64 = 1_000_000;
 const DEFAULT_CODEX_REASONING_SUMMARY: &str = "auto";
 const COMMAND_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(100);
-const CODEX_RUNTIME_VERSION: &str = "0.133.0";
 const CODEX_ACCOUNT_STATE_FILE: &str = "codex-account-state.json";
 static CODEX_TEMP_IMAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -445,7 +444,7 @@ fn managed_codex_candidate(app: &AppHandle) -> Option<PathBuf> {
     let path = app_data::app_data_dir_opt(app)?
         .join("runtimes")
         .join("codex")
-        .join(CODEX_RUNTIME_VERSION)
+        .join(crate::runtime_catalog::codex_version())
         .join(codex_runtime_key()?)
         .join(codex_exe_name());
     path.is_file().then_some(path)

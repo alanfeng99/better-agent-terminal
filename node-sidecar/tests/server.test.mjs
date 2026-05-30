@@ -16,9 +16,11 @@ import { dirname, resolve, join } from 'node:path'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import runtimeCatalog from '../../runtime-catalog.json' with { type: 'json' }
 
 const here = dirname(fileURLToPath(import.meta.url))
 const serverPath = resolve(here, '..', 'src', 'server.mjs')
+const CLAUDE_NATIVE_VERSION = runtimeCatalog.claude.version
 
 async function inProcess() {
   const mod = await import('../src/server.mjs')
@@ -3342,12 +3344,12 @@ async function inProcess() {
       managedRoot,
       'runtimes',
       'claude-agent-sdk',
-      '0.3.150',
+      CLAUDE_NATIVE_VERSION,
       managedKey,
       'claude',
     )
     mkdirSync(dirname(managedBin), { recursive: true })
-    writeFileSync(managedBin, '#!/bin/sh\necho claude 0.3.150\n')
+    writeFileSync(managedBin, `#!/bin/sh\necho claude ${CLAUDE_NATIVE_VERSION}\n`)
     chmodSync(managedBin, 0o700)
     process.env.BAT_SIDECAR_DATA_DIR = managedRoot
     delete process.env.BAT_SIDECAR_CLAUDE_BIN

@@ -40,6 +40,15 @@ export function clearSessionConfig(sessionId) {
   sessionConfigs.delete(sessionId)
 }
 
+// Drop only the persisted sdkSessionId so a reset starts a brand-new SDK
+// conversation, while keeping cwd/model/effort so the next sendMessage
+// still knows the project. Without this, ensureSession would rehydrate the
+// old sdkSessionId and the next turn would resume the just-cleared session.
+export function clearSessionSdkId(sessionId) {
+  const cfg = sessionConfigs.get(sessionId)
+  if (cfg) delete cfg.sdkSessionId
+}
+
 export function ensureSession(sessionId) {
   let s = sessions.get(sessionId)
   if (!s) {

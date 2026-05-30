@@ -21,7 +21,7 @@
 import { mkdir, rm, writeFile, access, readFile, readdir, stat, cp } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { pipeline } from 'node:stream/promises'
@@ -30,7 +30,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..')
 const runtimeRoot = join(repoRoot, 'node-sidecar', 'runtime')
 
-const DEFAULT_VERSION = 'v20.18.1'
+export const DEFAULT_VERSION = 'v20.18.1'
 
 // Map our internal triple (platform-arch, using Rust-style arch names that
 // match std::env::consts::ARCH on the Rust side) to Node.org distribution
@@ -186,7 +186,11 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error('[fetch-node-runtime] failed:', err)
-  process.exit(1)
-})
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+
+if (isMain) {
+  main().catch(err => {
+    console.error('[fetch-node-runtime] failed:', err)
+    process.exit(1)
+  })
+}

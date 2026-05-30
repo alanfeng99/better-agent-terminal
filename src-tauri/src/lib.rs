@@ -19,6 +19,7 @@ mod path_guard;
 mod remote_client;
 pub mod remote_core;
 mod remote_server;
+mod runtime_catalog;
 mod sidecar;
 mod subprocess;
 mod window_registry;

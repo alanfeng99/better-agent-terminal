@@ -1,5 +1,31 @@
+import i18next from 'i18next'
+import type { TFunction } from 'i18next'
 import type { MessageItem } from './CodexAgentPanel.types'
 import { summarizeAskUserInput } from './AskUserQuestion.helpers'
+
+// ToolSearch returns a JSON array of { tool_name, type } references. Render a
+// readable one-line summary instead of dumping the raw JSON; return null (fall
+// back to raw output) when the result is not in the expected shape.
+export function summarizeToolSearchResult(rawOutText: string, t: TFunction): string | null {
+  const trimmed = rawOutText.trim()
+  if (!trimmed.startsWith('[')) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed)) return null
+  const names = parsed
+    .map(entry =>
+      entry && typeof entry === 'object' && typeof (entry as { tool_name?: unknown }).tool_name === 'string'
+        ? (entry as { tool_name: string }).tool_name
+        : null,
+    )
+    .filter((name): name is string => Boolean(name))
+  if (names.length === 0) return null
+  return t('claude.toolSearchSummary', { count: names.length, names: names.join(', ') })
+}
 
 export type AutoContinueTurnEndPayload = {
   reason?: string
@@ -124,8 +150,8 @@ export function summarizeShellCommand(command: string): string | null {
 export function formatContentSize(text: string): string {
   const lines = text ? text.split(/\r?\n/).length : 0
   const chars = text.length
-  if (lines <= 1) return `${chars.toLocaleString()} chars`
-  return `${lines.toLocaleString()} lines · ${chars.toLocaleString()} chars`
+  if (lines <= 1) return `${chars.toLocaleString()} ${i18next.t('claude.chars')}`
+  return `${lines.toLocaleString()} ${i18next.t('claude.lines')} · ${chars.toLocaleString()} ${i18next.t('claude.chars')}`
 }
 
 export function buildCollapsedOutputPreview(text: string, maxLines = 4): string[] {

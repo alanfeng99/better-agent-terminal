@@ -2,6 +2,7 @@ import { host, isTauri } from '../host-api'
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment, cloneElement, isValidElement } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import type { ClaudeMessage, ClaudeToolCall } from '../types/claude-agent'
 import { isMessageItem, isToolCall } from '../types/claude-agent'
 import type { CodexApprovalPolicy, CodexSandboxMode } from '../types'
@@ -22,8 +23,9 @@ import { shouldNavigateInputHistoryFromTextarea } from '../utils/input-history-n
 import { buildSnippetContextPrompt, parseSnippetSlashCommand, type SnippetForContext } from '../utils/snippet-command'
 import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } from '../utils/tool-result-cache'
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
+import { translateRuntimeMessage } from '../utils/runtime-status-message'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
-import { buildCollapsedOutputPreview, formatContentSize, parseShellInvocation, stringifyToolResult, summarizeToolCommandInput, truncateMiddle } from './CodexAgentPanel.helpers'
+import { buildCollapsedOutputPreview, formatContentSize, parseShellInvocation, stringifyToolResult, summarizeToolCommandInput, summarizeToolSearchResult, truncateMiddle } from './CodexAgentPanel.helpers'
 import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
 
 interface SessionMeta {
@@ -95,22 +97,23 @@ function isSendMessageTimeout(message: string): boolean {
   return /timeout waiting for claude\.sendMessage/i.test(message)
 }
 
-function runtimeWaitingMessage(meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
+function runtimeWaitingMessage(t: TFunction, meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
   const elapsedMs = Math.max(0, now - startedAt)
   const elapsed = elapsedMs >= 1000 ? ` (${Math.floor(elapsedMs / 1000)}s)` : ''
+  const translated = translateRuntimeMessage(t, meta.runtimeMessage)
   if (meta.runtimeStatus === 'compacting') {
-    return `${meta.runtimeMessage || 'Compacting context; still waiting for API response.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.compacting')}${elapsed}`
   }
   if (meta.runtimeStatus === 'waiting_for_api' && elapsedMs >= 8000) {
-    return `${meta.runtimeMessage || 'Still waiting for API response.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.waiting')}${elapsed}`
   }
   if (meta.runtimeStatus === 'starting' && elapsedMs >= 8000) {
-    return `${meta.runtimeMessage || 'Preparing request.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.preparing')}${elapsed}`
   }
   if (meta.runtimeStatus === 'queued') {
-    return `${meta.runtimeMessage || 'Queued behind the previous request.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.queued')}${elapsed}`
   }
   return null
 }
@@ -452,8 +455,8 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [filePickerResults, setFilePickerResults] = useState<{ name: string; path: string; isDirectory: boolean }[]>([])
   const [filePickerIndex, setFilePickerIndex] = useState(0)
   const runtimeWaitMessage = useMemo(
-    () => runtimeWaitingMessage(sessionMeta, isStreaming, runtimeWaitNow),
-    [sessionMeta, isStreaming, runtimeWaitNow],
+    () => runtimeWaitingMessage(t, sessionMeta, isStreaming, runtimeWaitNow),
+    [t, sessionMeta, isStreaming, runtimeWaitNow],
   )
   useEffect(() => {
     if (!isStreaming || !sessionMeta?.runtimeStatus) return
@@ -2144,6 +2147,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       cacheHistoryRef.current = []
       lastResultRef.current = null
       setCacheCountdown(null)
+      // Forget the resumed SDK session so the next message starts fresh.
+      // Otherwise ensureSessionStarted would re-resume the just-cleared
+      // conversation from the persisted sdkSessionId.
+      workspaceStore.setTerminalSdkSessionId(sessionId, undefined)
       await host.claude.resetSession(sessionId)
       return
     }
@@ -3690,7 +3697,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 onClick={() => handleCopyBlock(inContent, inBlockId)}
                 title={t('claude.clickToCopy')}
               >
-                <span className="claude-tool-row-label">IN</span>
+                <span className="claude-tool-row-label">{t('claude.in')}</span>
                 <span className="claude-tool-row-content">
                   <LinkedText text={isInLong && !isInExpanded ? inLines.slice(0, 3).join('\n') : inContent} />
                   {isInLong && (
@@ -3727,7 +3734,11 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 // Collapse by default for read-only tools, MCP tools, long outputs, or when setting enabled.
                 const isReadOnlyTool = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'].includes(item.toolName)
                 const isMcpTool = item.toolName.toLowerCase().startsWith('mcp_')
-                const shouldCollapse = isReadOnlyTool || isMcpTool || isLongOutput || settingsStore.getSettings().collapseToolOutputs
+                const toolSearchSummary = item.toolName === 'ToolSearch' ? summarizeToolSearchResult(outText, t) : null
+                const displayOutText = toolSearchSummary ?? outText
+                const shouldCollapse = toolSearchSummary
+                  ? false
+                  : isReadOnlyTool || isMcpTool || isLongOutput || settingsStore.getSettings().collapseToolOutputs
                 const isOutExpanded = expandedTools.has(outBlockId)
                 return (
                   <>
@@ -3774,14 +3785,14 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                         <span className={`claude-tool-chevron ${isOutExpanded ? 'expanded' : ''}`}>&#9654;</span>
                       </div>
                     )}
-                    {outText && !shouldCollapse && (
+                    {displayOutText && !shouldCollapse && (
                       <div
                         className="claude-tool-row"
-                        onClick={() => handleCopyBlock(outText, outBlockId)}
+                        onClick={() => handleCopyBlock(displayOutText, outBlockId)}
                         title={t('claude.clickToCopy')}
                       >
                         <span className="claude-tool-row-label">{t('claude.out')}</span>
-                        <span className="claude-tool-row-content"><LinkedText text={outText} /></span>
+                        <span className="claude-tool-row-content"><LinkedText text={displayOutText} /></span>
                         <span className={`claude-tool-row-copy ${copiedId === outBlockId ? 'copied' : ''}`}>
                           {copiedId === outBlockId ? '✓' : '⧉'}
                         </span>

@@ -6,6 +6,7 @@
 // agent protocol session.
 
 use crate::app_data;
+use crate::runtime_catalog;
 use crate::subprocess::hide_console_window;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use flate2::read::GzDecoder;
@@ -21,151 +22,6 @@ use tauri_plugin_opener::OpenerExt;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-
-const CLAUDE_AGENT_SDK_NATIVE_VERSION: &str = "0.3.150";
-const CODEX_RUNTIME_VERSION: &str = "0.133.0";
-const NODE_RUNTIME_VERSION: &str = "20.18.1";
-
-#[derive(Debug, Clone, Copy)]
-struct ClaudeCatalogEntry {
-    key: &'static str,
-    package_name: &'static str,
-    integrity: &'static str,
-}
-
-const CLAUDE_NATIVE_CATALOG: &[ClaudeCatalogEntry] = &[
-    ClaudeCatalogEntry {
-        key: "darwin-arm64",
-        package_name: "claude-agent-sdk-darwin-arm64",
-        integrity: "sha512-YVWJ0MHdSy0tobHO2G5/+vd9iRGyosg3wM6sY4pirezsnwZJBkJv/9IeVIaKqdLv83OA6HUcxxOLGzKSBawq2Q==",
-    },
-    ClaudeCatalogEntry {
-        key: "darwin-x64",
-        package_name: "claude-agent-sdk-darwin-x64",
-        integrity: "sha512-72M8mKCa7Tfy66G5hr5z9TirKynQa9sFj+4qDxkAp5LAYnyViUzHOqO6mEjVtwDr2aXnjqkhTdBtc5Hmn1m/nA==",
-    },
-    ClaudeCatalogEntry {
-        key: "linux-arm64",
-        package_name: "claude-agent-sdk-linux-arm64",
-        integrity: "sha512-1nhCXjfbxwhQPTgx2+q8lFYHx8DGJEOdaSd4wLvhGJifd/9QJwtnxaill1q+qdggZDroXHDJOTugttP0be6diA==",
-    },
-    ClaudeCatalogEntry {
-        key: "linux-x64",
-        package_name: "claude-agent-sdk-linux-x64",
-        integrity: "sha512-G7yOB9O6twOhQH3SvZWIvOcjehfA0HD5f/j49Z/yxZK5U72hOxtnbx7GCbcH/8AyB7JFyHjHpR9hxOxFoJNIhQ==",
-    },
-    ClaudeCatalogEntry {
-        key: "win32-arm64",
-        package_name: "claude-agent-sdk-win32-arm64",
-        integrity: "sha512-z9vlm3JdOQ1Vqj9sG8kW+r9miunv4UFQOn0AqoI++J9AgoCBjKGCH2WWmZYhGOvezZqogunXaTciJvhtDhJiWQ==",
-    },
-    ClaudeCatalogEntry {
-        key: "win32-x64",
-        package_name: "claude-agent-sdk-win32-x64",
-        integrity: "sha512-lpAVi7tZdHi3BXRWmCVmOE2O8q7nzbvuMneYKS9rkpIbcjMjOBk6ud/rlp8Cuiqmp4LzZ8ylbbI7vFEiylK6Hg==",
-    },
-];
-
-#[derive(Debug, Clone, Copy)]
-struct CodexCatalogEntry {
-    key: &'static str,
-    npm_version: &'static str,
-    integrity: &'static str,
-}
-
-const CODEX_NATIVE_CATALOG: &[CodexCatalogEntry] = &[
-    CodexCatalogEntry {
-        key: "darwin-arm64",
-        npm_version: "0.133.0-darwin-arm64",
-        integrity: "sha512-W7f8+DckLujnqGlptKCzgJU+ooeHKMuk6KYgMFP6A9asn7YUsGUgJqjiBaX8oNcXO6w/pTbKGRARx1kCNS8lIg==",
-    },
-    CodexCatalogEntry {
-        key: "darwin-x64",
-        npm_version: "0.133.0-darwin-x64",
-        integrity: "sha512-Ek8ikvLOiXZ8emcIJVBXxK6fm8ratBy0kaEt3JNisTNszxGshUHf/R4xxDxIyKNcUkYYXjW7A/rMwW3iu3OFlg==",
-    },
-    CodexCatalogEntry {
-        key: "linux-arm64",
-        npm_version: "0.133.0-linux-arm64",
-        integrity: "sha512-uKXYYSJ3mY16sp4hcG/4BMNRjva/ZS4oARiI1+7k8+NiuoAhdCGWNe5u4KJ3sMuL3tp/IXcmc6B56EFX1+WDBQ==",
-    },
-    CodexCatalogEntry {
-        key: "linux-x64",
-        npm_version: "0.133.0-linux-x64",
-        integrity: "sha512-9YfyqrfUj/UZ2+aXE4zBz47t6RXbVni95ZorGsNh857vxYK/asVpUtR2cymo9lB3JaI4mQaKFfV/t7IRItqkuA==",
-    },
-    CodexCatalogEntry {
-        key: "win32-arm64",
-        npm_version: "0.133.0-win32-arm64",
-        integrity: "sha512-mRzND0PSGHRoLk0X41GTSoc3tFjZSF4HgDlfjU5fiQcWVi0/kLb7Ku6/tPFT/X2hOLa3YdJkbIcHC0Hc9ni80g==",
-    },
-    CodexCatalogEntry {
-        key: "win32-x64",
-        npm_version: "0.133.0-win32-x64",
-        integrity: "sha512-u3ji78DIPZCGJeELuovsAnaZH+vK9gsA4F6M1y+Uy2s80Sz7/i1S0KL81qGReYji3urSjgBpkQuNP47GXOqxrQ==",
-    },
-];
-
-#[derive(Debug, Clone, Copy)]
-struct NodeCatalogEntry {
-    key: &'static str,
-    node_platform: &'static str,
-    node_arch: &'static str,
-    archive_ext: &'static str,
-    exe_path: &'static str,
-    sha256: &'static str,
-}
-
-const NODE_NATIVE_CATALOG: &[NodeCatalogEntry] = &[
-    NodeCatalogEntry {
-        key: "darwin-arm64",
-        node_platform: "darwin",
-        node_arch: "arm64",
-        archive_ext: "tar.gz",
-        exe_path: "bin/node",
-        sha256: "9e92ce1032455a9cc419fe71e908b27ae477799371b45a0844eedb02279922a4",
-    },
-    NodeCatalogEntry {
-        key: "darwin-x64",
-        node_platform: "darwin",
-        node_arch: "x64",
-        archive_ext: "tar.gz",
-        exe_path: "bin/node",
-        sha256: "c5497dd17c8875b53712edaf99052f961013cedc203964583fc0cfc0aaf93581",
-    },
-    NodeCatalogEntry {
-        key: "linux-arm64",
-        node_platform: "linux",
-        node_arch: "arm64",
-        archive_ext: "tar.xz",
-        exe_path: "bin/node",
-        sha256: "44d1ffc5905c005ace4515ca6f8c090c4c7cfce3a9a67df0dba35c727590b8f6",
-    },
-    NodeCatalogEntry {
-        key: "linux-x64",
-        node_platform: "linux",
-        node_arch: "x64",
-        archive_ext: "tar.xz",
-        exe_path: "bin/node",
-        sha256: "c6fa75c841cbffac851678a472f2a5bd612fff8308ef39236190e1f8dbb0e567",
-    },
-    NodeCatalogEntry {
-        key: "win32-arm64",
-        node_platform: "win",
-        node_arch: "arm64",
-        archive_ext: "zip",
-        exe_path: "node.exe",
-        sha256: "7c03744df29e81c34043a956969b3afc34171d3ab85e25fc737eb1860222444f",
-    },
-    NodeCatalogEntry {
-        key: "win32-x64",
-        node_platform: "win",
-        node_arch: "x64",
-        archive_ext: "zip",
-        exe_path: "node.exe",
-        sha256: "56e5aacdeee7168871721b75819ccacf2367de8761b78eaceacdecd41e04ca03",
-    },
-];
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -734,7 +590,7 @@ fn managed_claude_cli_path(app: &AppHandle) -> Option<PathBuf> {
         runtimes_dir(app)
             .ok()?
             .join("claude-agent-sdk")
-            .join(CLAUDE_AGENT_SDK_NATIVE_VERSION)
+            .join(runtime_catalog::claude_version())
             .join(runtime_key()?)
             .join(exe_name("claude")),
     )
@@ -750,7 +606,7 @@ fn bundled_claude_candidate(app: &AppHandle) -> Option<PathBuf> {
 }
 
 fn bundled_claude_candidate_in_base(app: &AppHandle, base: &Path) -> Option<PathBuf> {
-    let package = claude_catalog_entry()?.package_name;
+    let package = &claude_catalog_entry()?.package_name;
     let exe = exe_name("claude");
     let candidates = [
         base.join("node-sidecar")
@@ -809,12 +665,8 @@ fn sha512_hex_prefix(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn node_catalog_entry() -> Option<NodeCatalogEntry> {
-    let key = runtime_key()?;
-    NODE_NATIVE_CATALOG
-        .iter()
-        .copied()
-        .find(|entry| entry.key == key)
+fn node_catalog_entry() -> Option<&'static runtime_catalog::NodePlatform> {
+    runtime_catalog::node_platform(runtime_key()?)
 }
 
 fn managed_node_runtime_dir(app: &AppHandle) -> Option<PathBuf> {
@@ -822,14 +674,14 @@ fn managed_node_runtime_dir(app: &AppHandle) -> Option<PathBuf> {
         runtimes_dir(app)
             .ok()?
             .join("node")
-            .join(NODE_RUNTIME_VERSION)
+            .join(runtime_catalog::node_version())
             .join(runtime_key()?),
     )
 }
 
 fn managed_node_cli_path(app: &AppHandle) -> Option<PathBuf> {
     let entry = node_catalog_entry()?;
-    Some(managed_node_runtime_dir(app)?.join(entry.exe_path))
+    Some(managed_node_runtime_dir(app)?.join(&entry.exe_path))
 }
 
 fn install_managed_node(app: &AppHandle) -> Result<PathBuf, String> {
@@ -848,14 +700,14 @@ fn install_managed_node(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(final_path);
     }
 
-    let dist_version = format!("v{NODE_RUNTIME_VERSION}");
+    let dist_version = format!("v{}", runtime_catalog::node_version());
     let archive_name = format!(
         "node-{dist_version}-{}-{}.{}",
         entry.node_platform, entry.node_arch, entry.archive_ext
     );
     let url = format!("https://nodejs.org/dist/{dist_version}/{archive_name}");
     let archive = download_runtime_archive(&url)?;
-    verify_sha256_hex(&archive, entry.sha256, "Node runtime archive")?;
+    verify_sha256_hex(&archive, &entry.sha256, "Node runtime archive")?;
 
     let tmp_root = runtimes_dir(app)?
         .join(".tmp")
@@ -863,13 +715,13 @@ fn install_managed_node(app: &AppHandle) -> Result<PathBuf, String> {
     let archive_path = tmp_root.join(&archive_name);
     let extract_dir = tmp_root.join("extract");
     let tmp_final = tmp_root.join("final");
-    let tmp_path = tmp_final.join(entry.exe_path);
+    let tmp_path = tmp_final.join(&entry.exe_path);
     let _ = fs::remove_dir_all(&tmp_root);
     fs::create_dir_all(&tmp_root).map_err(|err| err.to_string())?;
     fs::write(&archive_path, archive).map_err(|err| err.to_string())?;
     extract_archive_with_tar(&archive_path, &extract_dir)?;
     let extracted_root = first_extracted_dir(&extract_dir)?;
-    copy_file_with_parent(&extracted_root.join(entry.exe_path), &tmp_path)?;
+    copy_file_with_parent(&extracted_root.join(&entry.exe_path), &tmp_path)?;
     make_executable(&tmp_path)?;
     for license_name in ["LICENSE", "LICENSE.txt"] {
         let src = extracted_root.join(license_name);
@@ -880,7 +732,7 @@ fn install_managed_node(app: &AppHandle) -> Result<PathBuf, String> {
     }
     fs::write(
         tmp_final.join(".node-version"),
-        format!("v{NODE_RUNTIME_VERSION}\n"),
+        format!("v{}\n", runtime_catalog::node_version()),
     )
     .map_err(|err| err.to_string())?;
     if !candidate_is_ready(&tmp_path, &["--version"]) {
@@ -889,16 +741,12 @@ fn install_managed_node(app: &AppHandle) -> Result<PathBuf, String> {
     }
     replace_runtime_dir(&tmp_final, &final_dir)?;
     let _ = fs::remove_dir_all(&tmp_root);
-    write_runtime_manifest(app, "node", NODE_RUNTIME_VERSION, &url)?;
+    write_runtime_manifest(app, "node", runtime_catalog::node_version(), &url)?;
     Ok(final_path)
 }
 
-fn codex_catalog_entry() -> Option<CodexCatalogEntry> {
-    let key = runtime_key()?;
-    CODEX_NATIVE_CATALOG
-        .iter()
-        .copied()
-        .find(|entry| entry.key == key)
+fn codex_catalog_entry() -> Option<&'static runtime_catalog::CodexPlatform> {
+    runtime_catalog::codex_platform(runtime_key()?)
 }
 
 fn managed_codex_runtime_dir(app: &AppHandle) -> Option<PathBuf> {
@@ -906,7 +754,7 @@ fn managed_codex_runtime_dir(app: &AppHandle) -> Option<PathBuf> {
         runtimes_dir(app)
             .ok()?
             .join("codex")
-            .join(CODEX_RUNTIME_VERSION)
+            .join(runtime_catalog::codex_version())
             .join(runtime_key()?),
     )
 }
@@ -936,7 +784,7 @@ fn install_managed_codex(app: &AppHandle) -> Result<PathBuf, String> {
         entry.npm_version
     );
     let archive = download_runtime_archive(&url)?;
-    verify_sri_sha512(&archive, entry.integrity)?;
+    verify_sri_sha512(&archive, &entry.integrity)?;
     let tar = gunzip(&archive)?;
     let triple =
         codex_target_triple().ok_or_else(|| "could not resolve Codex target triple".to_string())?;
@@ -982,16 +830,12 @@ fn install_managed_codex(app: &AppHandle) -> Result<PathBuf, String> {
     }
     replace_runtime_dir(&tmp_final, &final_dir)?;
     let _ = fs::remove_dir_all(&tmp_root);
-    write_runtime_manifest(app, "codex", CODEX_RUNTIME_VERSION, &url)?;
+    write_runtime_manifest(app, "codex", runtime_catalog::codex_version(), &url)?;
     Ok(final_path)
 }
 
-fn claude_catalog_entry() -> Option<ClaudeCatalogEntry> {
-    let key = runtime_key()?;
-    CLAUDE_NATIVE_CATALOG
-        .iter()
-        .copied()
-        .find(|entry| entry.key == key)
+fn claude_catalog_entry() -> Option<&'static runtime_catalog::ClaudePlatform> {
+    runtime_catalog::claude_platform(runtime_key()?)
 }
 
 fn install_managed_claude_cli(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1010,10 +854,12 @@ fn install_managed_claude_cli(app: &AppHandle) -> Result<PathBuf, String> {
 
     let url = format!(
         "https://registry.npmjs.org/@anthropic-ai/{}/-/{}-{}.tgz",
-        entry.package_name, entry.package_name, CLAUDE_AGENT_SDK_NATIVE_VERSION
+        entry.package_name,
+        entry.package_name,
+        runtime_catalog::claude_version()
     );
     let archive = download_runtime_archive(&url)?;
-    verify_sri_sha512(&archive, entry.integrity)?;
+    verify_sri_sha512(&archive, &entry.integrity)?;
     let tar = gunzip(&archive)?;
     let exe = exe_name("claude");
     let exe_bytes = read_tar_entry(&tar, &format!("package/{exe}"))
@@ -1041,7 +887,7 @@ fn install_managed_claude_cli(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     replace_runtime_dir(&tmp_dir, &final_dir)?;
-    write_runtime_manifest(app, "claude", CLAUDE_AGENT_SDK_NATIVE_VERSION, &url)?;
+    write_runtime_manifest(app, "claude", runtime_catalog::claude_version(), &url)?;
     Ok(final_path)
 }
 

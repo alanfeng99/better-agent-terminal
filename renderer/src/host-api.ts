@@ -403,12 +403,14 @@ type NotificationEntry = {
   workspaceId?: string
   workspaceName: string
   cwd: string
-  reason: 'completed' | 'error' | 'aborted'
+  reason: 'completed' | 'error' | 'aborted' | 'connected'
   result?: string
   error?: string
   timestamp: number
   read: boolean
   agentKind?: 'claude' | 'codex'
+  kind?: 'remote-client'
+  title?: string
 }
 type ProfileWindowCloseAction = 'temporary' | 'removeFromProfile' | 'cancel'
 type ProfileWindowCloseRequest = {

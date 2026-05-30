@@ -49,6 +49,16 @@ pub struct NotificationEntry {
     pub read: bool,
     #[serde(rename = "agentKind", skip_serializing_if = "Option::is_none")]
     pub agent_kind: Option<String>,
+    // Distinguishes the notification source. Absent/None = agent
+    // completion (the default surface); "remote-client" = a new remote
+    // client connected to the host's WebSocket server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    // Free-form headline for non-agent entries (e.g. the connecting
+    // client's label). Agent entries leave this None and render from
+    // workspace_name instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Default)]
@@ -375,6 +385,45 @@ pub fn add_agent_completion_from_event(app: &AppHandle, topic: &str, payload: &V
             timestamp: now_ms(),
             read: false,
             agent_kind: session.agent_kind,
+            kind: None,
+            title: None,
+        },
+    );
+}
+
+// Push an in-app notification when a new remote client connects to the
+// host's WebSocket server. Reuses the notification center so it shows up
+// in the same bell as agent completions; the renderer branches on
+// `kind == "remote-client"` to render the connection headline.
+pub fn add_remote_client_notification(app: &AppHandle, label: &str) {
+    let Some(state) = app.try_state::<NotificationState>() else {
+        return;
+    };
+    let trimmed = label.trim();
+    let title = if trimmed.is_empty() {
+        "Remote client".to_string()
+    } else {
+        trimmed.to_string()
+    };
+    add_entry(
+        app,
+        &state,
+        NotificationEntry {
+            id: next_notification_id(),
+            session_id: String::new(),
+            window_id: None,
+            profile_id: None,
+            workspace_id: None,
+            workspace_name: String::new(),
+            cwd: String::new(),
+            reason: "connected".into(),
+            result: None,
+            error: None,
+            timestamp: now_ms(),
+            read: false,
+            agent_kind: None,
+            kind: Some("remote-client".into()),
+            title: Some(title),
         },
     );
 }
@@ -719,6 +768,16 @@ fn default_auto_continue() -> Value {
 // for sessions registered without a workspace id (older renderer, or
 // non-workspace sessions).
 fn entry_dedup_key(entry: &NotificationEntry) -> String {
+    // Remote-client entries carry no workspace/cwd, so without a special
+    // case they would all fold into a single "cwd:" key. Dedup per client
+    // label instead, so a reconnect from the same client refreshes its
+    // entry while different clients each keep their own.
+    if entry.kind.as_deref() == Some("remote-client") {
+        return match entry.title.as_deref() {
+            Some(label) if !label.is_empty() => format!("client:{label}"),
+            _ => format!("id:{}", entry.id),
+        };
+    }
     match entry.workspace_id.as_deref() {
         Some(id) if !id.is_empty() => format!("ws:{id}"),
         _ => format!("cwd:{}", normalize_workspace_key(&entry.cwd)),
@@ -759,6 +818,8 @@ mod tests {
             timestamp: 0,
             read,
             agent_kind: None,
+            kind: None,
+            title: None,
         }
     }
 
@@ -1052,6 +1113,38 @@ mod tests {
         // No workspace id — fall back to the normalized cwd path.
         let without_id = sample_entry("b", "C:/repo", false);
         assert_eq!(entry_dedup_key(&without_id), "cwd:c:/repo");
+    }
+
+    fn remote_client_entry(id: &str, label: &str) -> NotificationEntry {
+        let mut entry = sample_entry(id, "", false);
+        entry.session_id = String::new();
+        entry.window_id = None;
+        entry.workspace_name = String::new();
+        entry.reason = "connected".into();
+        entry.kind = Some("remote-client".into());
+        entry.title = Some(label.into());
+        entry
+    }
+
+    #[test]
+    fn remote_client_entries_dedup_per_label_not_cwd() {
+        // Connection entries carry no cwd; keying on cwd would collapse
+        // them all into one. Distinct labels must each keep an entry.
+        let a = remote_client_entry("a", "Laptop");
+        let b = remote_client_entry("b", "Phone");
+        assert_eq!(entry_dedup_key(&a), "client:Laptop");
+        assert_ne!(entry_dedup_key(&a), entry_dedup_key(&b));
+
+        let state = NotificationState::default();
+        raw_add(&state, a);
+        raw_add(&state, b);
+        assert_eq!(state.lock().len(), 2);
+        // A reconnect from the same label refreshes that entry in place.
+        raw_add(&state, remote_client_entry("c", "Laptop"));
+        let entries = state.lock();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.id == "c"));
+        assert!(!entries.iter().any(|e| e.id == "a"));
     }
 
     #[test]

@@ -182,6 +182,7 @@
   "notifications": {
     "title": "Notifications",
     "ends": "ends",
+    "clientConnected": "{{name}} connected",
     "empty": "No notifications yet",
     "markAllRead": "Mark all read",
     "clear": "Clear",
@@ -517,16 +518,33 @@
     "prompts": "prompts",
     "checklist": "Checklist",
     "err": "ERR",
+    "in": "IN",
     "out": "OUT",
     "prompt": "PROMPT",
     "result": "RESULT",
     "sys": "SYS",
+    "lines": "lines",
+    "chars": "chars",
+    "toolSearchSummary_one": "Loaded {{count}} tool: {{names}}",
+    "toolSearchSummary_other": "Loaded {{count}} tools: {{names}}",
     "placeholderDefault": "Type a message... (Enter to send, Shift+Tab to switch mode)",
     "placeholderInterrupted": "Type to continue, Esc to stop...",
     "placeholderStreaming": "Press Esc to pause, double-Esc to stop...",
     "permissionClickToCycle": "Permission: {{mode}} (click to cycle)",
     "modelClickToSelect": "Model: {{model}} (click to select)",
-    "clickToCopy": "Click to copy"
+    "clickToCopy": "Click to copy",
+    "runtimeStatus": {
+      "compactingClaude": "Compacting context; still waiting for Claude API response.",
+      "preparingClaude": "Preparing Claude request.",
+      "waitingClaude": "Still waiting for Claude API response.",
+      "waitingCodex": "Still waiting for Codex API response.",
+      "resumingCodex": "Resuming Codex thread before retrying the API request.",
+      "codexAccountSwitched": "Codex account switched. The next message will start a new Codex thread.",
+      "compacting": "Compacting context; still waiting for API response.",
+      "waiting": "Still waiting for API response.",
+      "preparing": "Preparing request.",
+      "queued": "Queued behind the previous request."
+    }
   },
 
   "promptBox": {

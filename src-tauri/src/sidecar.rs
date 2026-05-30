@@ -38,7 +38,6 @@ const STDERR_TAIL_LIMIT: usize = 100;
 const RESTART_BACKOFF_WINDOW: Duration = Duration::from_secs(30);
 const RESTART_BACKOFF_LIMIT: usize = 3;
 const RESTART_BACKOFF_DURATION: Duration = Duration::from_secs(5);
-const NODE_RUNTIME_VERSION: &str = "20.18.1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidecarLaunchMode {
@@ -772,7 +771,7 @@ fn find_managed_node(app: &tauri::AppHandle) -> Option<PathBuf> {
     let root = crate::app_data::app_data_dir_opt(app)?
         .join("runtimes")
         .join("node")
-        .join(NODE_RUNTIME_VERSION)
+        .join(crate::runtime_catalog::node_version())
         .join(node_runtime_key()?);
     let candidates = [root.join(exe_name), root.join("bin").join(exe_name)];
     candidates.into_iter().find(|path| path.is_file())

@@ -32,11 +32,11 @@
   "settings": {
     "title": "設定",
     "tabGeneral": "一般",
-    "tabAgent": "代理人",
+    "tabAgent": "Agent",
     "tabRemote": "遠端",
     "tabAccounts": "帳號",
     "tabAdvanced": "進階",
-    "agentDefaults": "代理人預設值",
+    "agentDefaults": "Agent 預設值",
     "modelAndEffort": "模型與效能",
     "agentBehavior": "行為設定",
     "shell": "Shell",
@@ -182,6 +182,7 @@
   "notifications": {
     "title": "通知",
     "ends": "已完成",
+    "clientConnected": "{{name}} 已連線",
     "empty": "目前沒有通知",
     "markAllRead": "全部標為已讀",
     "clear": "清除",
@@ -397,7 +398,7 @@
   "about": {
     "title": "關於",
     "appName": "Better Agent Terminal",
-    "description": "跨平台終端整合工具，支援多工作區及 AI 程式碼代理整合。",
+    "description": "跨平台終端整合工具，支援多工作區及 AI 程式碼 Agent 整合。",
     "author": "作者",
     "authorName": "TonyQ",
     "github": "GitHub",
@@ -517,16 +518,32 @@
     "prompts": "提示詞",
     "checklist": "清單",
     "err": "錯誤",
+    "in": "輸入",
     "out": "輸出",
     "prompt": "提示",
     "result": "結果",
     "sys": "系統",
+    "lines": "行",
+    "chars": "字元",
+    "toolSearchSummary_other": "已載入 {{count}} 個工具：{{names}}",
     "placeholderDefault": "輸入訊息...（Enter 傳送，Shift+Tab 切換模式）",
     "placeholderInterrupted": "輸入以繼續，Esc 停止...",
     "placeholderStreaming": "按 Esc 暫停，雙擊 Esc 停止...",
     "permissionClickToCycle": "權限：{{mode}}（點擊切換）",
     "modelClickToSelect": "模型：{{model}}（點擊選擇）",
-    "clickToCopy": "點擊複製"
+    "clickToCopy": "點擊複製",
+    "runtimeStatus": {
+      "compactingClaude": "正在壓縮上下文；仍在等待 Claude API 回應。",
+      "preparingClaude": "正在準備 Claude 請求。",
+      "waitingClaude": "仍在等待 Claude API 回應。",
+      "waitingCodex": "仍在等待 Codex API 回應。",
+      "resumingCodex": "正在恢復 Codex 執行緒後重試 API 請求。",
+      "codexAccountSwitched": "已切換 Codex 帳號。下一則訊息將開啟新的 Codex 執行緒。",
+      "compacting": "正在壓縮上下文；仍在等待 API 回應。",
+      "waiting": "仍在等待 API 回應。",
+      "preparing": "正在準備請求。",
+      "queued": "正在排隊，等待前一個請求完成。"
+    }
   },
 
   "promptBox": {

@@ -50,6 +50,9 @@ const RECENT_CLIENT_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 const TOKEN_FILE: &str = "server-token.enc.json";
 const LEGACY_TOKEN_FILE: &str = "server-token.json";
 const CERT_FILE: &str = "server-cert.enc.json";
+// Device ids of remote clients we've already seen, so a new client connecting
+// fires a one-time notification and reconnects of known clients stay silent.
+const KNOWN_CLIENTS_FILE: &str = "remote-known-clients.json";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -426,6 +429,44 @@ fn record_recent_client(recent: &Arc<Mutex<Vec<RecentClient>>>, info: RemoteClie
     }
 }
 
+// Identity used to decide whether a connecting client is already known.
+// Mirrors the (window_id, label) key the live/recent client lists dedup on,
+// so "already recorded" matches what the Settings panel shows.
+fn client_identity_key(info: &RemoteClientInfo) -> (Option<String>, String) {
+    (info.window_id.clone(), info.label.clone())
+}
+
+// True if a client matching `key` is already in our records — either
+// currently connected or recently disconnected within the TTL window. Used to
+// fire the "new client connected" notification only for clients we have not
+// seen yet; reconnects from a known client stay silent. Lock order is
+// clients -> recent, matching the rest of the module.
+fn client_already_recorded(
+    clients: &Arc<Mutex<Vec<RemoteClientRecord>>>,
+    recent: &Arc<Mutex<Vec<RecentClient>>>,
+    key: &(Option<String>, String),
+    now: u64,
+) -> bool {
+    if let Ok(clients) = clients.lock() {
+        if clients
+            .iter()
+            .any(|client| &client_identity_key(&client.info) == key)
+        {
+            return true;
+        }
+    }
+    if let Ok(mut recent) = recent.lock() {
+        recent.retain(|entry| now.saturating_sub(entry.disconnected_at) <= RECENT_CLIENT_TTL_MS);
+        if recent
+            .iter()
+            .any(|entry| &client_identity_key(&entry.info) == key)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn has_remote_clients(clients: &Arc<Mutex<Vec<RemoteClientRecord>>>) -> bool {
     clients
         .lock()
@@ -635,6 +676,43 @@ fn load_legacy_plaintext_token(data_dir: &Path) -> Option<String> {
 
 fn persist_token(data_dir: &Path, token: &str) {
     let _ = write_secret_string(data_dir, &data_dir.join(TOKEN_FILE), token);
+}
+
+fn load_known_device_ids(data_dir: &Path) -> Vec<String> {
+    let raw = match fs::read_to_string(data_dir.join(KNOWN_CLIENTS_FILE)) {
+        Ok(raw) => raw,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .as_ref()
+        .and_then(|value| value.get("knownDeviceIds"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// Records `device_id` as a known remote client. Returns true when the device
+// was not previously known (i.e. this is its first connection ever), persisting
+// the updated set so the notification only fires once across app restarts.
+fn register_known_remote_device(data_dir: &Path, device_id: &str) -> bool {
+    let mut known = load_known_device_ids(data_dir);
+    if known.iter().any(|id| id == device_id) {
+        return false;
+    }
+    known.push(device_id.to_string());
+    let _ = fs::create_dir_all(data_dir);
+    let _ = fs::write(
+        data_dir.join(KNOWN_CLIENTS_FILE),
+        json!({ "knownDeviceIds": known }).to_string(),
+    );
+    true
 }
 
 fn ensure_remote_certificate(data_dir: &Path) -> Result<RemoteCertificate, String> {
@@ -943,8 +1021,27 @@ fn handle_client(
                 .map(str::to_string);
             let device_summary = format_client_device_summary(client_info.as_ref());
             client_label = label.clone();
+            let device_id = client_info
+                .as_ref()
+                .and_then(|info| info.device_id.as_deref())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
             let protocol_name = protocol.as_str().to_string();
             client_id = format!("{}-{}", unix_ms(), generate_token());
+            // Decide before inserting into `clients`, otherwise we'd always
+            // find the just-added record and never treat anyone as new.
+            // Prefer the persisted device-id set so a known client stays silent
+            // across restarts (the unique id the client provides); clients that
+            // send no device id fall back to the in-memory live/recent dedup.
+            let identity_key = (window_id.clone(), label.clone());
+            let already_known = match device_id.as_deref() {
+                Some(id) => match app_data::app_data_dir(&app) {
+                    Ok(dir) => !register_known_remote_device(&dir, id),
+                    Err(_) => client_already_recorded(&clients, &recent, &identity_key, unix_ms()),
+                },
+                None => client_already_recorded(&clients, &recent, &identity_key, unix_ms()),
+            };
             if let Ok(mut guard) = clients.lock() {
                 guard.push(RemoteClientRecord {
                     id: client_id.clone(),
@@ -968,6 +1065,14 @@ fn handle_client(
                     client_compression.as_str()
                 ),
             );
+            if already_known {
+                remote_debug_log(
+                    &app,
+                    format!("known client reconnected; notification skipped label={client_label}"),
+                );
+            } else {
+                notification_cmd::add_remote_client_notification(&app, &client_label);
+            }
             send_frame(
                 &mut ws,
                 json!({
@@ -2425,6 +2530,51 @@ fn protocol_name(protocol: RemoteProtocol) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_client_info(window_id: Option<&str>, label: &str) -> RemoteClientInfo {
+        RemoteClientInfo {
+            label: label.to_string(),
+            window_id: window_id.map(str::to_string),
+            client_info: None,
+            connected_at: 0,
+            protocol: "bat-remote/v2".to_string(),
+            compression: "none".to_string(),
+        }
+    }
+
+    #[test]
+    fn client_already_recorded_matches_live_and_recent() {
+        let clients = Arc::new(Mutex::new(Vec::new()));
+        let recent = Arc::new(Mutex::new(Vec::new()));
+        let now = 1_000_000;
+        let key = (Some("win-1".to_string()), "Laptop".to_string());
+
+        // Brand-new client: not live, not recent.
+        assert!(!client_already_recorded(&clients, &recent, &key, now));
+
+        // A recent (disconnected within TTL) record counts as known.
+        record_recent_client(&recent, test_client_info(Some("win-1"), "Laptop"), now);
+        assert!(client_already_recorded(&clients, &recent, &key, now));
+
+        // A different identity is still treated as new.
+        let other = (Some("win-2".to_string()), "Phone".to_string());
+        assert!(!client_already_recorded(&clients, &recent, &other, now));
+
+        // Past the TTL the recent record is pruned, so it's new again.
+        let later = now + RECENT_CLIENT_TTL_MS + 1;
+        assert!(!client_already_recorded(&clients, &recent, &key, later));
+
+        // A currently-connected client also counts as known.
+        let (tx, _rx) = mpsc::channel();
+        clients.lock().unwrap().push(RemoteClientRecord {
+            id: "c1".to_string(),
+            info: test_client_info(Some("win-3"), "Tablet"),
+            tx,
+            close: Arc::new(AtomicBool::new(false)),
+        });
+        let live_key = (Some("win-3".to_string()), "Tablet".to_string());
+        assert!(client_already_recorded(&clients, &recent, &live_key, later));
+    }
 
     #[test]
     fn channel_to_sidecar_method_matches_js_bridge() {

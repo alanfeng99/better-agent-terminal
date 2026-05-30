@@ -2,6 +2,7 @@ import { host, isTauri } from '../host-api'
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment, cloneElement, isValidElement } from 'react'
 import { flushSync } from 'react-dom'
 import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import type { ClaudeMessage, ClaudeToolCall } from '../types/claude-agent'
 import { isMessageItem, isToolCall } from '../types/claude-agent'
 import type { CodexApprovalPolicy, CodexEffortLevel, CodexSandboxMode } from '../types'
@@ -23,9 +24,10 @@ import { shouldNavigateInputHistoryFromTextarea } from '../utils/input-history-n
 import { buildSnippetContextPrompt, parseSnippetSlashCommand, type SnippetForContext } from '../utils/snippet-command'
 import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } from '../utils/tool-result-cache'
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
+import { translateRuntimeMessage } from '../utils/runtime-status-message'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
 import { normalizePendingAskUser } from './AskUserQuestion.helpers'
-import { autoContinueTurnEndKey, buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, stringifyToolResult, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
+import { autoContinueTurnEndKey, buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, stringifyToolResult, summarizeToolSearchResult, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
 
@@ -47,22 +49,23 @@ function formatUnknownError(error: unknown): string {
   }
 }
 
-function runtimeWaitingMessage(meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
+function runtimeWaitingMessage(t: TFunction, meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
   const elapsedMs = Math.max(0, now - startedAt)
   const elapsed = elapsedMs >= 1000 ? ` (${Math.floor(elapsedMs / 1000)}s)` : ''
+  const translated = translateRuntimeMessage(t, meta.runtimeMessage)
   if (meta.runtimeStatus === 'compacting') {
-    return `${meta.runtimeMessage || 'Compacting context; still waiting for API response.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.compacting')}${elapsed}`
   }
   if (meta.runtimeStatus === 'waiting_for_api' && elapsedMs >= 8000) {
-    return `${meta.runtimeMessage || 'Still waiting for API response.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.waiting')}${elapsed}`
   }
   if (meta.runtimeStatus === 'starting' && elapsedMs >= 8000) {
-    return `${meta.runtimeMessage || 'Preparing request.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.preparing')}${elapsed}`
   }
   if (meta.runtimeStatus === 'queued') {
-    return `${meta.runtimeMessage || 'Queued behind the previous request.'}${elapsed}`
+    return `${translated || t('claude.runtimeStatus.queued')}${elapsed}`
   }
   return null
 }
@@ -480,8 +483,8 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [filePickerPreview, setFilePickerPreview] = useState<string | null>(null)
   const filePickerInputRef = useRef<HTMLInputElement>(null)
   const runtimeWaitMessage = useMemo(
-    () => runtimeWaitingMessage(sessionMeta, isStreaming, runtimeWaitNow),
-    [sessionMeta, isStreaming, runtimeWaitNow],
+    () => runtimeWaitingMessage(t, sessionMeta, isStreaming, runtimeWaitNow),
+    [t, sessionMeta, isStreaming, runtimeWaitNow],
   )
   useEffect(() => {
     if (!isStreaming || !sessionMeta?.runtimeStatus) return
@@ -3752,7 +3755,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                 onClick={() => handleCopyBlock(inContent, inBlockId)}
                 title={t('claude.clickToCopy')}
               >
-                <span className="claude-tool-row-label">IN</span>
+                <span className="claude-tool-row-label">{t('claude.in')}</span>
                 <span className="claude-tool-row-content">
                   <LinkedText text={isInLong && !isInExpanded ? inPreview : inContent} />
                   {isInLong && (
@@ -3788,7 +3791,11 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                 )
                 // Collapse by default for read-only tools; collapse all if setting enabled
                 const isReadOnlyTool = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'].includes(item.toolName)
-                const shouldCollapse = isReadOnlyTool || item.toolName === 'Bash' || isLongOutput || settingsStore.getSettings().collapseToolOutputs
+                const toolSearchSummary = item.toolName === 'ToolSearch' ? summarizeToolSearchResult(outText, t) : null
+                const displayOutText = toolSearchSummary ?? outText
+                const shouldCollapse = toolSearchSummary
+                  ? false
+                  : isReadOnlyTool || item.toolName === 'Bash' || isLongOutput || settingsStore.getSettings().collapseToolOutputs
                 const isOutExpanded = expandedTools.has(outBlockId)
                 return (
                   <>
@@ -3835,14 +3842,14 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                         <span className={`claude-tool-chevron ${isOutExpanded ? 'expanded' : ''}`}>&#9654;</span>
                       </div>
                     )}
-                    {outText && !shouldCollapse && (
+                    {displayOutText && !shouldCollapse && (
                       <div
                         className="claude-tool-row"
-                        onClick={() => handleCopyBlock(outText, outBlockId)}
+                        onClick={() => handleCopyBlock(displayOutText, outBlockId)}
                         title={t('claude.clickToCopy')}
                       >
                         <span className="claude-tool-row-label">{t('claude.out')}</span>
-                        <span className="claude-tool-row-content"><LinkedText text={outText} /></span>
+                        <span className="claude-tool-row-content"><LinkedText text={displayOutText} /></span>
                         <span className={`claude-tool-row-copy ${copiedId === outBlockId ? 'copied' : ''}`}>
                           {copiedId === outBlockId ? '✓' : '⧉'}
                         </span>

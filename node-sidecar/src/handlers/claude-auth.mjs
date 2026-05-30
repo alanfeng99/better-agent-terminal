@@ -13,45 +13,30 @@ import { gunzipSync } from 'node:zlib'
 import { registerHandler } from '../lib/protocol.mjs'
 import { resolveDataDir } from '../lib/data-paths.mjs'
 import { invalidateAccountMetadataCache } from './claude-readonly.mjs'
+import runtimeCatalog from '../../../runtime-catalog.json' with { type: 'json' }
 
 export const AUTH_STATUS_TIMEOUT_MS = 10_000
 // auth login is interactive (browser-based OAuth, ~30-60s typical), so
 // we give it a generous ceiling. The CLI exits as soon as the OAuth
 // callback fires; if the user never completes the flow, we time out.
 export const AUTH_LOGIN_TIMEOUT_MS = 180_000
-export const CLAUDE_AGENT_SDK_NATIVE_VERSION = '0.3.150'
+export const CLAUDE_AGENT_SDK_NATIVE_VERSION = runtimeCatalog.claude.version
 
-const CLAUDE_NATIVE_CATALOG = {
-  'darwin-arm64': {
-    packageName: 'claude-agent-sdk-darwin-arm64',
-    integrity: 'sha512-YVWJ0MHdSy0tobHO2G5/+vd9iRGyosg3wM6sY4pirezsnwZJBkJv/9IeVIaKqdLv83OA6HUcxxOLGzKSBawq2Q==',
-  },
-  'darwin-x64': {
-    packageName: 'claude-agent-sdk-darwin-x64',
-    integrity: 'sha512-72M8mKCa7Tfy66G5hr5z9TirKynQa9sFj+4qDxkAp5LAYnyViUzHOqO6mEjVtwDr2aXnjqkhTdBtc5Hmn1m/nA==',
-  },
-  'linux-arm64': {
-    packageName: 'claude-agent-sdk-linux-arm64',
-    integrity: 'sha512-1nhCXjfbxwhQPTgx2+q8lFYHx8DGJEOdaSd4wLvhGJifd/9QJwtnxaill1q+qdggZDroXHDJOTugttP0be6diA==',
-  },
-  'linux-x64': {
-    packageName: 'claude-agent-sdk-linux-x64',
-    integrity: 'sha512-G7yOB9O6twOhQH3SvZWIvOcjehfA0HD5f/j49Z/yxZK5U72hOxtnbx7GCbcH/8AyB7JFyHjHpR9hxOxFoJNIhQ==',
-  },
-  'win32-arm64': {
-    packageName: 'claude-agent-sdk-win32-arm64',
-    integrity: 'sha512-z9vlm3JdOQ1Vqj9sG8kW+r9miunv4UFQOn0AqoI++J9AgoCBjKGCH2WWmZYhGOvezZqogunXaTciJvhtDhJiWQ==',
-  },
-  'win32-x64': {
-    packageName: 'claude-agent-sdk-win32-x64',
-    integrity: 'sha512-lpAVi7tZdHi3BXRWmCVmOE2O8q7nzbvuMneYKS9rkpIbcjMjOBk6ud/rlp8Cuiqmp4LzZ8ylbbI7vFEiylK6Hg==',
-  },
-}
-
-for (const entry of Object.values(CLAUDE_NATIVE_CATALOG)) {
-  entry.version = CLAUDE_AGENT_SDK_NATIVE_VERSION
-  entry.url = `https://registry.npmjs.org/@anthropic-ai/${entry.packageName}/-/${entry.packageName}-${entry.version}.tgz`
-}
+// Per-platform Claude native package download catalog, derived from the
+// shared runtime-catalog.json — the single source of truth regenerated at
+// build time from the installed @anthropic-ai/claude-agent-sdk version. The
+// Rust side reads the same file via runtime_catalog.rs.
+const CLAUDE_NATIVE_CATALOG = Object.fromEntries(
+  Object.entries(runtimeCatalog.claude.platforms).map(([key, { packageName, integrity }]) => [
+    key,
+    {
+      packageName,
+      integrity,
+      version: CLAUDE_AGENT_SDK_NATIVE_VERSION,
+      url: `https://registry.npmjs.org/@anthropic-ai/${packageName}/-/${packageName}-${CLAUDE_AGENT_SDK_NATIVE_VERSION}.tgz`,
+    },
+  ]),
+)
 
 // Resolve the path to a `claude` CLI binary. The bundled SDK ships one
 // per platform (e.g. node-sidecar/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe);

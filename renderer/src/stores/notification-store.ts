@@ -9,12 +9,16 @@ export interface NotificationEntry {
   workspaceId?: string
   workspaceName: string
   cwd: string
-  reason: 'completed' | 'error' | 'aborted'
+  reason: 'completed' | 'error' | 'aborted' | 'connected'
   result?: string
   error?: string
   timestamp: number
   read: boolean
   agentKind?: 'claude' | 'codex'
+  // Absent = agent completion (default). 'remote-client' = a new remote
+  // client connected to the host; rendered from `title`, not workspace.
+  kind?: 'remote-client'
+  title?: string
 }
 
 type Listener = () => void

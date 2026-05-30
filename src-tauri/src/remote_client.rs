@@ -26,6 +26,7 @@ use tungstenite::Message;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(6);
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_TIMEOUT: Duration = Duration::from_millis(100);
+const CLIENT_DEVICE_ID_FILE: &str = "remote-client-id.json";
 
 type RemoteWebSocket = WebSocket<StreamOwned<ClientConnection, TcpStream>>;
 
@@ -129,7 +130,16 @@ impl RustRemoteClientState {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(default_client_label);
         self.disconnect();
-        let connection = connect_socket(&host, port, &token, &fingerprint, &label, window_id)?;
+        let device_id = load_or_create_client_device_id(&app);
+        let connection = connect_socket(
+            &host,
+            port,
+            &token,
+            &fingerprint,
+            &label,
+            window_id,
+            device_id,
+        )?;
         let compression = connection.compression;
         let protocol = connection.protocol.clone();
         let (tx, rx) = mpsc::channel();
@@ -227,6 +237,7 @@ impl RustRemoteClientState {
             &fingerprint,
             &default_client_label(),
             None,
+            None,
         )?;
         let _ = connection.ws.close(None);
         Ok(json!({ "ok": true }))
@@ -246,6 +257,7 @@ impl RustRemoteClientState {
             &token,
             &fingerprint,
             &default_client_label(),
+            None,
             None,
         )?;
         let result = invoke_socket(
@@ -438,6 +450,37 @@ fn drain_pending(pending: &mut HashMap<String, PendingInvoke>, message: &str) {
     }
 }
 
+fn generate_client_device_id() -> String {
+    let bytes = rand::random::<[u8; 16]>();
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+// A stable per-install identifier sent to the host as `clientInfo.deviceId`.
+// The host uses it to recognize this client on reconnect, so it only shows a
+// "new client connected" notification the first time this install connects.
+// Generated once and persisted under the app data dir.
+fn load_or_create_client_device_id(app: &AppHandle) -> Option<String> {
+    let data_dir = crate::app_data::app_data_dir(app).ok()?;
+    let path = data_dir.join(CLIENT_DEVICE_ID_FILE);
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+        if let Some(existing) = serde_json::from_str::<Value>(&raw)
+            .ok()
+            .as_ref()
+            .and_then(|value| value.get("deviceId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+        {
+            return Some(existing);
+        }
+    }
+    let id = generate_client_device_id();
+    let _ = std::fs::create_dir_all(&data_dir);
+    let _ = std::fs::write(&path, json!({ "deviceId": id }).to_string());
+    Some(id)
+}
+
 fn connect_socket(
     host: &str,
     port: u16,
@@ -445,6 +488,7 @@ fn connect_socket(
     fingerprint: &str,
     label: &str,
     window_id: Option<String>,
+    device_id: Option<String>,
 ) -> Result<RemoteConnection, String> {
     let pinned_fingerprint = normalize_fingerprint(fingerprint);
     if pinned_fingerprint.is_empty() {
@@ -487,13 +531,17 @@ fn connect_socket(
         .map_err(|err| format!("remote websocket request failed: {err}"))?;
     let (mut ws, _) = tungstenite::client(request, tls)
         .map_err(|err| format!("remote websocket connect failed: {err}"))?;
-    let client_info = json!({
+    let mut client_info = json!({
         "appName": "Better Agent Terminal Desktop",
         "appVersion": env!("CARGO_PKG_VERSION"),
         "deviceName": label,
         "label": label,
         "platform": std::env::consts::OS,
     });
+    // The host dedups "new client" notifications on this stable id.
+    if let Some(id) = device_id.as_deref().filter(|id| !id.is_empty()) {
+        client_info["deviceId"] = json!(id);
+    }
     send_json_frame(
         &mut ws,
         json!({
