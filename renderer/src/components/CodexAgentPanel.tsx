@@ -27,7 +27,7 @@ import { createToolRenderCache, getOrComputeToolRender, pruneToolRenderCache } f
 import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { translateRuntimeMessage } from '../utils/runtime-status-message'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
-import { normalizePendingAskUser } from './AskUserQuestion.helpers'
+import { normalizePendingAskUser, wrapPreviewHtml } from './AskUserQuestion.helpers'
 import { autoContinueTurnEndKey, buildCollapsedOutputPreview, formatContentSize, formatElapsed, formatFullTimestamp, formatTimestamp, parseContentBlocks, parseShellInvocation, shouldAutoContinueAfterTurnEnd, shouldShowTimeDivider, splitSystemReminders, stringifyToolResult, summarizeToolSearchResult, toolDescription, toolInputContent, toolInputSummary, truncateMiddle } from './CodexAgentPanel.helpers'
 import type { AttachedFile, AttachedImage, CodexAgentPanelProps, MessageItem, ModelInfo, PendingAskUser, PendingPermission, SessionMeta, SessionSummary, SlashCommandInfo } from './CodexAgentPanel.types'
 import { CodexTodoChecklist } from './CodexTodoChecklist'
@@ -4353,7 +4353,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
                   <div className="claude-ask-preview">
                     <iframe
                       sandbox="allow-same-origin"
-                      srcDoc={selectedPreview}
+                      srcDoc={wrapPreviewHtml(selectedPreview)}
                       style={{ width: '100%', border: 'none', minHeight: 120, background: 'var(--bg-primary)' }}
                       title={t('claude.optionPreview')}
                     />

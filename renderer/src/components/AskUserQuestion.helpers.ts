@@ -82,6 +82,16 @@ export function normalizePendingAskUser(data: unknown): PendingAskUser {
   }
 }
 
+// Wrap an option's HTML preview fragment in a minimal document with a strict
+// Content-Security-Policy. The iframe is already sandboxed without allow-scripts,
+// but the CSP additionally blocks all remote subresources (passive <img>/<link>/
+// font fetches a sandbox can't stop), so the model-generated fragment renders as
+// inert, self-contained markup only.
+export function wrapPreviewHtml(inner: string): string {
+  const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; script-src 'none'"
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html,body{margin:0;padding:8px;background:transparent;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;}</style></head><body>${inner}</body></html>`
+}
+
 export function summarizeAskUserInput(input: Record<string, unknown>): string | null {
   const rawQuestions = Array.isArray(input.questions) ? input.questions : []
   const questions = rawQuestions

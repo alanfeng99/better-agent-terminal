@@ -27,7 +27,7 @@ import { useRafBatchedString } from '../utils/use-raf-batched-string'
 import { translateRuntimeMessage } from '../utils/runtime-status-message'
 import { dispatchWorkerCommand, parseWorkerSlashCommand } from '../utils/worker-command'
 import { buildCollapsedOutputPreview, formatContentSize, parseShellInvocation, stringifyToolResult, summarizeToolCommandInput, summarizeToolSearchResult, truncateMiddle } from './CodexAgentPanel.helpers'
-import { normalizePendingAskUser, summarizeAskUserInput } from './AskUserQuestion.helpers'
+import { normalizePendingAskUser, summarizeAskUserInput, wrapPreviewHtml } from './AskUserQuestion.helpers'
 
 interface SessionMeta {
   model?: string
@@ -4330,7 +4330,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                   <div className="claude-ask-preview">
                     <iframe
                       sandbox="allow-same-origin"
-                      srcDoc={selectedPreview}
+                      srcDoc={wrapPreviewHtml(selectedPreview)}
                       style={{ width: '100%', border: 'none', minHeight: 120, background: 'var(--bg-primary)' }}
                       title={t('claude.optionPreview')}
                     />
