@@ -1835,6 +1835,13 @@
   margin-bottom: 8px;
 }
 
+.claude-ask-multi-hint {
+  font-size: calc(var(--claude-font-size) - 2px);
+  color: var(--claude-accent);
+  margin-top: -4px;
+  margin-bottom: 8px;
+}
+
 .claude-ask-options {
   display: flex;
   flex-wrap: wrap;

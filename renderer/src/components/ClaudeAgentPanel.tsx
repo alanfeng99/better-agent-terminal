@@ -326,7 +326,9 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [permissionFocus, setPermissionFocus] = useState(0) // 0=Yes, 1=Yes always, 2=No, 3=custom text
   const [permissionCustomText, setPermissionCustomText] = useState('')
   const [pendingQuestion, setPendingQuestion] = useState<PendingAskUser | null>(null)
-  const [askAnswers, setAskAnswers] = useState<Record<string, string>>({})
+  // Single-select questions store one label (string); multi-select questions
+  // store an array of selected labels. Keyed by question text.
+  const [askAnswers, setAskAnswers] = useState<Record<string, string | string[]>>({})
   const [askOtherText, setAskOtherText] = useState<Record<string, string>>({})
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([])
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([])
@@ -2980,12 +2982,22 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
   const handleAskUserSubmit = useCallback(() => {
     if (!pendingQuestion) return
-    // Merge selected answers with "Other" text inputs
-    const finalAnswers = { ...askAnswers }
-    for (const [key, text] of Object.entries(askOtherText)) {
-      if (text.trim()) {
-        finalAnswers[key] = text.trim()
+    // The resolve protocol expects string values per question, so multi-select
+    // arrays are joined into one comma-separated string.
+    const finalAnswers: Record<string, string> = {}
+    for (const [key, val] of Object.entries(askAnswers)) {
+      if (Array.isArray(val)) {
+        if (val.length) finalAnswers[key] = val.join(', ')
+      } else if (val) {
+        finalAnswers[key] = val
       }
+    }
+    // Merge "Other" text: append for multi-select (coexists with picks),
+    // replace for single-select (where picking and typing are exclusive).
+    for (const [key, text] of Object.entries(askOtherText)) {
+      const trimmed = text.trim()
+      if (!trimmed) continue
+      finalAnswers[key] = finalAnswers[key] ? `${finalAnswers[key]}, ${trimmed}` : trimmed
     }
     host.claude.resolveAskUser(sessionId, pendingQuestion.toolUseId, finalAnswers)
     setPendingQuestion(null)
@@ -4264,7 +4276,13 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           {pendingQuestion.questions.map((q, qi) => {
             const qKey = q.question || String(qi)
             const hasPreview = q.options.some(opt => opt.markdown)
-            const selectedLabel = askAnswers[qKey]
+            const answer = askAnswers[qKey]
+            const isSelected = (label: string) =>
+              Array.isArray(answer) ? answer.includes(label) : answer === label
+            // Preview tracks the current single pick, or the most-recently-toggled option for multi-select.
+            const selectedLabel = q.multiSelect
+              ? (Array.isArray(answer) && answer.length ? answer[answer.length - 1] : undefined)
+              : (typeof answer === 'string' ? answer : undefined)
             const selectedPreview = selectedLabel
               ? q.options.find(opt => opt.label === selectedLabel)?.markdown
               : undefined
@@ -4273,12 +4291,26 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                 <div className="claude-ask-main">
                   <div className="claude-ask-header">{q.header}</div>
                   <div className="claude-ask-text">{q.question}</div>
+                  {q.multiSelect && <div className="claude-ask-multi-hint">{t('claude.multiSelectHint')}</div>}
                   <div className="claude-ask-options">
                     {q.options.map((opt, oi) => (
                       <button
                         key={oi}
-                        className={`claude-ask-option ${askAnswers[qKey] === opt.label ? 'selected' : ''}`}
-                        onClick={() => { setAskAnswers(prev => ({ ...prev, [qKey]: opt.label })); setAskOtherText(prev => { const next = { ...prev }; delete next[qKey]; return next }) }}
+                        className={`claude-ask-option ${isSelected(opt.label) ? 'selected' : ''}`}
+                        onClick={() => {
+                          if (q.multiSelect) {
+                            // Toggle this label in/out of the selection array; "Other" text coexists.
+                            setAskAnswers(prev => {
+                              const cur = prev[qKey]
+                              const arr = Array.isArray(cur) ? cur : (typeof cur === 'string' && cur ? [cur] : [])
+                              const next = arr.includes(opt.label) ? arr.filter(l => l !== opt.label) : [...arr, opt.label]
+                              return { ...prev, [qKey]: next }
+                            })
+                          } else {
+                            setAskAnswers(prev => ({ ...prev, [qKey]: opt.label }))
+                            setAskOtherText(prev => { const next = { ...prev }; delete next[qKey]; return next })
+                          }
+                        }}
                         title={opt.description}
                       >
                         {opt.label}
@@ -4290,7 +4322,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
                       type="text"
                       placeholder={t('claude.other')}
                       value={askOtherText[qKey] || ''}
-                      onChange={e => { setAskOtherText(prev => ({ ...prev, [qKey]: e.target.value })); if (e.target.value) setAskAnswers(prev => { const next = { ...prev }; delete next[qKey]; return next }) }}
+                      onChange={e => { setAskOtherText(prev => ({ ...prev, [qKey]: e.target.value })); if (e.target.value && !q.multiSelect) setAskAnswers(prev => { const next = { ...prev }; delete next[qKey]; return next }) }}
                     />
                   </div>
                 </div>

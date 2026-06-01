@@ -455,6 +455,7 @@
     "submit": "发送",
     "other": "其他...",
     "optionPreview": "选项预览",
+    "multiSelectHint": "可多选",
     "resumeSession": "恢复先前的会话",
     "loadingSessions": "加载会话中...",
     "noSessionsFound": "找不到会话",
