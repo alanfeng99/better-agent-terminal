@@ -997,12 +997,27 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
             ))
             : prev
           if (nextPrev.some(m => m.id === finalMsg.id)) return nextPrev
-          // Dedup user messages: if a local user message with same content exists within 5s, skip
-          if (finalMsg.role === 'user' && nextPrev.some(m =>
-            !isToolCall(m) && (m as ClaudeMessage).role === 'user' &&
-            (m as ClaudeMessage).content === finalMsg.content &&
-            Math.abs((m as ClaudeMessage).timestamp - finalMsg.timestamp) < 5000
-          )) return nextPrev
+          // Dedup user messages: a matching local user message within 5s is the
+          // optimistic echo. When the host echoes the message back (proof it was
+          // received) solidify it by clearing its 'sending'/'failed' status,
+          // instead of appending a duplicate. A plain skip (no status) preserves
+          // the original local/multi-window behavior.
+          if (finalMsg.role === 'user') {
+            const dupIdx = nextPrev.findIndex(m =>
+              !isToolCall(m) && (m as ClaudeMessage).role === 'user' &&
+              (m as ClaudeMessage).content === finalMsg.content &&
+              Math.abs((m as ClaudeMessage).timestamp - finalMsg.timestamp) < 5000
+            )
+            if (dupIdx >= 0) {
+              const dup = nextPrev[dupIdx] as ClaudeMessage
+              if (dup.status) {
+                const copy = [...nextPrev]
+                copy[dupIdx] = { ...dup, status: undefined }
+                return copy
+              }
+              return nextPrev
+            }
+          }
           if (finalMsg.role === 'assistant') {
             const lastNonTool = [...nextPrev].reverse().find(m => !isToolCall(m)) as ClaudeMessage | undefined
             if (
@@ -2406,9 +2421,11 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       promptToSend = `[Interrupted request] ${interruptedPrompt.trim()}\n\n${promptToSend}`
     }
 
-    // Add user message locally only when this renderer can authoritatively predict display.
-    // Remote clients and running turns wait for the host/backend message so wrapping/queueing stays consistent.
-    const shouldEchoUserMessageLocally = !isRemoteConnected && (!isStreaming || isInterrupted)
+    // Echo the user message locally so it appears immediately. Remote clients
+    // tag it 'sending' (ghosted) until the host acks via invoke-result / echoes
+    // it back; running turns still wait for the host so wrapping/queueing stays
+    // consistent.
+    const shouldEchoUserMessageLocally = !isStreaming || isInterrupted
     const imageNote = imageDataUrls.length > 0
       ? `\n[${imageDataUrls.length} image${imageDataUrls.length > 1 ? 's' : ''} attached]`
       : ''
@@ -2426,6 +2443,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         role: 'user' as const,
         content: displayContent,
         timestamp: Date.now(),
+        status: isRemoteConnected ? ('sending' as const) : undefined,
       }])
     }
 
@@ -2437,6 +2455,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         getAutoCompactWindowForModel(currentModel, settingsStore.getSettings().autoCompactWindow),
         { id: userMsgId, displayContent },
       )
+      if (isRemoteConnected) {
+        // Host acked receipt (invoke-result) → solidify the ghosted message.
+        setMessages(prev => prev.map(m => (!isToolCall(m) && m.id === userMsgId) ? { ...m, status: 'sent' as const } : m))
+      }
     } catch (err) {
       const message = formatUnknownError(err)
       if (isSendMessageTimeout(message)) {
@@ -2449,6 +2471,11 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       setStreamingThinking('')
       setPendingPermission(null)
       setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+      if (isRemoteConnected) {
+        // Real send error (not a timeout — those return early and let claude:*
+        // events drive the turn) → mark the ghosted message failed.
+        setMessages(prev => prev.map(m => (!isToolCall(m) && m.id === userMsgId) ? { ...m, status: 'failed' as const } : m))
+      }
       setMessages(prev => [...prev, {
         id: `err-send-${Date.now()}`,
         sessionId,
@@ -3914,7 +3941,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       return (
         <div
           key={msg.id || index}
-          className="tl-item tl-item-user"
+          className={`tl-item tl-item-user${msg.status === 'sending' ? ' msg-sending' : ''}${msg.status === 'failed' ? ' msg-failed' : ''}`}
           data-user-msg-id={msg.id}
           ref={(el) => setUserMsgRef(msg.id, el)}
         >

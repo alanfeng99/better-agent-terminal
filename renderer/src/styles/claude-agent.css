@@ -285,6 +285,15 @@
   user-select: none;
 }
 
+/* Remote optimistic send: ghosted while pending host ack, red dot on failure. */
+.tl-item-user.msg-sending {
+  opacity: 0.5;
+}
+
+.tl-item-user.msg-failed .tl-dot {
+  background: var(--danger-color);
+}
+
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.8); }
