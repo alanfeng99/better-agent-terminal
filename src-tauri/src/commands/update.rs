@@ -7,6 +7,8 @@ use crate::sidecar::BridgeError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
+use tauri::Emitter;
+use tauri_plugin_updater::UpdaterExt;
 
 const GITHUB_LATEST_RELEASE: &str =
     "https://api.github.com/repos/tony1223/better-agent-terminal/releases/latest";
@@ -43,6 +45,104 @@ pub fn update_get_bundle_mode() -> &'static str {
     } else {
         "all-in-one"
     }
+}
+
+const MANIFEST_BASE: &str =
+    "https://github.com/tony1223/better-agent-terminal/releases/download/manifests";
+
+/// Resolve the Tauri-updater manifest URL for the requested channel and the
+/// build's own bundle mode (so a lightweight install only ever upgrades to a
+/// lightweight build, and vice versa).
+fn manifest_endpoint(channel: &str) -> String {
+    let mode = update_get_bundle_mode();
+    let ch = if channel == "pre" { "pre" } else { "stable" };
+    format!("{MANIFEST_BASE}/latest-{ch}-{mode}.json")
+}
+
+fn build_updater(
+    app: &tauri::AppHandle,
+    channel: &str,
+) -> Result<tauri_plugin_updater::Updater, BridgeError> {
+    let endpoint = manifest_endpoint(channel);
+    let url = reqwest::Url::parse(&endpoint).map_err(|err| BridgeError {
+        message: format!("invalid updater endpoint {endpoint}: {err}"),
+    })?;
+    app.updater_builder()
+        .endpoints(vec![url])
+        .map_err(|err| BridgeError {
+            message: format!("updater endpoints rejected: {err}"),
+        })?
+        .build()
+        .map_err(|err| BridgeError {
+            message: format!("updater build failed: {err}"),
+        })
+}
+
+/// Check the per-channel/per-mode manifest for a newer build. Returns
+/// `{ available, currentVersion, version?, notes? }`. Does not download.
+#[tauri::command]
+pub async fn update_check_native(
+    app: tauri::AppHandle,
+    channel: String,
+) -> Result<Value, BridgeError> {
+    let current = app.package_info().version.to_string();
+    let updater = build_updater(&app, &channel)?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(json!({
+            "available": true,
+            "currentVersion": current,
+            "version": update.version,
+            "notes": update.body,
+            "channel": channel,
+        })),
+        Ok(None) => Ok(json!({
+            "available": false,
+            "currentVersion": current,
+            "channel": channel,
+        })),
+        Err(err) => Err(BridgeError {
+            message: format!("update check failed: {err}"),
+        }),
+    }
+}
+
+/// Download + install the latest build for this channel/mode in the
+/// background. Emits `update://download-progress` and `update://download-finished`
+/// events. Intentionally does NOT relaunch — the swapped bundle applies on the
+/// next launch; the UI prompts the user to restart.
+#[tauri::command]
+pub async fn update_install(
+    app: tauri::AppHandle,
+    channel: String,
+) -> Result<Value, BridgeError> {
+    let updater = build_updater(&app, &channel)?;
+    let Some(update) = updater.check().await.map_err(|err| BridgeError {
+        message: format!("update check failed: {err}"),
+    })?
+    else {
+        return Ok(json!({ "installed": false, "reason": "up-to-date" }));
+    };
+    let version = update.version.clone();
+    let progress_app = app.clone();
+    let mut downloaded: usize = 0;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk;
+                let _ = progress_app.emit(
+                    "update://download-progress",
+                    json!({ "downloaded": downloaded, "total": total }),
+                );
+            },
+            move || {
+                let _ = app.emit("update://download-finished", json!({}));
+            },
+        )
+        .await
+        .map_err(|err| BridgeError {
+            message: format!("update install failed: {err}"),
+        })?;
+    Ok(json!({ "installed": true, "version": version }))
 }
 
 #[tauri::command]
