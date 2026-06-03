@@ -282,6 +282,48 @@ Timeouts:
 - Long Claude session calls (`agent:start-session`, `agent:resume-session`, `agent:send-message`, `agent:fork-session`): 300 seconds.
 - Client pending invoke timeout: 30 seconds.
 
+## Connection Lifecycle (keepalive + reconnect)
+
+The transport can drop silently while the network tunnel (e.g. Tailscale) stays
+up: an idle TCP/WS flow with no bytes is reaped by NAT/firewall idle timeouts or
+host sleep, leaving a half-open socket. The protocol therefore defines an
+application-driven keepalive and a client-driven reconnect.
+
+Keepalive:
+
+- The client sends a WebSocket Ping control frame on an otherwise idle
+  connection every ~20 seconds (`KEEPALIVE_INTERVAL` in `remote_client.rs`). The
+  server's tungstenite read loop auto-responds with a Pong.
+- The purpose is twofold: keep the NAT mapping warm so the flow is not reaped,
+  and surface a dead peer promptly — a failed Ping write breaks the client loop
+  and flips `connected` to `false` instead of spinning on an undead socket.
+- This is distinct from the JSON `ping`/`pong` frames above, which remain
+  available for application-level liveness probing.
+
+Reconnect (client-owned):
+
+- The Rust client does not reconnect itself; on a dropped socket it flips
+  `connected` to `false` and drains pending invokes with "Connection closed".
+- The renderer drives recovery. Its status poll (every 3s) and the
+  `system:resume` signal detect `connected === false` for a remote profile and
+  re-dial with the original connection params using exponential backoff
+  (`RECONNECT_BACKOFF_MIN` 3s → `RECONNECT_BACKOFF_MAX` 30s; reset on success or
+  on resume). Overlapping dials are guarded, and a dial that completes after the
+  profile was made unavailable is torn down instead of resurrected.
+- On a successful re-dial the client re-attaches by reloading the host-owned
+  workspace/session state (the host keeps sessions and PTYs alive across a client
+  disconnect — see the recent-clients note in `remote_server.rs`). The user
+  returns to the same workspaces without restarting the app.
+
+Disconnected invoke behavior:
+
+- An `invoke` issued while `connected === false` fails fast with
+  `remote.invoke: not connected to remote server` before anything is sent — the
+  request is neither queued nor retried at the transport layer. UI that sends
+  user input (agent message send) must treat this as a transient disconnect:
+  preserve the user's input, avoid surfacing the raw error string, and let the
+  reconnect path restore the session.
+
 ## Current Channel Groups
 
 App metadata:

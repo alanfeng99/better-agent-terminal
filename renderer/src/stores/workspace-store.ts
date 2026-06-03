@@ -824,10 +824,15 @@ class WorkspaceStore {
     return this._savePromise
   }
 
-  async load(): Promise<void> {
+  // `preserveActiveSelection` keeps the window's current active workspace /
+  // focused terminal instead of jumping to the host's stored active. Used by
+  // the remote auto-reconnect path so re-attaching after an idle drop doesn't
+  // yank the user off the workspace they were on. Initial loads omit it so they
+  // honor the host's canonical active selection.
+  async load(options?: { preserveActiveSelection?: boolean }): Promise<void> {
     const data = await host.workspace.load()
     if (data) {
-      this.applySerializedData(data)
+      this.applySerializedData(data, options)
     }
   }
 

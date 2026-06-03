@@ -26,6 +26,13 @@ use tungstenite::Message;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(6);
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_TIMEOUT: Duration = Duration::from_millis(100);
+// Send a WebSocket Ping on an idle connection at this cadence. Without it an
+// idle TCP/WS flow over NAT/Tailscale gets silently reaped: no bytes flow, the
+// router drops the mapping, and the half-open socket is never noticed until the
+// next invoke fails with "not connected to remote server". Periodic pings keep
+// the mapping warm AND surface a dead peer promptly (the write errors → the
+// loop breaks → `connected` flips false → the renderer auto-reconnects).
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 const CLIENT_DEVICE_ID_FILE: &str = "remote-client-id.json";
 
 type RemoteWebSocket = WebSocket<StreamOwned<ClientConnection, TcpStream>>;
@@ -306,6 +313,7 @@ fn client_loop(
     compression: RemoteCompression,
 ) {
     let mut pending: HashMap<String, PendingInvoke> = HashMap::new();
+    let mut last_ping = Instant::now();
     loop {
         while let Ok(command) = rx.try_recv() {
             match command {
@@ -344,6 +352,15 @@ fn client_loop(
         }
 
         expire_pending(&mut pending);
+        // Keep the idle connection warm and detect a dead peer. A failed write
+        // here means the socket is gone; break so `connected` flips false and
+        // the client surfaces the drop (the renderer then auto-reconnects).
+        if last_ping.elapsed() >= KEEPALIVE_INTERVAL {
+            if ws.send(Message::Ping(Vec::<u8>::new().into())).is_err() {
+                break;
+            }
+            last_ping = Instant::now();
+        }
         match ws.read() {
             Ok(Message::Text(text)) if compression == RemoteCompression::None => {
                 if let Ok(frame) = decode_remote_text_frame(&text) {

@@ -98,6 +98,14 @@ function isSendMessageTimeout(message: string): boolean {
   return /timeout waiting for claude\.sendMessage/i.test(message)
 }
 
+// The remote client dropped (idle socket reaped) before this invoke reached the
+// host. The message never left this machine, so we restore the user's text and
+// let the app's background auto-reconnect re-establish the session rather than
+// surfacing the raw "remote.invoke: not connected to remote server" string.
+function isRemoteDisconnectedError(message: string): boolean {
+  return /not connected to remote server|remote\.invoke: connection closed/i.test(message)
+}
+
 function runtimeWaitingMessage(t: TFunction, meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
@@ -2473,6 +2481,22 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       setStreamingThinking('')
       setPendingPermission(null)
       setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+      if (isRemoteDisconnectedError(message)) {
+        // The remote dropped before the message left this machine. Restore the
+        // user's text so nothing is lost, drop the optimistic echo, and tell
+        // them it's reconnecting — the app re-dials automatically in the
+        // background, after which they can resend.
+        setMessages(prev => prev.filter(m => isToolCall(m) || m.id !== userMsgId))
+        if (trimmed && !inputValueRef.current.trim()) setInputValue(trimmed)
+        setMessages(prev => [...prev, {
+          id: `err-disconnect-${Date.now()}`,
+          sessionId,
+          role: 'system' as const,
+          content: 'Remote connection lost — your message was not sent and has been restored to the input box. Reconnecting automatically; please resend once the connection is back.',
+          timestamp: Date.now(),
+        }])
+        return
+      }
       if (isRemoteConnected) {
         // Real send error (not a timeout — those return early and let claude:*
         // events drive the turn) → mark the ghosted message failed.
@@ -2494,7 +2518,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         host.debug.log(`[handleSend] sync=${sync.toFixed(1)}ms invoke=${invoke.toFixed(1)}ms total=${total.toFixed(1)}ms sessionId=${sessionId} promptLen=${trimmed.length}`)
       }
     }
-  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, sendClaudeMessage])
+  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, setInputValue, sendClaudeMessage])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return

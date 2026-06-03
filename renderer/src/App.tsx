@@ -38,6 +38,12 @@ const DEFAULT_SNIPPET_WIDTH = 280
 const MIN_SNIPPET_WIDTH = 180
 const MAX_SNIPPET_WIDTH = 500
 
+// Auto-reconnect backoff bounds (ms). The status poll runs every 3s; on a
+// failed re-dial we grow the gate up to the max so a long outage doesn't hammer
+// the host, and reset to the min on success or on resume from sleep.
+const RECONNECT_BACKOFF_MIN = 3000
+const RECONNECT_BACKOFF_MAX = 30000
+
 type WindowAuthInfo = { email: string; subscriptionType?: string }
 type ProfileEntryLike = {
   id?: string
@@ -197,6 +203,13 @@ export default function App() {
   const activeRemoteProfileIdRef = useRef<string | null>(null)
   const activeProfileIsRemoteRef = useRef(false)
   const remoteUnavailableRef = useRef(false)
+  // Connection params captured on the initial remote connect so the status
+  // poll can silently re-dial after an idle drop without re-reading the
+  // profile. Null for local profiles / before the first remote connect.
+  const remoteConnParamsRef = useRef<{ host: string; port: number; token: string; fingerprint: string } | null>(null)
+  // Auto-reconnect backoff state. `inFlight` prevents overlapping dials;
+  // `nextAt` gates retries (epoch ms); `backoff` grows on failure.
+  const reconnectRef = useRef<{ inFlight: boolean; backoff: number; nextAt: number }>({ inFlight: false, backoff: RECONNECT_BACKOFF_MIN, nextAt: 0 })
 
   useEffect(() => { activeProfileIdRef.current = activeProfileId }, [activeProfileId])
   useEffect(() => { activeRemoteProfileIdRef.current = activeRemoteProfileId }, [activeRemoteProfileId])
@@ -582,6 +595,15 @@ export default function App() {
             setActiveProfileId(active.id)
             setActiveRemoteProfileId(active.remoteProfileId || 'default')
             setRemoteClientConnected(true)
+            // Remember how we connected so the status poll can silently
+            // re-dial after an idle drop without restarting the app.
+            remoteConnParamsRef.current = {
+              host: active.remoteHost,
+              port: active.remotePort || 9876,
+              token: active.remoteToken,
+              fingerprint: active.remoteFingerprint,
+            }
+            reconnectRef.current = { inFlight: false, backoff: RECONNECT_BACKOFF_MIN, nextAt: 0 }
           }
         } else if (active?.type === 'remote') {
           // Remote profile missing connection info — fall back
@@ -684,8 +706,12 @@ export default function App() {
     }
     initProfile()
 
-    // Listen for system resume from sleep/hibernate — refresh remote connection status
+    // Listen for system resume from sleep/hibernate — refresh remote connection
+    // status and clear any reconnect backoff so the status poll re-dials right
+    // away instead of waiting out a grown gate from before the machine slept.
     const unsubSystemResume = host.system.onResume(() => {
+      reconnectRef.current.nextAt = 0
+      reconnectRef.current.backoff = RECONNECT_BACKOFF_MIN
       host.remote.clientStatus().then(s => setRemoteClientConnected(s.connected))
     })
 
@@ -714,17 +740,66 @@ export default function App() {
     }
   }, [])
 
-  // Poll remote client connection status
+  // Poll remote client connection status, and silently re-dial after an idle
+  // drop. The Rust client has no auto-reconnect: once the socket dies it just
+  // flips `connected` false, so without this the only recovery was restarting
+  // the app. On a successful re-dial we reload workspaces to re-attach the
+  // host-owned sessions/workspaces (they keep running on the host).
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null
+    let disposed = false
+
+    const attemptReconnect = async () => {
+      // Only drive reconnection for a remote profile that is still wanted.
+      if (!activeProfileIsRemoteRef.current) return
+      if (remoteUnavailableRef.current) return
+      const params = remoteConnParamsRef.current
+      if (!params) return
+      const state = reconnectRef.current
+      if (state.inFlight) return
+      if (Date.now() < state.nextAt) return
+      state.inFlight = true
+      try {
+        const result = await host.remote.connect(params.host, params.port, params.token, params.fingerprint)
+        const failed = !result || (typeof result === 'object' && 'error' in (result as Record<string, unknown>))
+        if (failed) {
+          state.backoff = Math.min(state.backoff * 2, RECONNECT_BACKOFF_MAX)
+          state.nextAt = Date.now() + state.backoff
+        } else {
+          state.backoff = RECONNECT_BACKOFF_MIN
+          state.nextAt = 0
+          // The profile may have been torn down (deleted / made unavailable)
+          // while this dial was in flight — don't resurrect a zombie session.
+          if (!disposed && !remoteUnavailableRef.current && activeProfileIsRemoteRef.current) {
+            setRemoteClientConnected(true)
+            // Re-attach: pull canonical host-owned workspace/session state back,
+            // but keep the workspace the user was on (don't jump to the host's
+            // stored active selection just because the socket blipped).
+            await workspaceStore.load({ preserveActiveSelection: true }).catch(() => {})
+          } else {
+            await host.remote.disconnect().catch(() => {})
+          }
+        }
+      } catch {
+        state.backoff = Math.min(state.backoff * 2, RECONNECT_BACKOFF_MAX)
+        state.nextAt = Date.now() + state.backoff
+      } finally {
+        state.inFlight = false
+      }
+    }
+
     const check = () => {
-      host.remote.clientStatus().then(s => setRemoteClientConnected(s.connected))
+      host.remote.clientStatus().then(s => {
+        setRemoteClientConnected(s.connected)
+        if (!s.connected) void attemptReconnect()
+      })
     }
     const cancelStart = scheduleTauriStartupBackgroundWork(() => {
       check()
       interval = setInterval(check, 3000)
     })
     return () => {
+      disposed = true
       cancelStart()
       if (interval) clearInterval(interval)
     }

@@ -50,6 +50,14 @@ function formatUnknownError(error: unknown): string {
   }
 }
 
+// The remote client dropped (idle socket reaped) before this invoke reached the
+// host. The message never left this machine, so we restore the user's text and
+// let the app's background auto-reconnect re-establish the session rather than
+// surfacing the raw "remote.invoke: not connected to remote server" string.
+function isRemoteDisconnectedError(message: string): boolean {
+  return /not connected to remote server|remote\.invoke: connection closed/i.test(message)
+}
+
 function runtimeWaitingMessage(t: TFunction, meta: SessionMeta | null, isStreaming: boolean, now: number): string | null {
   if (!isStreaming || !meta?.runtimeStatus) return null
   const startedAt = typeof meta.runtimeStatusStartedAt === 'number' ? meta.runtimeStatusStartedAt : now
@@ -2529,6 +2537,22 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
       setStreamingThinking('')
       setPendingPermission(null)
       setSessionMeta(prev => clearRuntimeStatusMeta(prev))
+      if (isRemoteDisconnectedError(message)) {
+        // The remote dropped before the message left this machine. Restore the
+        // user's text so nothing is lost, drop the optimistic echo, and tell
+        // them it's reconnecting — the app re-dials automatically in the
+        // background, after which they can resend.
+        setMessages(prev => prev.filter(m => isToolCall(m) || m.id !== userMsgId))
+        if (trimmed && !inputValueRef.current.trim()) setInputValue(trimmed)
+        setMessages(prev => [...prev, {
+          id: `err-disconnect-${Date.now()}`,
+          sessionId,
+          role: 'system' as const,
+          content: 'Remote connection lost — your message was not sent and has been restored to the input box. Reconnecting automatically; please resend once the connection is back.',
+          timestamp: Date.now(),
+        }])
+        return
+      }
       if (isRemoteConnected) {
         // Send failed (invoke-error) → mark the ghosted message failed.
         setMessages(prev => prev.map(m => (!isToolCall(m) && m.id === userMsgId) ? { ...m, status: 'failed' as const } : m))
@@ -2541,7 +2565,7 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
         timestamp: Date.now(),
       }])
     }
-  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, clearPendingAutoContinue, sendClaudeMessage])
+  }, [isRemoteConnected, isStreaming, isInterrupted, sessionId, attachedImages, attachedFiles, clearInput, setInputValue, clearPendingAutoContinue, sendClaudeMessage])
 
   const handleInterrupt = useCallback(() => {
     if (!isStreaming) return
