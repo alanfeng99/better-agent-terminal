@@ -51,7 +51,8 @@ function effectiveChannel(): 'stable' | 'pre' {
 
 async function runCheck(): Promise<void> {
   const settings = settingsStore.getSettings()
-  if (settings.autoUpdateEnabled === false) return
+  // Opt-in: only auto-update when the user explicitly enabled it.
+  if (settings.autoUpdateEnabled !== true) return
   // Don't restart a check while a download is in flight or an update is staged.
   if (state.status === 'downloading' || state.status === 'ready') return
 

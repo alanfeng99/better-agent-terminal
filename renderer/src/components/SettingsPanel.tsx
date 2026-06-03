@@ -612,7 +612,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   <label>
                     <input
                       type="checkbox"
-                      checked={settings.autoUpdateEnabled !== false}
+                      checked={settings.autoUpdateEnabled === true}
                       onChange={e => settingsStore.setAutoUpdateEnabled(e.target.checked)}
                     />
                     {t('settings.autoUpdate')}

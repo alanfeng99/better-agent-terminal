@@ -283,7 +283,7 @@ export interface AppSettings {
   cxSemanticNavigationEnabled?: boolean;  // Enable optional cx semantic code navigation prompt integration
   cxBinaryPath?: string;                  // Optional explicit cx binary path
   worktreePnpmInstallEnabled?: boolean;   // Auto-install pnpm dependencies for new worktrees using a shared pnpm store
-  autoUpdateEnabled?: boolean;            // Background auto-update: check on launch and install silently (default: true)
+  autoUpdateEnabled?: boolean;            // Background auto-update: check on launch and install silently (default: false — opt-in)
   updateChannel?: 'stable' | 'pre';       // Auto-update channel; 'pre' requires debug mode (default: 'stable')
 }
 

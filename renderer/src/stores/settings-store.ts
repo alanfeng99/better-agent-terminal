@@ -47,7 +47,7 @@ const defaultSettings: AppSettings = {
   remoteServerAutoStart: false,
   remoteServerPort: 9876,
   remoteServerBindInterface: 'localhost',
-  autoUpdateEnabled: true,
+  autoUpdateEnabled: false,
   updateChannel: 'stable',
 }
 
