@@ -12,13 +12,26 @@
 // src-tauri/src/commands/update.rs (latest-{channel}-{mode}.json), and are
 // uploaded to the pinned `manifests` GitHub release.
 
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const REPO = 'tony1223/better-agent-terminal'
 const defaultArtifactsDir = resolve('artifacts')
 const defaultOutDir = resolve('manifests-out')
+
+// Separate updater bundles (.app.tar.gz / .AppImage.tar.gz) are published to the
+// pinned `manifests` release under a fixed, per-channel/mode/target name and
+// clobbered each release — keeping the versioned release free of confusing
+// download-which-one *.tar.gz assets. Installers that double as the updater
+// target (Windows .exe, bare Linux .AppImage) stay on the versioned release.
+const MANIFESTS_RELEASE_BASE = `https://github.com/${REPO}/releases/download/manifests`
+
+function updaterTarballExt(assetName) {
+  if (assetName.endsWith('.app.tar.gz')) return '.app.tar.gz'
+  if (assetName.endsWith('.AppImage.tar.gz')) return '.AppImage.tar.gz'
+  return null
+}
 
 function stripV(value) {
   const v = String(value || '').trim()
@@ -63,6 +76,8 @@ export async function generateUpdateManifests(options = {}) {
     throw new Error(`no updater-meta.json found under ${artifactsDir} — did the build stage updater artifacts?`)
   }
 
+  await mkdir(outDir, { recursive: true })
+
   // mode -> { [target]: { signature, url } }
   const byMode = new Map()
   for (const file of metaFiles) {
@@ -79,10 +94,30 @@ export async function generateUpdateManifests(options = {}) {
     if (platforms[target]) {
       throw new Error(`duplicate target ${target} for mode ${mode} (${assetName})`)
     }
-    platforms[target] = { signature, url: `${releaseBase}/${assetName}` }
+
+    const ext = updaterTarballExt(assetName)
+    let url
+    if (ext) {
+      // Separate updater bundle: it was copied next to this meta by
+      // stage-updater-artifacts. Re-stage it into the manifest output under a
+      // fixed name so the publish step uploads it to the pinned `manifests`
+      // release (clobbered every release), and point the manifest there.
+      const fixedName = `bat-updater-${channel}-${mode}-${target}${ext}`
+      const src = join(dirname(file), assetName)
+      try {
+        await copyFile(src, join(outDir, fixedName))
+      } catch (err) {
+        throw new Error(`updater bundle missing for ${target} (${mode}): expected ${src} — ${err?.message || err}`)
+      }
+      url = `${MANIFESTS_RELEASE_BASE}/${fixedName}`
+    } else {
+      // Installer that doubles as the updater target (Windows .exe, bare Linux
+      // .AppImage): it already ships on the versioned release.
+      url = `${releaseBase}/${assetName}`
+    }
+    platforms[target] = { signature, url }
   }
 
-  await mkdir(outDir, { recursive: true })
   const written = []
   for (const [mode, platforms] of byMode) {
     const manifest = { version, notes: '', pub_date: pubDate, platforms }

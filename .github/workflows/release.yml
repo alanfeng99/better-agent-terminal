@@ -500,7 +500,6 @@ jobs:
           path: |
             src-tauri/target/release/bundle/**/*.dmg
             !src-tauri/target/release/bundle/**/rw.*.dmg
-            src-tauri/target/release/bundle/**/*.app.tar.gz
 
       - name: Upload Linux artifact
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
@@ -509,14 +508,16 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.AppImage.tar.gz
 
       - name: Upload updater metadata
         if: env.BUILD_MATRIX_ENTRY == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: updater-meta-${{ matrix.artifact }}
-          path: updater-meta/updater-meta.json
+          # The whole dir: updater-meta.json plus, for mac/linux, the separate
+          # *.tar.gz updater bundle copied alongside it. generate-update-manifest
+          # republishes those tarballs to the pinned `manifests` release.
+          path: updater-meta
           if-no-files-found: error
 
   release:
@@ -554,14 +555,14 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          # Explicit patterns: ships installers + the macOS updater tarball, but
-          # NOT the updater-meta JSON sidecars (those feed manifest generation).
+          # Installers ONLY. The macOS/Linux updater bundles (*.app.tar.gz /
+          # *.AppImage.tar.gz) are published to the pinned `manifests` release
+          # under fixed names, so the versioned release page stays unambiguous
+          # for humans (just .dmg / .exe / .AppImage).
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.exe
             artifacts/**/*.AppImage
-            artifacts/**/*.app.tar.gz
-            artifacts/**/*.AppImage.tar.gz
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(env.RELEASE_TAG, '-pre') }}
@@ -590,6 +591,12 @@ jobs:
                 const p = m.platforms[k];
                 if (!p.url || !/^https:\/\//.test(p.url)) throw new Error(f + ": " + k + " bad url");
                 if (!p.signature) throw new Error(f + ": " + k + " missing signature");
+                // Updater bundles we republish to the `manifests` release must be
+                // present locally so the publish step actually uploads them.
+                if (p.url.includes("/releases/download/manifests/")) {
+                  const fname = p.url.split("/").pop();
+                  if (!fs.existsSync(dir + "/" + fname)) throw new Error(f + ": " + k + " references missing manifests asset " + fname);
+                }
               }
               console.log("✓ " + f + " (" + keys.join(", ") + ")");
             }
@@ -608,7 +615,10 @@ jobs:
       - name: Publish update manifests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload manifests manifests-out/*.json --clobber
+        # Uploads the latest-*.json manifests AND the fixed-name updater bundles
+        # (*.app.tar.gz / *.AppImage.tar.gz). --clobber overwrites the previous
+        # release's bundles so the pinned release never accumulates old versions.
+        run: gh release upload manifests manifests-out/* --clobber
 
       - name: Update Homebrew tap
         if: ${{ !contains(env.RELEASE_TAG, '-pre') }}

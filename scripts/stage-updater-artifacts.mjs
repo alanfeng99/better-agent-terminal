@@ -13,7 +13,7 @@
 // The generate-update-manifest.mjs step later merges every entry's meta into
 // the per-channel/per-mode latest-*.json manifests.
 
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -89,8 +89,11 @@ async function readSignature(sigPath) {
   return trimmed
 }
 
-// Resolve { assetName, signature } per platform. `assetName` is the basename of
-// the GitHub release asset the updater downloads for this target.
+// Resolve { assetName, signature, sourcePath } per platform. `assetName` is the
+// basename the updater downloads for this target; `sourcePath` is the resolved
+// updater file on disk (so separate *.tar.gz bundles can be copied next to the
+// meta and published to the pinned `manifests` release instead of the versioned
+// release).
 async function resolvePlatform({ platform, files }) {
   if (platform === 'mac') {
     const tarball = pickOne(files, f => f.endsWith('.app.tar.gz'), 'macOS .app.tar.gz updater bundle')
@@ -100,13 +103,13 @@ async function resolvePlatform({ platform, files }) {
     const assetName = `${base}.app.tar.gz`
     const renamed = join(dirname(tarball), assetName)
     if (renamed !== tarball) await rename(tarball, renamed)
-    return { assetName, signature: await readSignature(sig) }
+    return { assetName, signature: await readSignature(sig), sourcePath: renamed }
   }
 
   if (platform === 'win') {
     const sig = pickOne(files, f => f.endsWith('.exe.sig'), 'Windows -setup.exe.sig')
     const installer = pickOne(files, f => f.endsWith('.exe'), 'normalized -setup.exe')
-    return { assetName: basename(installer), signature: await readSignature(sig) }
+    return { assetName: basename(installer), signature: await readSignature(sig), sourcePath: installer }
   }
 
   if (platform === 'linux') {
@@ -120,11 +123,11 @@ async function resolvePlatform({ platform, files }) {
       const assetName = `${base}.AppImage.tar.gz`
       const renamed = join(dirname(tarball), assetName)
       if (renamed !== tarball) await rename(tarball, renamed)
-      return { assetName, signature: await readSignature(tarSig) }
+      return { assetName, signature: await readSignature(tarSig), sourcePath: renamed }
     }
     // Bare form: the AppImage itself is the updater target.
     const sig = pickOne(files, f => f.endsWith('.AppImage.sig'), '.AppImage.sig')
-    return { assetName: basename(appImage), signature: await readSignature(sig) }
+    return { assetName: basename(appImage), signature: await readSignature(sig), sourcePath: appImage }
   }
 
   throw new Error(`unsupported updater platform: ${platform}`)
@@ -143,10 +146,19 @@ export async function stageUpdaterArtifacts(options = {}) {
 
   const target = targetTripleFor(platform, arch)
   const files = await listFiles(bundleDir)
-  const { assetName, signature } = await resolvePlatform({ platform, files })
+  const { assetName, signature, sourcePath } = await resolvePlatform({ platform, files })
 
   const meta = { target, mode, version, assetName, signature }
   await mkdir(outDir, { recursive: true })
+  // Separate updater bundles (*.tar.gz) are NOT shipped on the versioned release
+  // — they'd confuse users about which file to download. Copy them next to the
+  // meta so they travel in the updater-meta artifact, and generate-update-manifest
+  // later publishes them to the pinned `manifests` release under a fixed name.
+  // Installers that double as the updater target (.exe, bare .AppImage) already
+  // live on the versioned release, so they are not copied here.
+  if (assetName.endsWith('.tar.gz')) {
+    await copyFile(sourcePath, join(outDir, assetName))
+  }
   const metaPath = join(outDir, 'updater-meta.json')
   await writeFile(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8')
   return { meta, metaPath }
