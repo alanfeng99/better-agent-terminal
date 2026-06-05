@@ -395,6 +395,26 @@ export const TerminalPanel = memo(function TerminalPanel({
           terminal.refresh(0, terminal.rows - 1)
           terminal.focus()
 
+          // Full-screen TUIs (Claude/Codex/etc.) on the alternate buffer can return
+          // from display:none with stale geometry: when the panel is re-shown at the
+          // same size, FitAddon.fit() and xterm's resize() both no-op, so neither the
+          // renderer nor the PTY (SIGWINCH) is nudged and the app never repaints. This
+          // surfaces as vertical jitter until the user manually resizes the window.
+          // Replicate that manual resize with a one-row nudge so the TUI repaints
+          // cleanly. Plain shells stay on the normal buffer and are left untouched. #114
+          if (ptyReadyRef.current && terminal.buffer.active.type === 'alternate') {
+            const { cols, rows } = terminal
+            if (cols > 1 && rows > 1) {
+              dlog(`[resize] alt-buffer reshow nudge cols=${cols} rows=${rows} terminal=${terminalId}`)
+              terminal.resize(cols, rows - 1)
+              host.pty.resize(terminalId, cols, rows - 1)
+              requestAnimationFrame(() => {
+                terminal.resize(cols, rows)
+                host.pty.resize(terminalId, cols, rows)
+              })
+            }
+          }
+
           // Execute agent command on first focus for code-agent terminals
           if (!hasBeenFocusedRef.current && terminalType === 'code-agent') {
             hasBeenFocusedRef.current = true
