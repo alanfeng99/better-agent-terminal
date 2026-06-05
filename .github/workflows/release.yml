@@ -205,12 +205,16 @@ jobs:
         if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
         run: |
           sudo apt-get update
+          # xdg-utils provides /usr/bin/xdg-open, which Tauri requires to bundle
+          # the AppImage. It is preinstalled on the x64 ubuntu image but NOT on
+          # the leaner ubuntu-*-arm hosted runner, so install it explicitly here.
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            xdg-utils
           if apt-cache show libfuse2t64 >/dev/null 2>&1; then
             sudo apt-get install -y libfuse2t64
           else
