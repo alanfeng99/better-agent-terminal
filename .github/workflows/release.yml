@@ -142,27 +142,26 @@ jobs:
             bundle_mode: all-in-one
             asset_mode: ''
             prerelease: false
-          - os: ubuntu-22.04-arm
-            platform: linux
-            arch: arm64
-            artifact: release-linux-arm64
-            release_exts: '.AppImage'
-            bundle: appimage
-            bundle_mode: all-in-one
-            asset_mode: ''
-            # New platform: also build on -pre tags so it gets validated before
-            # riding along on a stable release.
-            prerelease: true
-            # Linux arm64 AppImage bundling (linuxdeploy gtk plugin on aarch64) is
-            # still being stabilized. Allow this leg to fail WITHOUT blocking the
-            # release of the proven platforms — otherwise one arm64 hiccup skips
-            # the whole `release` job and nothing ships. See issue #113.
-            allow_failure: true
+          # TEMPORARILY DISABLED (#113): the Linux arm64 AppImage leg fails in
+          # linuxdeploy's gtk plugin on aarch64 ("subprocess failed (exit code 2)").
+          # Because `release` needs the whole `build` matrix, one failing leg skips
+          # the release for ALL platforms — that is why v3.1.13/14/15 published
+          # nothing. continue-on-error does NOT exempt a leg from `needs` gating,
+          # so until the aarch64 bundling is diagnosed (needs verbose linuxdeploy
+          # logs, validated on a -pre tag) the proven platforms ship without it.
+          # The runtime *-bin deps below are kept so re-enabling is one step away.
+          # - os: ubuntu-22.04-arm
+          #   platform: linux
+          #   arch: arm64
+          #   artifact: release-linux-arm64
+          #   release_exts: '.AppImage'
+          #   bundle: appimage
+          #   bundle_mode: all-in-one
+          #   asset_mode: ''
+          #   prerelease: true
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
-    # Per-leg opt-in (only arm64 sets allow_failure); everything else stays required.
-    continue-on-error: ${{ matrix.allow_failure || false }}
     env:
       BUILD_MATRIX_ENTRY: ${{ !contains(inputs.release_tag, '-pre') || matrix.prerelease }}
 
