@@ -757,6 +757,13 @@ function createTauriHost(): BatAppAPI {
       accountList: () => getInvoke()<unknown>('codex_account_list'),
       accountSwitch: (codexHome: string) =>
         getInvoke()<unknown>('codex_account_switch', { codexHome }),
+      // Tier 2 unified-account model (opt-in shared sessions).
+      unifiedStatus: () => getInvoke()<unknown>('codex_unified_status'),
+      unifiedMigrate: () => getInvoke()<unknown>('codex_unified_migrate'),
+      accountCaptureCurrent: (label?: string) =>
+        getInvoke()<unknown>('codex_account_capture_current', { label }),
+      accountRemove: (accountId: string) =>
+        getInvoke()<unknown>('codex_account_remove_unified', { accountId }),
     },
     git: {
       // Read-only git wrappers — see src-tauri/src/commands/git.rs.

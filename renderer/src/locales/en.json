@@ -76,6 +76,10 @@
     "defaultClaudeEffortHint": "Claude effort used for new Claude Agent sessions. Higher effort = more thorough but slower.",
     "defaultCodexEffort": "Default Codex Thinking Mode",
     "defaultCodexEffortHint": "Codex effort used for new Codex Agent sessions.",
+    "codexUnifiedAccounts": "Share Codex sessions across accounts",
+    "codexUnifiedAccountsHint": "On by default. Runs all Codex accounts from one ~/.codex so they share the same session list and can continue each other's work; switching swaps only the account's auth/memory. Existing .codex-iso-* homes are copied (migrated automatically on first launch), never deleted. Uncheck to go back to separate per-account homes.",
+    "codexUnifiedMigrated": "Enabled. Registered {{accounts}} account(s); merged {{sessions}} session(s) into the shared home.",
+    "codexUnifiedAlreadyMigrated": "Enabled. Accounts were already migrated.",
     "autoCompactWindow": "Auto-Compact Window",
     "autoCompactWindowHint": "Token count threshold for auto-compacting context. Leave empty to use SDK default.",
     "perTerminalHistory": "Per-Terminal Shell History",
@@ -281,7 +285,10 @@
     "terminal": "Terminal",
     "files": "Files",
     "git": "Git",
-    "github": "GitHub"
+    "github": "GitHub",
+    "accountLogin": "Login",
+    "accountAdd": "Add account…",
+    "accountAddCurrent": "Add current account"
   },
 
   "github": {

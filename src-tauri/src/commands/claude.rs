@@ -3379,6 +3379,46 @@ pub async fn codex_account_switch(
         .map_err(|message| BridgeError { message })
 }
 
+#[tauri::command]
+pub async fn codex_unified_status(
+    app: AppHandle,
+    codex: State<'_, CodexAppServerState>,
+) -> Result<Value, BridgeError> {
+    Ok(codex.unified_status(&app))
+}
+
+#[tauri::command]
+pub async fn codex_unified_migrate(
+    app: AppHandle,
+    codex: State<'_, CodexAppServerState>,
+) -> Result<Value, BridgeError> {
+    codex
+        .unified_migrate(&app)
+        .map_err(|message| BridgeError { message })
+}
+
+#[tauri::command]
+pub async fn codex_account_capture_current(
+    app: AppHandle,
+    codex: State<'_, CodexAppServerState>,
+    label: Option<String>,
+) -> Result<Value, BridgeError> {
+    codex
+        .account_capture_current(&app, label)
+        .map_err(|message| BridgeError { message })
+}
+
+#[tauri::command]
+pub async fn codex_account_remove_unified(
+    app: AppHandle,
+    codex: State<'_, CodexAppServerState>,
+    account_id: String,
+) -> Result<Value, BridgeError> {
+    codex
+        .account_remove_unified(&app, account_id)
+        .map_err(|message| BridgeError { message })
+}
+
 // --- read-only metadata ---------------------------------------------------
 
 #[tauri::command]

@@ -76,6 +76,10 @@
     "defaultClaudeEffortHint": "新 Claude Agent 對話使用的 effort。越高越仔細但越慢。",
     "defaultCodexEffort": "預設 Codex Thinking 模式",
     "defaultCodexEffortHint": "新 Codex Agent 對話使用的 effort。",
+    "codexUnifiedAccounts": "跨帳號共用 Codex sessions",
+    "codexUnifiedAccountsHint": "預設開啟。讓所有 Codex 帳號共用同一個 ~/.codex，因此看到同一批 sessions、可以接續彼此的工作；切帳號時只會替換該帳號的 auth/memory。原本的 .codex-iso-* 目錄會被複製（首次啟動自動遷移），不會刪除。取消勾選可改回各自獨立的帳號目錄。",
+    "codexUnifiedMigrated": "已啟用。登記了 {{accounts}} 個帳號；合併了 {{sessions}} 個 session 到共用目錄。",
+    "codexUnifiedAlreadyMigrated": "已啟用。帳號先前已完成遷移。",
     "autoCompactWindow": "自動壓縮視窗大小",
     "autoCompactWindowHint": "觸發自動壓縮上下文的 token 數量閾值。留空則使用 SDK 預設。",
     "perTerminalHistory": "獨立終端機指令歷史",
@@ -281,7 +285,10 @@
     "terminal": "終端",
     "files": "檔案",
     "git": "Git",
-    "github": "GitHub"
+    "github": "GitHub",
+    "accountLogin": "登入",
+    "accountAdd": "新增帳號…",
+    "accountAddCurrent": "加入目前帳號"
   },
 
   "github": {

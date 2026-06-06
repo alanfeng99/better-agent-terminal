@@ -308,6 +308,14 @@ class SettingsStore {
     this.save()
   }
 
+  setCodexUnifiedAccounts(enabled: boolean): void {
+    // Store the explicit boolean: unified mode defaults ON, so `undefined`/absent
+    // means ON — disabling must persist an explicit `false`.
+    this.settings = { ...this.settings, codexUnifiedAccounts: enabled }
+    this.notify()
+    this.save()
+  }
+
   setAutoCompactWindow(value: number | undefined): void {
     this.settings = { ...this.settings, autoCompactWindow: value ? Math.max(200000, value) : undefined }
     this.notify()

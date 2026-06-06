@@ -331,7 +331,8 @@
   cursor: default;
 }
 
-.workspace-account-chip-codex {
+.workspace-account-chip-codex,
+.workspace-account-chip-claude {
   cursor: pointer;
 }
 
@@ -353,6 +354,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-account-version {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .workspace-account-menu {
@@ -408,6 +416,21 @@
 }
 
 .workspace-account-menu-path {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.workspace-account-menu-action .workspace-account-menu-label {
+  color: var(--accent-color, #3b8eea);
+}
+
+.workspace-account-menu-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--border-color);
   color: var(--text-secondary);
   font-size: 10px;
 }

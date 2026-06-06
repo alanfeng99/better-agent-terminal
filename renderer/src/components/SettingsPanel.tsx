@@ -116,6 +116,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
 
   const [cxStatus, setCxStatus] = useState<CxDetectionStatus | null>(null)
   const [cxDetecting, setCxDetecting] = useState(false)
+  const [codexUnifiedInfo, setCodexUnifiedInfo] = useState<string | null>(null)
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
   const [runtimeLoading, setRuntimeLoading] = useState(false)
   const [runtimeInstallingTool, setRuntimeInstallingTool] = useState<RuntimeTool | null>(null)
@@ -917,6 +918,39 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     ))}
                   </select>
                   <p className="settings-hint">{t('settings.defaultCodexEffortHint')}</p>
+                </div>
+                <div className="settings-group checkbox-group">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={settings.codexUnifiedAccounts !== false}
+                      onChange={e => {
+                        const enabled = e.target.checked
+                        settingsStore.setCodexUnifiedAccounts(enabled)
+                        if (!enabled) { setCodexUnifiedInfo(null); return }
+                        void (async () => {
+                          try {
+                            const report = await host.codex.unifiedMigrate() as {
+                              accountsRegistered?: number
+                              sessionsCopied?: number
+                              alreadyMigrated?: boolean
+                            }
+                            setCodexUnifiedInfo(report?.alreadyMigrated
+                              ? t('settings.codexUnifiedAlreadyMigrated')
+                              : t('settings.codexUnifiedMigrated', {
+                                  accounts: report?.accountsRegistered ?? 0,
+                                  sessions: report?.sessionsCopied ?? 0,
+                                }))
+                          } catch (error) {
+                            setCodexUnifiedInfo(error instanceof Error ? error.message : String(error))
+                          }
+                        })()
+                      }}
+                    />
+                    {t('settings.codexUnifiedAccounts')}
+                  </label>
+                  <p className="settings-hint">{t('settings.codexUnifiedAccountsHint')}</p>
+                  {codexUnifiedInfo && <p className="settings-hint">{codexUnifiedInfo}</p>}
                 </div>
               </div>
 

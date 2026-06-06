@@ -73,6 +73,10 @@
     "defaultClaudeEffortHint": "新 Claude Agent 对话使用的 effort。越高越仔细但越慢。",
     "defaultCodexEffort": "默认 Codex Thinking 模式",
     "defaultCodexEffortHint": "新 Codex Agent 对话使用的 effort。",
+    "codexUnifiedAccounts": "跨账号共用 Codex sessions",
+    "codexUnifiedAccountsHint": "默认开启。让所有 Codex 账号共用同一个 ~/.codex，因此看到同一批 sessions、可以接续彼此的工作；切账号时只会替换该账号的 auth/memory。原本的 .codex-iso-* 目录会被复制（首次启动自动迁移），不会删除。取消勾选可改回各自独立的账号目录。",
+    "codexUnifiedMigrated": "已启用。登记了 {{accounts}} 个账号；合并了 {{sessions}} 个 session 到共用目录。",
+    "codexUnifiedAlreadyMigrated": "已启用。账号先前已完成迁移。",
     "autoCompactWindow": "自动压缩窗口大小",
     "autoCompactWindowHint": "触发自动压缩上下文的 token 数量阈值。留空则使用 SDK 默认。",
     "perTerminalHistory": "独立终端指令历史",
@@ -271,7 +275,10 @@
     "terminal": "终端",
     "files": "文件",
     "git": "Git",
-    "github": "GitHub"
+    "github": "GitHub",
+    "accountLogin": "登录",
+    "accountAdd": "添加账号…",
+    "accountAddCurrent": "加入当前账号"
   },
 
   "github": {

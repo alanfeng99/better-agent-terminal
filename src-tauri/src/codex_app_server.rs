@@ -6,6 +6,7 @@
 // consumed by the renderer.
 
 use crate::app_data;
+use crate::codex_account_store;
 use crate::codex_auth;
 use crate::commands::app as app_cmd;
 use crate::event_hub::publish_runtime_event;
@@ -168,6 +169,9 @@ struct CodexInner {
     connection: Mutex<Option<Arc<CodexConnection>>>,
     sessions: Mutex<HashMap<String, CodexSession>>,
     thread_to_session: Mutex<HashMap<String, String>>,
+    // Serializes unified-account identity-bundle file operations (switch /
+    // migrate / capture / remove) so concurrent windows can't interleave swaps.
+    unified_swap_lock: Mutex<()>,
 }
 
 #[derive(Clone, Default)]
@@ -599,13 +603,75 @@ fn write_codex_account_state(app: &AppHandle, state: &CodexAccountState) -> Resu
     .map_err(|err| format!("could not write Codex account state: {err}"))
 }
 
+// --- Tier 2 unified-account gate ------------------------------------------
+//
+// The unified model is opt-in via settings.json. When OFF, every code path
+// below falls through to the verbatim legacy (per-CODEX_HOME) behavior.
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnifiedSettingsProbe {
+    // `None` (absent) means "use the default" — unified mode is ON by default;
+    // it is only disabled when the user explicitly sets it to `false`.
+    #[serde(default)]
+    codex_unified_accounts: Option<bool>,
+    #[serde(default)]
+    codex_shared_home: Option<String>,
+}
+
+fn read_unified_settings(app: &AppHandle) -> UnifiedSettingsProbe {
+    let Some(dir) = app_data::app_data_dir_opt(app) else {
+        return UnifiedSettingsProbe::default();
+    };
+    let Ok(raw) = fs::read_to_string(dir.join("settings.json")) else {
+        return UnifiedSettingsProbe::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+pub(crate) fn codex_unified_enabled(app: &AppHandle) -> bool {
+    read_unified_settings(app)
+        .codex_unified_accounts
+        .unwrap_or(true)
+}
+
+/// The single runtime CODEX_HOME used in unified mode. Defaults to `~/.codex`
+/// (mirrors Claude using the real `~/.claude`); overridable via `codexSharedHome`.
+fn shared_home(app: &AppHandle) -> Option<PathBuf> {
+    let probe = read_unified_settings(app);
+    if let Some(custom) = probe.codex_shared_home.filter(|s| !s.trim().is_empty()) {
+        let path = PathBuf::from(custom.trim());
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+    default_codex_home(app)
+}
+
 pub(crate) fn active_codex_home(app: &AppHandle) -> Option<PathBuf> {
+    if codex_unified_enabled(app) {
+        return shared_home(app);
+    }
     read_codex_account_state(app)
         .active_codex_home
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| default_codex_home(app))
 }
+
+/// Persist the live identity in the shared home back to the active account's
+/// store on app exit (captures token refresh / new memory). No-op when the
+/// unified model is OFF. Best-effort — never blocks shutdown.
+pub fn snapshot_active_identity_on_exit(app: &AppHandle) {
+    if !codex_unified_enabled(app) {
+        return;
+    }
+    let (Some(app_data), Some(shared)) = (app_data::app_data_dir_opt(app), shared_home(app)) else {
+        return;
+    };
+    codex_account_store::snapshot_active_for_exit(&app_data, &shared);
+}
+
 
 fn codex_home_label(path: &Path) -> String {
     path.file_name()
@@ -616,33 +682,11 @@ fn codex_home_label(path: &Path) -> String {
 }
 
 fn codex_auth_summary(codex_home: &Path) -> (Option<String>, Option<String>, bool) {
-    let raw = fs::read_to_string(codex_home.join("auth.json")).ok();
-    let Some(raw) = raw else {
-        return (None, None, false);
-    };
-    let parsed = serde_json::from_str::<Value>(&raw).ok();
-    let email = parsed
-        .as_ref()
-        .and_then(|value| {
-            value
-                .get("email")
-                .and_then(Value::as_str)
-                .or_else(|| value.pointer("/profile/email").and_then(Value::as_str))
-                .or_else(|| value.pointer("/account/email").and_then(Value::as_str))
-                .or_else(|| value.pointer("/tokens/email").and_then(Value::as_str))
-        })
-        .map(str::to_string);
-    let account_id = parsed
-        .as_ref()
-        .and_then(|value| {
-            value
-                .get("account_id")
-                .and_then(Value::as_str)
-                .or_else(|| value.pointer("/tokens/account_id").and_then(Value::as_str))
-                .or_else(|| value.pointer("/account/id").and_then(Value::as_str))
-        })
-        .map(str::to_string);
-    (email, account_id, true)
+    // Authenticated = an auth.json exists/readable. Email/account_id parsing
+    // (including the id_token JWT fallback) is shared with the account store.
+    let authenticated = fs::read_to_string(codex_home.join("auth.json")).is_ok();
+    let (account_id, email) = codex_account_store::read_auth_identity(codex_home);
+    (email, account_id, authenticated)
 }
 
 fn codex_account_info_value(app: &AppHandle, codex_home: PathBuf, active: bool) -> Value {
@@ -659,6 +703,26 @@ fn codex_account_info_value(app: &AppHandle, codex_home: PathBuf, active: bool) 
         "authenticated": authenticated,
         "active": active,
         "isDefault": default_codex_home(app).as_deref() == Some(codex_home.as_path()),
+    })
+}
+
+fn unified_account_info_value(
+    account: &codex_account_store::CodexUnifiedAccount,
+    shared: &Path,
+    active: bool,
+) -> Value {
+    json!({
+        "id": account.id,
+        "label": account.label,
+        "email": account.email,
+        "accountId": account.account_id,
+        // All unified accounts share one runtime home; keep the key so the
+        // renderer's existing `activeCodexHome` fallback still resolves.
+        "codexHome": shared.to_string_lossy(),
+        "authenticated": true,
+        "active": active,
+        "isDefault": false,
+        "unified": true,
     })
 }
 
@@ -1820,6 +1884,9 @@ impl CodexAppServerState {
     }
 
     pub fn account_info(&self, app: &AppHandle) -> Value {
+        if codex_unified_enabled(app) {
+            return self.unified_account_info(app);
+        }
         active_codex_home(app)
             .map(|home| codex_account_info_value(app, home, true))
             .unwrap_or_else(|| {
@@ -1832,6 +1899,9 @@ impl CodexAppServerState {
     }
 
     pub fn account_list(&self, app: &AppHandle) -> Value {
+        if codex_unified_enabled(app) {
+            return self.unified_account_list(app);
+        }
         let active = active_codex_home(app);
         let accounts = discover_codex_homes(app)
             .into_iter()
@@ -1846,7 +1916,205 @@ impl CodexAppServerState {
         })
     }
 
+    // --- Tier 2 unified-account operations ---------------------------------
+
+    fn unified_account_info(&self, app: &AppHandle) -> Value {
+        let Some(app_data) = app_data::app_data_dir_opt(app) else {
+            return json!({ "label": "Codex", "authenticated": false, "active": true, "unified": true });
+        };
+        let shared = shared_home(app).unwrap_or_else(|| app_data.clone());
+        let index = codex_account_store::read_index(&app_data);
+        let active = index
+            .active_account_id
+            .as_ref()
+            .and_then(|id| index.accounts.iter().find(|a| &a.id == id));
+        match active {
+            Some(account) => unified_account_info_value(account, &shared, true),
+            None => json!({ "label": "Codex", "authenticated": false, "active": true, "unified": true }),
+        }
+    }
+
+    fn unified_account_list(&self, app: &AppHandle) -> Value {
+        let Some(app_data) = app_data::app_data_dir_opt(app) else {
+            return json!({ "accounts": [], "unified": true });
+        };
+        let shared = shared_home(app).unwrap_or_else(|| app_data.clone());
+        let index = codex_account_store::read_index(&app_data);
+        let accounts = index
+            .accounts
+            .iter()
+            .map(|account| {
+                let active = index.active_account_id.as_deref() == Some(account.id.as_str());
+                unified_account_info_value(account, &shared, active)
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "accounts": accounts,
+            "activeCodexHome": shared.to_string_lossy(),
+            "activeAccountId": index.active_account_id,
+            "unified": true,
+        })
+    }
+
+    fn any_session_running(&self) -> bool {
+        self.inner
+            .sessions
+            .lock()
+            .map(|sessions| sessions.values().any(|session| session.is_running))
+            .unwrap_or(false)
+    }
+
+    fn drop_connection(&self) {
+        if let Ok(mut guard) = self.inner.connection.lock() {
+            let old = guard.take();
+            drop(old);
+        }
+    }
+
+    fn switch_unified(&self, app: &AppHandle, selector: String) -> Result<Value, String> {
+        let _swap = self
+            .inner
+            .unified_swap_lock
+            .lock()
+            .map_err(|_| "codex swap lock poisoned".to_string())?;
+        let app_data = app_data::app_data_dir_opt(app)
+            .ok_or_else(|| "could not resolve app data dir".to_string())?;
+        let shared =
+            shared_home(app).ok_or_else(|| "could not resolve shared Codex home".to_string())?;
+        let index = codex_account_store::read_index(&app_data);
+        let id = codex_account_store::resolve_selector(&index, selector.trim())
+            .ok_or_else(|| format!("unknown Codex account: {selector}"))?;
+
+        if index.active_account_id.as_deref() == Some(id.as_str()) {
+            let account = index.accounts.iter().find(|a| a.id == id);
+            return Ok(json!({
+                "success": true,
+                "account": account.map(|a| unified_account_info_value(a, &shared, true)),
+            }));
+        }
+
+        if self.any_session_running() {
+            return Err(
+                "Cannot switch Codex account while a turn is running. Stop or wait for the active turn first."
+                    .to_string(),
+            );
+        }
+
+        let account = codex_account_store::switch_unified_account(&app_data, &shared, &id)
+            .map_err(|err| err.to_string())?;
+        // Drop the connection so the next request lazily respawns the app-server
+        // with the swapped identity. Keep thread_to_session (the shared sessions
+        // store is unchanged) and do NOT mark sessions "starting".
+        self.drop_connection();
+        app_cmd::log_tauri(app, &format!("[codex-account] unified switch -> {id}"));
+        Ok(json!({
+            "success": true,
+            "account": unified_account_info_value(&account, &shared, true),
+        }))
+    }
+
+    /// Startup hook: recover from an interrupted swap, then auto-migrate legacy
+    /// multi-HOME Codex accounts into the unified model on first run (unified is
+    /// the default). Copy-only and idempotent. Intended to run off the UI thread.
+    pub fn init_unified_on_startup(&self, app: &AppHandle) {
+        if !codex_unified_enabled(app) {
+            return;
+        }
+        let (Some(app_data), Some(shared)) =
+            (app_data::app_data_dir_opt(app), shared_home(app))
+        else {
+            return;
+        };
+        codex_account_store::recover_shared_home(&app_data, &shared);
+        if codex_account_store::read_index(&app_data).migrated {
+            return;
+        }
+        if let Err(err) = self.unified_migrate(app) {
+            app_cmd::log_tauri(app, &format!("[codex-account] startup auto-migrate failed: {err}"));
+        }
+    }
+
+    pub fn unified_status(&self, app: &AppHandle) -> Value {
+        let enabled = codex_unified_enabled(app);
+        let index = app_data::app_data_dir_opt(app)
+            .map(|dir| codex_account_store::read_index(&dir))
+            .unwrap_or_default();
+        json!({
+            "enabled": enabled,
+            "migrated": index.migrated,
+            "activeAccountId": index.active_account_id,
+            "accountCount": index.accounts.len(),
+        })
+    }
+
+    pub fn unified_migrate(&self, app: &AppHandle) -> Result<Value, String> {
+        let _swap = self
+            .inner
+            .unified_swap_lock
+            .lock()
+            .map_err(|_| "codex swap lock poisoned".to_string())?;
+        let app_data = app_data::app_data_dir_opt(app)
+            .ok_or_else(|| "could not resolve app data dir".to_string())?;
+        let shared =
+            shared_home(app).ok_or_else(|| "could not resolve shared Codex home".to_string())?;
+        let homes = discover_codex_homes(app);
+        // Prefer the account the user was just on (legacy OFF-mode active home).
+        let prefer = read_codex_account_state(app)
+            .active_codex_home
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| default_codex_home(app));
+        let report =
+            codex_account_store::migrate_from_homes(&app_data, &shared, &homes, prefer.as_deref())
+                .map_err(|err| err.to_string())?;
+        self.drop_connection();
+        serde_json::to_value(&report).map_err(|err| err.to_string())
+    }
+
+    pub fn account_capture_current(
+        &self,
+        app: &AppHandle,
+        label: Option<String>,
+    ) -> Result<Value, String> {
+        let _swap = self
+            .inner
+            .unified_swap_lock
+            .lock()
+            .map_err(|_| "codex swap lock poisoned".to_string())?;
+        let app_data = app_data::app_data_dir_opt(app)
+            .ok_or_else(|| "could not resolve app data dir".to_string())?;
+        let shared =
+            shared_home(app).ok_or_else(|| "could not resolve shared Codex home".to_string())?;
+        let account = codex_account_store::capture_current(&app_data, &shared, label)
+            .map_err(|err| err.to_string())?;
+        Ok(json!({
+            "success": true,
+            "account": unified_account_info_value(&account, &shared, true),
+        }))
+    }
+
+    pub fn account_remove_unified(&self, app: &AppHandle, account_id: String) -> Result<Value, String> {
+        let _swap = self
+            .inner
+            .unified_swap_lock
+            .lock()
+            .map_err(|_| "codex swap lock poisoned".to_string())?;
+        let app_data = app_data::app_data_dir_opt(app)
+            .ok_or_else(|| "could not resolve app data dir".to_string())?;
+        let shared =
+            shared_home(app).ok_or_else(|| "could not resolve shared Codex home".to_string())?;
+        let removed = codex_account_store::remove_account(&app_data, &shared, account_id.trim())
+            .map_err(|err| err.to_string())?;
+        if removed {
+            self.drop_connection();
+        }
+        Ok(json!({ "success": removed }))
+    }
+
     pub fn switch_account(&self, app: &AppHandle, codex_home: String) -> Result<Value, String> {
+        if codex_unified_enabled(app) {
+            return self.switch_unified(app, codex_home);
+        }
         let trimmed = codex_home.trim();
         if trimmed.is_empty() {
             return Err("Codex home path is required".to_string());

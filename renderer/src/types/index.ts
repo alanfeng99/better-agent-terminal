@@ -266,6 +266,8 @@ export interface AppSettings {
   defaultCodexModelCustom?: boolean;   // Codex 模型欄位是否使用自訂輸入模式
   defaultEffort?: ClaudeEffortMode;  // Claude 預設 effort/mode
   defaultCodexEffort?: CodexEffortLevel;  // Codex 預設 effort level
+  codexUnifiedAccounts?: boolean;  // Tier 2: share one CODEX_HOME so Codex accounts see the same sessions (opt-in, default off)
+  codexSharedHome?: string;        // Optional override for the unified runtime CODEX_HOME (default ~/.codex)
   showDockBadge?: boolean;               // Dock 圖示顯示待處理數量
   notifyOnComplete?: boolean;           // Agent 完成時發送系統通知
   notifySound?: boolean;               // 通知時播放聲音

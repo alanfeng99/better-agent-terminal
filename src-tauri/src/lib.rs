@@ -8,6 +8,7 @@
 mod account_store;
 mod app_data;
 mod app_menu;
+mod codex_account_store;
 mod codex_app_server;
 mod codex_auth;
 mod commands;
@@ -93,9 +94,16 @@ pub fn run_headless_server_cli() -> i32 {
 
 pub fn run() {
     let context = app_context();
-    app_builder(false)
-        .run(context)
-        .expect("error while running better-agent-terminal");
+    let app = app_builder(false)
+        .build(context)
+        .expect("error while building better-agent-terminal");
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            // Capture refreshed Codex tokens / memory back to the active
+            // account's store before exit (no-op unless unified mode is ON).
+            codex_app_server::snapshot_active_identity_on_exit(app_handle);
+        }
+    });
 }
 
 fn app_context() -> tauri::Context<tauri::Wry> {
@@ -125,6 +133,18 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
         .manage(sidecar::SidecarState::new())
         .setup(move |app| {
             if !headless {
+                // Tier 2 is the default: recover from an interrupted swap and
+                // auto-migrate legacy multi-HOME Codex accounts into the unified
+                // model on first run. Runs off the UI thread (copy-only, idempotent;
+                // no-op when the user has explicitly disabled unified mode).
+                {
+                    let codex_state = app
+                        .state::<codex_app_server::CodexAppServerState>()
+                        .inner()
+                        .clone();
+                    let handle = app.handle().clone();
+                    std::thread::spawn(move || codex_state.init_unified_on_startup(&handle));
+                }
                 if let Some(window) = app.get_webview_window("main") {
                     app_cmd::attach_window_lifecycle(&window);
                 }
@@ -273,6 +293,10 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
             claude_cmd::codex_account_info,
             claude_cmd::codex_account_list,
             claude_cmd::codex_account_switch,
+            claude_cmd::codex_unified_status,
+            claude_cmd::codex_unified_migrate,
+            claude_cmd::codex_account_capture_current,
+            claude_cmd::codex_account_remove_unified,
             claude_cmd::claude_get_cli_path,
             claude_cmd::claude_prepare_cli_session,
             claude_cmd::claude_list_sessions,
