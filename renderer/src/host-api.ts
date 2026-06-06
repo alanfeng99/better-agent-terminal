@@ -1177,6 +1177,18 @@ function createTauriHost(): BatAppAPI {
         listenAdapter<unknown>('claude-channel:status', callback),
       onTurnEnd: (callback: (payload: unknown) => void) =>
         listenAdapter<unknown>('claude-channel:turn-end', callback),
+      onAssistant: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:assistant', callback),
+      onToolUse: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:tool-use', callback),
+      onToolResult: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:tool-result', callback),
+      onThinking: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:thinking', callback),
+      onUsage: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:usage', callback),
+      onResult: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-channel:result', callback),
     },
     worktree: new Proxy({}, {
       // worktree.* — agent-tied. Sidecar handlers mirror the host

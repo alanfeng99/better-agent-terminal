@@ -12,11 +12,17 @@ import {
 } from '../utils/claude-model-presets'
 import {
   type ClaudeChannelCapabilities,
-  type ClaudeChannelMessage,
+  type ClaudeChannelEntry,
   type ClaudeChannelStatus,
+  type ClaudeChannelUsage,
   claudeChannelMessageClass,
   isRecord,
+  normalizeAssistantFrame,
   normalizeClaudeChannelMessage,
+  normalizeThinkingFrame,
+  normalizeToolResultFrame,
+  normalizeToolUseFrame,
+  normalizeUsageFrame,
 } from '../utils/claude-channel-events'
 
 interface ClaudeChannelAgentPanelProps {
@@ -57,6 +63,24 @@ function includeCurrentOption(options: readonly string[], current: string): stri
   return current && !options.includes(current) ? [current, ...options] : [...options]
 }
 
+function extractErrorMessage(value: unknown, fallback = 'Unknown error'): string {
+  if (value == null) return fallback
+  if (value instanceof Error) return value.message || fallback
+  if (typeof value === 'string') return value || fallback
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    if (typeof obj.message === 'string' && obj.message) return obj.message
+    if (typeof obj.error === 'string' && obj.error) return obj.error
+    try {
+      const json = JSON.stringify(value)
+      if (json && json !== '{}') return json
+    } catch {
+      // fall through
+    }
+  }
+  return String(value) || fallback
+}
+
 function sanitizeTerminalText(value: string): string {
   return value
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
@@ -78,7 +102,8 @@ export const ClaudeChannelAgentPanel = memo(function ClaudeChannelAgentPanel({
   const [status, setStatus] = useState<ClaudeChannelStatus>('starting')
   const [channelStatus, setChannelStatus] = useState('unknown')
   const [capabilities, setCapabilities] = useState<ClaudeChannelCapabilities | null>(null)
-  const [messages, setMessages] = useState<ClaudeChannelMessage[]>([])
+  const [messages, setMessages] = useState<ClaudeChannelEntry[]>([])
+  const [usage, setUsage] = useState<ClaudeChannelUsage | null>(null)
   const [input, setInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSending, setIsSending] = useState(false)
@@ -108,14 +133,37 @@ export const ClaudeChannelAgentPanel = memo(function ClaudeChannelAgentPanel({
       return
     }
     let cancelled = false
+    const appendEntry = (entry: ClaudeChannelEntry | null) => {
+      if (!entry || entry.sessionId !== sessionId) return
+      setMessages(prev => {
+        if (prev.some(existing => existing.id === entry.id)) return prev
+        return [...prev, entry]
+      })
+    }
     const unsubs = [
       host.claudeChannel.onMessage((payload: unknown) => {
         const message = normalizeClaudeChannelMessage(payload)
         if (!message || message.sessionId !== sessionId) return
         setMessages(prev => {
           if (prev.some(existing => existing.id === message.id)) return prev
-          return [...prev, message]
+          return [...prev, { ...message, role: message.role }]
         })
+      }),
+      host.claudeChannel.onAssistant((payload: unknown) => {
+        appendEntry(normalizeAssistantFrame(payload))
+      }),
+      host.claudeChannel.onToolUse((payload: unknown) => {
+        appendEntry(normalizeToolUseFrame(payload))
+      }),
+      host.claudeChannel.onToolResult((payload: unknown) => {
+        appendEntry(normalizeToolResultFrame(payload))
+      }),
+      host.claudeChannel.onThinking((payload: unknown) => {
+        appendEntry(normalizeThinkingFrame(payload))
+      }),
+      host.claudeChannel.onUsage((payload: unknown) => {
+        const next = normalizeUsageFrame(payload)
+        if (next) setUsage(next)
       }),
       host.claudeChannel.onStatus((payload: unknown) => {
         if (!isRecord(payload) || payload.sessionId !== sessionId) return
@@ -159,7 +207,9 @@ export const ClaudeChannelAgentPanel = memo(function ClaudeChannelAgentPanel({
       } catch (err) {
         if (cancelled) return
         setStatus('error')
-        setError(sanitizeTerminalText(err instanceof Error ? err.message : String(err)))
+        const message = extractErrorMessage(err, 'Claude Channel Agent failed to start.')
+        host.debug.log(`[claude-channel] startSession failed: ${message} (raw: ${(() => { try { return JSON.stringify(err) } catch { return String(err) } })()})`)
+        setError(sanitizeTerminalText(message))
       }
     })()
 
@@ -190,7 +240,9 @@ export const ClaudeChannelAgentPanel = memo(function ClaudeChannelAgentPanel({
     try {
       await host.claudeChannel.sendMessage(sessionId, prompt, `channel-user-${Date.now()}`)
     } catch (err) {
-      setError(sanitizeTerminalText(err instanceof Error ? err.message : String(err)))
+      const message = extractErrorMessage(err, 'Send failed.')
+      host.debug.log(`[claude-channel] sendMessage failed: ${message} (raw: ${(() => { try { return JSON.stringify(err) } catch { return String(err) } })()})`)
+      setError(sanitizeTerminalText(message))
     } finally {
       setIsSending(false)
     }
@@ -263,14 +315,68 @@ export const ClaudeChannelAgentPanel = memo(function ClaudeChannelAgentPanel({
               </div>
             </div>
           ) : visibleMessages.map(message => {
-            const isUser = message.role === 'user'
-            const dotClass = isUser ? 'dot-user' : message.role === 'assistant' ? 'dot-assistant' : 'dot-system'
-            const contentClass = isUser ? 'claude-message-user' : message.role === 'assistant' ? 'claude-message-assistant' : 'claude-message-system'
+            const dotClass = (() => {
+              switch (message.role) {
+                case 'user': return 'dot-user'
+                case 'assistant': return 'dot-assistant'
+                case 'tool_use': return 'dot-tool-use'
+                case 'tool_result': return message.isError ? 'dot-error' : 'dot-tool-result'
+                case 'thinking': return 'dot-thinking'
+                default: return 'dot-system'
+              }
+            })()
+            const contentClass = (() => {
+              switch (message.role) {
+                case 'user': return 'claude-message-user'
+                case 'assistant': return 'claude-message-assistant'
+                case 'tool_use': return 'claude-message-tool-use'
+                case 'tool_result': return `claude-message-tool-result${message.isError ? ' claude-message-tool-result-error' : ''}`
+                case 'thinking': return 'claude-message-thinking'
+                default: return 'claude-message-system'
+              }
+            })()
+            let body: JSX.Element | string
+            if (message.role === 'tool_use') {
+              let inputPreview = ''
+              if (message.toolInput != null) {
+                try {
+                  const text = typeof message.toolInput === 'string'
+                    ? message.toolInput
+                    : JSON.stringify(message.toolInput)
+                  inputPreview = text.length > 160 ? `${text.slice(0, 160)}…` : text
+                } catch {
+                  inputPreview = String(message.toolInput)
+                }
+              }
+              body = (
+                <>
+                  <span className="claude-tool-name">⚙ {message.toolName || 'tool'}</span>
+                  {inputPreview && <span className="claude-tool-input"> {inputPreview}</span>}
+                </>
+              )
+            } else if (message.role === 'tool_result') {
+              const preview = message.text.length > 240 ? `${message.text.slice(0, 240)}…` : message.text
+              body = (
+                <>
+                  <span className="claude-tool-result-label">{message.isError ? '✗ tool error' : '✓ tool result'}</span>
+                  {preview && <span className="claude-tool-result-preview"> {preview}</span>}
+                </>
+              )
+            } else if (message.role === 'thinking') {
+              body = (
+                <>
+                  <span className="claude-thinking-label">thinking</span>
+                  <span className="claude-thinking-preview"> {message.text}</span>
+                </>
+              )
+            } else {
+              body = message.text
+            }
             return (
               <div key={message.id} className={`tl-item claude-channel-message ${claudeChannelMessageClass(message.role)}`}>
                 <div className={`tl-dot ${dotClass}`} />
                 <div className={`tl-content ${contentClass}`}>
-                  {message.text}
+                  {body}
                   <span className="claude-msg-time">{formatChannelTimestamp(message.timestamp)}</span>
                 </div>
               </div>
@@ -397,6 +503,21 @@ export const ClaudeChannelAgentPanel = memo(function ClaudeChannelAgentPanel({
           </div>
           <div className="claude-statusline-right">
             <span className="claude-statusline-item">channel</span>
+            {usage && (usage.inputTokens != null || usage.outputTokens != null) && (
+              <span
+                className="claude-statusline-item"
+                title={[
+                  usage.model ? `model: ${usage.model}` : null,
+                  usage.inputTokens != null ? `in: ${usage.inputTokens}` : null,
+                  usage.outputTokens != null ? `out: ${usage.outputTokens}` : null,
+                  usage.cacheReadInputTokens != null ? `cache read: ${usage.cacheReadInputTokens}` : null,
+                  usage.cacheCreationInputTokens != null ? `cache write: ${usage.cacheCreationInputTokens}` : null,
+                  usage.costUsd != null ? `$${usage.costUsd.toFixed(4)}` : null,
+                ].filter(Boolean).join('\n')}
+              >
+                {`${usage.inputTokens ?? 0}↑/${usage.outputTokens ?? 0}↓`}
+              </span>
+            )}
             {capabilities?.cliVersion && <span className="claude-statusline-item">Claude {capabilities.cliVersion}</span>}
           </div>
         </div>

@@ -73,6 +73,7 @@ async function testGeneratedChannelServer(tmpRoot) {
 
   let replyBody = null
   let readyBody = null
+  const frameBodies = []
   const bridge = createServer((req, res) => {
     if (req.url?.startsWith('/events')) {
       res.writeHead(204)
@@ -96,6 +97,17 @@ async function testGeneratedChannelServer(tmpRoot) {
       req.on('data', chunk => { body += chunk })
       req.on('end', () => {
         replyBody = JSON.parse(body)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      return
+    }
+    if (req.url === '/frame' && req.method === 'POST') {
+      let body = ''
+      req.setEncoding('utf8')
+      req.on('data', chunk => { body += chunk })
+      req.on('end', () => {
+        frameBodies.push(JSON.parse(body))
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       })
@@ -149,7 +161,11 @@ async function testGeneratedChannelServer(tmpRoot) {
     }))
     const tools = await readFrame(child)
     assert.equal(tools.id, 2)
-    assert.equal(tools.result?.tools?.[0]?.name, 'bat_reply')
+    const toolNames = (tools.result?.tools || []).map(t => t.name)
+    assert.deepEqual(
+      toolNames.sort(),
+      ['bat_assistant', 'bat_emit_frame', 'bat_reply', 'bat_tool_result', 'bat_tool_use'],
+    )
 
     child.stdin.write(frame({
       jsonrpc: '2.0',
@@ -170,6 +186,113 @@ async function testGeneratedChannelServer(tmpRoot) {
     assert.equal(toolResult.result?.content?.[0]?.text, 'Delivered to Better Agent Terminal.')
     assert.equal(replyBody?.text, 'hello stdio')
     assert.equal(replyBody?.sessionId, 'stdio-test')
+
+    child.stdin.write(frame({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: {
+        name: 'bat_assistant',
+        arguments: {
+          bat_session_id: 'stdio-test',
+          bat_message_id: 'msg-2',
+          text: 'partial chunk',
+          status: 'partial',
+        },
+      },
+    }))
+    const assistantAck = await readFrame(child)
+    assert.equal(assistantAck.id, 4)
+
+    child.stdin.write(frame({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: {
+        name: 'bat_tool_use',
+        arguments: {
+          bat_session_id: 'stdio-test',
+          bat_message_id: 'msg-2',
+          id: 'tool-1',
+          name: 'Read',
+          input: { path: '/etc/hosts' },
+        },
+      },
+    }))
+    const toolUseAck = await readFrame(child)
+    assert.equal(toolUseAck.id, 5)
+
+    child.stdin.write(frame({
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'tools/call',
+      params: {
+        name: 'bat_tool_result',
+        arguments: {
+          bat_session_id: 'stdio-test',
+          bat_message_id: 'msg-2',
+          tool_use_id: 'tool-1',
+          content: 'localhost',
+        },
+      },
+    }))
+    const toolResultAck = await readFrame(child)
+    assert.equal(toolResultAck.id, 6)
+
+    child.stdin.write(frame({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: {
+        name: 'bat_emit_frame',
+        arguments: {
+          bat_session_id: 'stdio-test',
+          bat_message_id: 'msg-2',
+          kind: 'result',
+          payload: { status: 'success', stop_reason: 'end_turn' },
+        },
+      },
+    }))
+    const resultAck = await readFrame(child)
+    assert.equal(resultAck.id, 7)
+
+    for (let i = 0; i < 50 && frameBodies.length < 4; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(frameBodies.length, 4)
+    assert.equal(frameBodies[0].kind, 'assistant')
+    assert.equal(frameBodies[0].payload.text, 'partial chunk')
+    assert.equal(frameBodies[0].payload.status, 'partial')
+    assert.equal(frameBodies[0].meta?.bat_message_id, 'msg-2')
+    assert.equal(frameBodies[1].kind, 'tool_use')
+    assert.equal(frameBodies[1].payload.name, 'Read')
+    assert.equal(frameBodies[1].payload.id, 'tool-1')
+    assert.deepEqual(frameBodies[1].payload.input, { path: '/etc/hosts' })
+    assert.equal(frameBodies[2].kind, 'tool_result')
+    assert.equal(frameBodies[2].payload.tool_use_id, 'tool-1')
+    assert.equal(frameBodies[2].payload.content, 'localhost')
+    assert.equal(frameBodies[3].kind, 'result')
+    assert.equal(frameBodies[3].payload.status, 'success')
+    assert.equal(frameBodies[3].payload.stop_reason, 'end_turn')
+
+    child.stdin.write(frame({
+      jsonrpc: '2.0',
+      id: 8,
+      method: 'tools/call',
+      params: {
+        name: 'bat_emit_frame',
+        arguments: {
+          bat_session_id: 'stdio-test',
+          bat_message_id: 'msg-2',
+          kind: 'bogus',
+          payload: {},
+        },
+      },
+    }))
+    const bogusAck = await readFrame(child)
+    assert.equal(bogusAck.id, 8)
+    assert.ok(bogusAck.error, 'expected error for unknown kind')
+    assert.match(bogusAck.error.message || '', /Unknown BAT frame kind/)
   } finally {
     child.kill()
     await new Promise(resolve => bridge.close(resolve))
@@ -318,7 +441,19 @@ setInterval(() => {}, 1000)
       assert.equal(started.channelStatus, 'connected')
       const startedArgs = JSON.parse(readFileSync(argsOut, 'utf8'))
       assert.equal(startedArgs[startedArgs.indexOf('--effort') + 1], 'xhigh')
-      assert.equal(startedArgs[startedArgs.indexOf('--settings') + 1], '{"ultracode":true,"enableWorkflows":true}')
+      const settingsPath = startedArgs[startedArgs.indexOf('--settings') + 1]
+      assert.ok(settingsPath && settingsPath.endsWith('settings.json'), `expected --settings to be a path, got ${settingsPath}`)
+      const settingsJson = JSON.parse(readFileSync(settingsPath, 'utf8'))
+      assert.equal(settingsJson.ultracode, true)
+      assert.equal(settingsJson.enableWorkflows, true)
+      assert.ok(settingsJson.hooks && typeof settingsJson.hooks === 'object', 'expected hooks object in settings')
+      assert.ok(Array.isArray(settingsJson.hooks.PreToolUse), 'expected PreToolUse hook entry')
+      const preToolUseHookConfig = settingsJson.hooks.PreToolUse?.[0]?.hooks?.[0]
+      assert.equal(preToolUseHookConfig?.type, 'http')
+      assert.match(preToolUseHookConfig?.url || '', /^http:\/\/127\.0\.0\.1:\d+\/hook\/PreToolUse$/)
+      for (const ev of ['PostToolUse', 'PostToolUseFailure', 'MessageDisplay', 'Stop', 'SubagentStart', 'SubagentStop', 'SessionStart']) {
+        assert.ok(Array.isArray(settingsJson.hooks[ev]), `expected ${ev} hook entry`)
+      }
       delete process.env.FAKE_CLAUDE_ARGS_OUT
 
       let bridgeUrl = ''
@@ -365,6 +500,193 @@ setInterval(() => {}, 1000)
       assert.ok(eventNames.includes('claude-channel:turn-end'))
       const assistantMessage = captured.find(event => event.name === 'claude-channel:message' && event.payload?.role === 'assistant')
       assert.equal(assistantMessage?.payload?.text, 'hello BAT')
+
+      // Frame round-trip: assistant partial → tool_use → tool_result → result.
+      captured.length = 0
+      const partialFrame = await fetch(`${bridgeUrl}/frame`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'channel-life-1',
+          kind: 'assistant',
+          payload: { text: 'thinking out loud', status: 'partial' },
+          meta: { bat_message_id: 'channel-msg-2' },
+        }),
+      })
+      assert.equal(partialFrame.status, 200)
+      const toolUseFrame = await fetch(`${bridgeUrl}/frame`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'channel-life-1',
+          kind: 'tool_use',
+          payload: { id: 'tu-1', name: 'Read', input: { path: '/x' } },
+          meta: { bat_message_id: 'channel-msg-2' },
+        }),
+      })
+      assert.equal(toolUseFrame.status, 200)
+      const toolResultFrame = await fetch(`${bridgeUrl}/frame`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'channel-life-1',
+          kind: 'tool_result',
+          payload: { tool_use_id: 'tu-1', content: 'hello world' },
+          meta: { bat_message_id: 'channel-msg-2' },
+        }),
+      })
+      assert.equal(toolResultFrame.status, 200)
+      const usageFrame = await fetch(`${bridgeUrl}/frame`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'channel-life-1',
+          kind: 'usage',
+          payload: { input_tokens: 12, output_tokens: 34, model: 'claude-sonnet-4-6' },
+          meta: { bat_message_id: 'channel-msg-2' },
+        }),
+      })
+      assert.equal(usageFrame.status, 200)
+      const resultFrame = await fetch(`${bridgeUrl}/frame`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'channel-life-1',
+          kind: 'result',
+          payload: { status: 'success', stop_reason: 'end_turn' },
+          meta: { bat_message_id: 'channel-msg-2' },
+        }),
+      })
+      assert.equal(resultFrame.status, 200)
+
+      const frameEventNames = captured.map(event => event.name)
+      assert.ok(frameEventNames.includes('claude-channel:assistant'))
+      assert.ok(frameEventNames.includes('claude-channel:tool-use'))
+      assert.ok(frameEventNames.includes('claude-channel:tool-result'))
+      assert.ok(frameEventNames.includes('claude-channel:usage'))
+      assert.ok(frameEventNames.includes('claude-channel:result'))
+      assert.ok(frameEventNames.includes('claude-channel:turn-end'))
+      const partialEvent = captured.find(e => e.name === 'claude-channel:assistant' && e.payload?.status === 'partial')
+      assert.equal(partialEvent?.payload?.text, 'thinking out loud')
+      assert.equal(partialEvent?.payload?.inReplyTo, 'channel-msg-2')
+      const toolUseEvent = captured.find(e => e.name === 'claude-channel:tool-use')
+      assert.equal(toolUseEvent?.payload?.payload?.name, 'Read')
+      assert.equal(toolUseEvent?.payload?.payload?.id, 'tu-1')
+      const toolResultEvent = captured.find(e => e.name === 'claude-channel:tool-result')
+      assert.equal(toolResultEvent?.payload?.payload?.tool_use_id, 'tu-1')
+      assert.equal(toolResultEvent?.payload?.payload?.content, 'hello world')
+      const usageEvent = captured.find(e => e.name === 'claude-channel:usage')
+      assert.equal(usageEvent?.payload?.payload?.input_tokens, 12)
+      assert.equal(usageEvent?.payload?.payload?.output_tokens, 34)
+      const turnEndEvent = captured.find(e => e.name === 'claude-channel:turn-end')
+      assert.equal(turnEndEvent?.payload?.messageId, 'channel-msg-2')
+      assert.equal(turnEndEvent?.payload?.stopReason, 'end_turn')
+
+      const invalidFrame = await fetch(`${bridgeUrl}/frame`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'channel-life-1',
+          kind: 'tool_use',
+          payload: { name: 'Read' },
+        }),
+      })
+      assert.equal(invalidFrame.status, 400)
+
+      // Hook round-trip: PreToolUse → tool_use, PostToolUse → tool_result,
+      // PostToolUseFailure → tool_result(error), MessageDisplay → assistant,
+      // Stop → result + turn-end.
+      captured.length = 0
+      const preToolUseHook = await fetch(`${bridgeUrl}/hook/PreToolUse`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Read',
+          tool_input: { file_path: '/etc/hosts' },
+          tool_use_id: 'toolu_hook_1',
+        }),
+      })
+      assert.equal(preToolUseHook.status, 200)
+      const messageDisplayHook = await fetch(`${bridgeUrl}/hook/MessageDisplay`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'MessageDisplay',
+          turn_id: 't-1',
+          message_id: 'm-1',
+          index: 0,
+          final: false,
+          delta: 'Hi from ',
+        }),
+      })
+      assert.equal(messageDisplayHook.status, 200)
+      const messageDisplayFinal = await fetch(`${bridgeUrl}/hook/MessageDisplay`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'MessageDisplay',
+          turn_id: 't-1',
+          message_id: 'm-1',
+          index: 1,
+          final: true,
+          delta: 'BAT',
+        }),
+      })
+      assert.equal(messageDisplayFinal.status, 200)
+      const postToolUseHook = await fetch(`${bridgeUrl}/hook/PostToolUse`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Read',
+          tool_input: { file_path: '/etc/hosts' },
+          tool_response: 'localhost',
+          tool_use_id: 'toolu_hook_1',
+          duration_ms: 7,
+        }),
+      })
+      assert.equal(postToolUseHook.status, 200)
+      const postToolUseFailureHook = await fetch(`${bridgeUrl}/hook/PostToolUseFailure`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hook_event_name: 'PostToolUseFailure',
+          tool_name: 'Bash',
+          tool_input: { command: 'false' },
+          tool_use_id: 'toolu_hook_2',
+          error: 'exit code 1',
+          is_interrupt: false,
+          duration_ms: 4,
+        }),
+      })
+      assert.equal(postToolUseFailureHook.status, 200)
+      const stopHook = await fetch(`${bridgeUrl}/hook/Stop`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hook_event_name: 'Stop' }),
+      })
+      assert.equal(stopHook.status, 200)
+      const hookEventNames = captured.map(event => event.name)
+      assert.ok(hookEventNames.includes('claude-channel:tool-use'), `missing tool-use, got ${hookEventNames.join(',')}`)
+      assert.ok(hookEventNames.includes('claude-channel:tool-result'), `missing tool-result, got ${hookEventNames.join(',')}`)
+      assert.ok(hookEventNames.includes('claude-channel:assistant'), `missing assistant, got ${hookEventNames.join(',')}`)
+      assert.ok(hookEventNames.includes('claude-channel:result'), `missing result, got ${hookEventNames.join(',')}`)
+      assert.ok(hookEventNames.includes('claude-channel:turn-end'), `missing turn-end, got ${hookEventNames.join(',')}`)
+      const toolUseHookEvent = captured.find(e => e.name === 'claude-channel:tool-use')
+      assert.equal(toolUseHookEvent?.payload?.payload?.id, 'toolu_hook_1')
+      assert.equal(toolUseHookEvent?.payload?.payload?.name, 'Read')
+      const toolResultsHookEvents = captured.filter(e => e.name === 'claude-channel:tool-result')
+      const successResult = toolResultsHookEvents.find(e => e.payload?.payload?.tool_use_id === 'toolu_hook_1')
+      const errorResult = toolResultsHookEvents.find(e => e.payload?.payload?.tool_use_id === 'toolu_hook_2')
+      assert.equal(successResult?.payload?.payload?.is_error, false)
+      assert.equal(successResult?.payload?.payload?.content, 'localhost')
+      assert.equal(errorResult?.payload?.payload?.is_error, true)
+      assert.equal(errorResult?.payload?.payload?.content, 'exit code 1')
+      const partialAssistant = captured.find(e => e.name === 'claude-channel:assistant' && e.payload?.status === 'partial')
+      const finalAssistant = captured.find(e => e.name === 'claude-channel:assistant' && e.payload?.status === 'final')
+      assert.equal(partialAssistant?.payload?.text, 'Hi from ')
+      assert.equal(finalAssistant?.payload?.text, 'BAT')
 
       const stopped = await stopClaudeChannelSession({ sessionId: 'channel-life-1' })
       assert.equal(stopped.ok, true)

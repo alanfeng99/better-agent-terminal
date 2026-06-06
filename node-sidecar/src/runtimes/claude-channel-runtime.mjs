@@ -9,6 +9,8 @@ import { normalizeClaudeEffortMode, runtimeEffortForMode, isUltracodeMode } from
 import { resolveDataDir } from '../lib/data-paths.mjs'
 import { isBatDebugEnabled, probeClaudeChannelCapabilities } from './claude-channel-capabilities.mjs'
 import { writeClaudeChannelServerScript } from './claude-channel-server.mjs'
+import { FRAME_KINDS, normalizeFrame, subEventNameFor } from './claude-channel-frames.mjs'
+import { buildClaudeChannelHooksConfig } from './claude-channel-hooks.mjs'
 
 const sessions = new Map()
 const endedSessions = new Map()
@@ -97,6 +99,145 @@ function enqueueChannelEvent(session, event) {
   }
 }
 
+function emitFrame(session, frame, inReplyTo) {
+  const subEvent = subEventNameFor(frame.kind)
+  if (!subEvent) return
+  const sessionId = session.sessionId
+  const timestamp = Date.now()
+  if (frame.kind === FRAME_KINDS.ASSISTANT) {
+    // Emit both the legacy :message event (so the existing renderer keeps
+    // working unchanged) and the new :assistant event for callers that want
+    // to track partial-vs-final separately.
+    const message = {
+      id: `channel-assistant-${timestamp}`,
+      sessionId,
+      role: 'assistant',
+      text: frame.payload.text || '',
+      status: frame.payload.status,
+      inReplyTo: inReplyTo || null,
+      timestamp,
+    }
+    emit('message', message)
+    emit('assistant', {
+      sessionId,
+      id: frame.payload.id || message.id,
+      text: frame.payload.text || '',
+      status: frame.payload.status,
+      inReplyTo: inReplyTo || null,
+      timestamp,
+    })
+    return
+  }
+  emit(subEvent, {
+    sessionId,
+    payload: frame.payload,
+    inReplyTo: inReplyTo || null,
+    timestamp,
+  })
+}
+
+function applyResultFrame(session, frame, inReplyTo) {
+  const status = frame.payload.status === 'error' ? 'error' : 'ready'
+  session.status = status
+  emit('status', {
+    sessionId: session.sessionId,
+    status: session.status,
+    channelStatus: 'connected',
+    stopReason: frame.payload.stop_reason || null,
+    error: frame.payload.error || null,
+  })
+  emit('turn-end', {
+    sessionId: session.sessionId,
+    messageId: inReplyTo || null,
+    stopReason: frame.payload.stop_reason || null,
+    error: frame.payload.error || null,
+  })
+}
+
+function frameFromHook(eventName, body) {
+  if (!body || typeof body !== 'object') return null
+  switch (eventName) {
+    case 'PreToolUse': {
+      const id = typeof body.tool_use_id === 'string' ? body.tool_use_id : ''
+      const name = typeof body.tool_name === 'string' ? body.tool_name : ''
+      if (!id || !name) return null
+      return normalizeFrame({
+        kind: FRAME_KINDS.TOOL_USE,
+        payload: { id, name, input: body.tool_input ?? null },
+      })
+    }
+    case 'PostToolUse': {
+      const toolUseId = typeof body.tool_use_id === 'string' ? body.tool_use_id : ''
+      if (!toolUseId) return null
+      return normalizeFrame({
+        kind: FRAME_KINDS.TOOL_RESULT,
+        payload: { tool_use_id: toolUseId, content: body.tool_response, is_error: false },
+      })
+    }
+    case 'PostToolUseFailure': {
+      const toolUseId = typeof body.tool_use_id === 'string' ? body.tool_use_id : ''
+      if (!toolUseId) return null
+      const content = typeof body.error === 'string' ? body.error : (body.error ?? null)
+      return normalizeFrame({
+        kind: FRAME_KINDS.TOOL_RESULT,
+        payload: { tool_use_id: toolUseId, content, is_error: true },
+      })
+    }
+    case 'MessageDisplay': {
+      const text = typeof body.delta === 'string' ? body.delta : ''
+      if (!text) return null
+      return normalizeFrame({
+        kind: FRAME_KINDS.ASSISTANT,
+        payload: {
+          id: typeof body.message_id === 'string' ? body.message_id : undefined,
+          text,
+          status: body.final === true ? 'final' : 'partial',
+        },
+      })
+    }
+    case 'Stop':
+      return normalizeFrame({
+        kind: FRAME_KINDS.RESULT,
+        payload: { status: 'success' },
+      })
+    case 'StopFailure':
+      return normalizeFrame({
+        kind: FRAME_KINDS.RESULT,
+        payload: {
+          status: 'error',
+          error: typeof body.error_message === 'string' ? body.error_message : undefined,
+          stop_reason: typeof body.error_type === 'string' ? body.error_type : undefined,
+        },
+      })
+    case 'SubagentStart':
+      return normalizeFrame({
+        kind: FRAME_KINDS.STATUS,
+        payload: {
+          state: 'subagent_start',
+          message: typeof body.agent_type === 'string' ? body.agent_type : undefined,
+        },
+      })
+    case 'SubagentStop':
+      return normalizeFrame({
+        kind: FRAME_KINDS.STATUS,
+        payload: {
+          state: 'subagent_stop',
+          message: typeof body.agent_type === 'string' ? body.agent_type : undefined,
+        },
+      })
+    case 'SessionStart':
+      return normalizeFrame({
+        kind: FRAME_KINDS.STATUS,
+        payload: {
+          state: 'session_start',
+          message: typeof body.model === 'string' ? body.model : undefined,
+        },
+      })
+    default:
+      return null
+  }
+}
+
 async function createBridge(session) {
   const server = createServer(async (req, res) => {
     try {
@@ -143,6 +284,34 @@ async function createBridge(session) {
         writeJson(res, 200, { ok: true })
         return
       }
+      if (url.pathname === '/frame' && req.method === 'POST') {
+        const body = await readRequestJson(req)
+        if (body.sessionId && body.sessionId !== session.sessionId) {
+          writeJson(res, 404, { error: 'unknown session' })
+          return
+        }
+        const frame = normalizeFrame({ kind: body.kind, payload: body.payload, meta: body.meta })
+        if (!frame) {
+          writeJson(res, 400, { error: 'invalid frame' })
+          return
+        }
+        const inReplyTo = (body.meta && typeof body.meta.bat_message_id === 'string')
+          ? body.meta.bat_message_id
+          : null
+        emitFrame(session, frame, inReplyTo)
+        if (frame.kind === FRAME_KINDS.RESULT) {
+          applyResultFrame(session, frame, inReplyTo)
+        } else if (frame.kind === FRAME_KINDS.ASSISTANT && frame.payload.status === 'final' && !session.deferTurnEndToResult) {
+          // Treat a final assistant frame as turn-end when no explicit result
+          // frame follows. Keeps the per-message UX working for prompts where
+          // Claude only emits bat_assistant final without a result frame.
+          session.status = 'ready'
+          emit('status', { sessionId: session.sessionId, status: session.status, channelStatus: 'connected' })
+          emit('turn-end', { sessionId: session.sessionId, messageId: inReplyTo })
+        }
+        writeJson(res, 200, { ok: true })
+        return
+      }
       if (url.pathname === '/ready' && req.method === 'POST') {
         const body = await readRequestJson(req)
         if (body.sessionId && body.sessionId !== session.sessionId) {
@@ -151,6 +320,22 @@ async function createBridge(session) {
         }
         markChannelReady(session)
         writeJson(res, 200, { ok: true })
+        return
+      }
+      if (url.pathname.startsWith('/hook/') && req.method === 'POST') {
+        const eventName = url.pathname.slice('/hook/'.length)
+        const body = await readRequestJson(req)
+        const frame = frameFromHook(eventName, body)
+        if (frame) {
+          emitFrame(session, frame, null)
+          if (frame.kind === FRAME_KINDS.RESULT) {
+            applyResultFrame(session, frame, null)
+          }
+        }
+        // Return an empty body so the CLI hook treats this as success-with-no-opinion
+        // (default permission, no input/output mutation). Phase C will replace this for
+        // PreToolUse / PermissionRequest with real BAT permission routing.
+        writeJson(res, 200, {})
         return
       }
       writeJson(res, 404, { error: 'not found' })
@@ -174,11 +359,21 @@ async function createBridge(session) {
   }
 }
 
+function buildSessionSettings(session, bridgeUrl) {
+  const settings = { ...buildClaudeChannelHooksConfig(bridgeUrl) }
+  if (isUltracodeMode(session.effort) || session.ultracode === true) {
+    settings.ultracode = true
+    settings.enableWorkflows = true
+  }
+  return settings
+}
+
 async function prepareSessionFiles(session, bridgeUrl) {
   const root = join(resolveDataDir(), 'claude-channel', safeId(session.sessionId))
   await mkdir(root, { recursive: true, mode: 0o700 })
   const serverPath = join(root, 'bat-channel-server.mjs')
   const mcpConfigPath = join(root, 'mcp-config.json')
+  const settingsPath = join(root, 'settings.json')
   await writeClaudeChannelServerScript(serverPath)
   await writeFile(mcpConfigPath, JSON.stringify({
     mcpServers: {
@@ -192,7 +387,8 @@ async function prepareSessionFiles(session, bridgeUrl) {
       },
     },
   }, null, 2), { mode: 0o600 })
-  return { root, serverPath, mcpConfigPath }
+  await writeFile(settingsPath, JSON.stringify(buildSessionSettings(session, bridgeUrl), null, 2), { mode: 0o600 })
+  return { root, serverPath, mcpConfigPath, settingsPath }
 }
 
 function buildClaudeArgs(session, files) {
@@ -202,15 +398,14 @@ function buildClaudeArgs(session, files) {
     '--mcp-config',
     files.mcpConfigPath,
     '--strict-mcp-config',
+    '--settings',
+    files.settingsPath,
     '--name',
     `BAT Channel ${session.sessionId.slice(0, 8)}`,
   ]
   if (session.model) args.push('--model', session.model)
   const runtimeEffort = runtimeEffortForMode(session.effort)
   if (runtimeEffort) args.push('--effort', runtimeEffort)
-  if (isUltracodeMode(session.effort) || session.ultracode === true) {
-    args.push('--settings', JSON.stringify({ ultracode: true, enableWorkflows: true }))
-  }
   if (session.permissionMode) args.push('--permission-mode', session.permissionMode)
   log('[claude-channel:create]', session.sessionId, JSON.stringify({
     model: session.model || null,

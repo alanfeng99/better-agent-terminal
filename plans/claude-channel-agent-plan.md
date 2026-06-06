@@ -1,10 +1,131 @@
 # Claude Channel Agent Plan
 
-## Goal
+## Strategic Reframing (2026)
+
+Anthropic is splitting Claude Code into separate SKUs: Claude Agent SDK runs on API token billing, while Claude CLI runs on the Pro/Max subscription. A large share of BAT users want their BAT Claude Agent experience to keep running on their subscription, not on metered API tokens.
+
+Claude Channel Agent is therefore being repromoted from "debug-only experiment" to **the alternate primary path** that keeps the Claude Agent UX while routing reasoning through the subscription-billed Claude CLI. The existing SDK path stays available for users on API billing or for SDK-only features.
+
+This reframe changes what "MVP" means: final-text-only is no longer acceptable, because the SDK path it replaces already streams tool calls, thinking, usage, and permission prompts.
+
+## Revised Design Goals
+
+These are the goals every implementation decision must serve. If a goal is dropped, say so explicitly in the phase that drops it.
+
+1. **UX parity by default.** A user who picks the Channel path must not feel they entered a worse mode. Streaming text, tool_use / tool_result, thinking blocks, usage telemetry, model / effort / permission controls — the SDK Panel's vocabulary is the target.
+2. **One unified message contract.** Define a single BAT-internal agent event schema (aligned with the existing `claude:*` events emitted from `claude-send.mjs`). Both runtimes adapt to the same schema. The UI never branches on transport.
+3. **Channel must carry structured frames, not just final text.** The current `bat_reply(text, status)` is the wrong shape long-term. Extend with structured tools (assistant blocks, tool_use, tool_result, thinking, usage, stop_reason) so the renderer sees the same payload either path produces.
+4. **Permission relay is required, not optional.** Claude CLI's `canUseTool` decisions must round-trip to BAT's existing permission UI through the channel. Without it, `bypassPermissions` becomes the de facto default of this path and security regresses.
+5. **Capability probe drives the UI, not assumptions.** Streaming, permission relay, usage telemetry, per-turn stop, model / effort / mode flags — all gated by what the detected CLI actually supports. Disable controls cleanly; never crash on missing capability.
+6. **Per-turn interruption, not session kill.** Stopping the current turn must preserve the session. PTY Ctrl-C, CLI slash command, or future channel control — pick whatever works. Killing the whole CLI is a fallback, not the contract.
+7. **Two panels stay separate, on purpose.** `ClaudeAgentPanel` and `ClaudeChannelAgentPanel` are kept as distinct UIs. The capability surface of the SDK path and the CLI-via-channel path will not fully converge — different controls, different telemetry, different failure modes. Maintaining two panels is cheaper than running a permanent "what does the other path support today?" decision tree inside one panel. They share the underlying message contract (goal 2) but not the rendered shell.
+8. **Billing-path transparency.** The UI must visibly indicate "Subscription (CLI)" vs "API (SDK)" on the session header so users know which budget a turn spends.
+9. **Session identity and history align with the SDK path.** Channel sessions enter workspace store, session list, history, archive, and remote-host ownership the same way SDK sessions do. Resume, export, and remote broadcast must keep working.
+10. **Share auth and CLI resolution with the SDK path.** Reuse `claude-auth.mjs`, the CLI resolver, and the install flow. The user logs in once, installs once.
+11. **Local development-channel first, plugin packaging later.** Keep the launch path simple until structured frames + permission relay are proven; only then invest in plugin distribution.
+12. **Drop the BAT_DEBUG gate once stable; replace with an opt-in setting.** During implementation `BAT_DEBUG` continues to hide instability. Once parity goals 1–4 are met, expose this through a normal settings toggle (e.g. `Use Claude CLI (subscription) instead of SDK`).
+13. **No regressions on the SDK path.** Per CLAUDE.md. Shared touch-points (event schema, panel, workspace store) only move in the direction of cleaner reuse — never bend the SDK path to fit channel quirks.
+14. **Observability from day one.** Both ends of the channel log frames and prompt round-trips through the existing logger. CLI stderr tail stays available for diagnosing dev-channel prompts, policy rejections, login expiry.
+
+## Path to Parity (How we get there)
+
+Sequenced so each phase is shippable behind `BAT_DEBUG`, and each step pays down a specific goal.
+
+- **Phase A — Structured channel frames (goals 2, 3, 14).** ✅ Done. Replaced `bat_reply` with a hybrid frame surface:
+  - Dedicated tools for shape-stable, high-frequency frames: `bat_assistant`, `bat_tool_use`, `bat_tool_result`. Strict schemas.
+  - Catch-all `bat_emit_frame({ kind, payload })` for `thinking`, `usage`, `result`, `status`, `error`.
+  - Bridge `/frame` endpoint validates frames via `claude-channel-frames.mjs` and emits `claude-channel:*` events.
+  - **Phase A retro:** the official channel protocol only supports a single "reply tool" outbound (see Channel Protocol Reality below). Asking Claude to narrate work back through `bat_assistant` / `bat_tool_use` / etc. is prompt-engineered narration outside the documented protocol. Reliable observability needed a different surface — Phase B.
+- **Phase B — Hook-driven observability (goals 1, 2, 3, 14).** Use Claude Code hooks as the observability source instead of channel narration:
+  - Generate a per-session `settings.json` with HTTP-type hooks for `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `MessageDisplay` / `Stop` / `StopFailure` / `SubagentStart` / `SubagentStop` / `SessionStart` / `UserPromptSubmit`, all pointing at the bridge URL.
+  - Bridge `/hook/<EventName>` routes translate hook payloads into the same `claude-channel:*` events Phase A defined. Renderer is unchanged.
+  - Channel MCP server instructions trim down: Claude is told observability is handled out-of-band, no need to call `bat_*` tools. The legacy tools stay registered for back-compat but are no longer recommended in `instructions`.
+  - Hook is now the canonical source of truth for assistant text, tool calls, tool results, turn boundaries, and subagent lifecycle.
+- **Phase C — Permission relay (goal 4).** Adopt the official `claude/channel/permission` protocol, NOT a hand-rolled tool:
+  - Declare `capabilities.experimental['claude/channel/permission'] = {}` on the channel server.
+  - Handle inbound `notifications/claude/channel/permission_request` (payload: `{request_id, tool_name, description, input_preview}`).
+  - Emit outbound verdict via `notifications/claude/channel/permission` (`{request_id, behavior: 'allow' | 'deny'}`).
+  - Plug into the existing BAT permission queue used by SDK `canUseTool`.
+  - Alternative considered: `PermissionRequest` hook. Open question which one plays better with BAT's existing permission UI — to be settled when implementing.
+- **Phase D — Per-turn cancel (goal 6).** Probe whether the CLI accepts a cancel signal (PTY Ctrl-C, slash command, or future channel control). Wire the existing Stop button to it. Capability flag controls UI.
+- **Phase E — Session integration (goals 8, 9, 10) + transport review.** Channel sessions get the same workspace-store / history / archive treatment as SDK sessions. Add the "Subscription (CLI)" badge. Share CLI resolver and auth flow. Re-evaluate whether the bridge stays on HTTP loopback or moves to named pipe / Unix domain socket — protocol stays the same either way, this is purely a transport hardening decision.
+- **Phase F — Promote out of BAT_DEBUG (goal 12).** Replace the env gate with a settings opt-in (e.g. `Use Claude CLI (subscription) instead of SDK`). Keep `BAT_DEBUG` only for diagnostic surfaces. Both panels coexist; user picks the path explicitly.
+
+## Channel Protocol Reality (verified from official docs 2026)
+
+What the documented `claude/channel` protocol actually gives us:
+- **Inbound** (BAT → Claude): `notifications/claude/channel` with `{content, meta}`, wrapped in Claude's context as `<channel source="..." key="value">content</channel>`. Drop-and-forget; no acknowledgment.
+- **Outbound** (Claude → BAT): ONE reply MCP tool. Reference impl is `reply({chat_id, text})`. Claude calls it once per turn with final text. **This is all the protocol does for outbound.**
+- **Permission relay** (Claude Code → BAT, separate path): official `notifications/claude/channel/permission_request` / `notifications/claude/channel/permission`. Real protocol, not invented.
+
+What the channel protocol does NOT give us:
+- Streaming assistant text deltas.
+- Tool use visibility.
+- Tool result visibility.
+- Thinking blocks.
+- Token usage.
+- Per-turn cancel.
+
+The remote platforms in official channel examples (Telegram, Discord, fakechat) only see **the final assistant text** — the local terminal sees tool calls; the channel does not.
+
+## Hook Protocol (the real observability surface)
+
+Claude Code hooks fire on lifecycle events inside the CLI process and POST structured JSON to a configured handler. Used as the primary observability source from Phase B onward.
+
+Useful hooks for BAT and what they expose:
+
+| Hook | Payload (relevant fields) | BAT use |
+| :--- | :--- | :--- |
+| `PreToolUse` | `tool_name`, `tool_input`, `tool_use_id` | Render upcoming tool call |
+| `PostToolUse` | `tool_name`, `tool_input`, `tool_response`, `tool_use_id`, `duration_ms` | Render tool result |
+| `PostToolUseFailure` | `tool_name`, `tool_input`, `tool_use_id`, `error`, `is_interrupt`, `duration_ms` | Render tool error |
+| `PostToolBatch` | `tool_calls[]` | Optional: batch parallel tool results (currently using individual PostToolUse instead) |
+| `MessageDisplay` | `turn_id`, `message_id`, `index`, `final`, `delta` | Render assistant text (streamed by batches) |
+| `Stop` | turn-end signal | Mark turn complete |
+| `StopFailure` | `error_type`, `error_message` | Mark turn errored |
+| `SubagentStart` / `SubagentStop` | `agent_id`, `agent_type` | Subagent lifecycle status |
+| `SessionStart` | `model`, `source`, `agent_type` | Session metadata |
+| `PermissionRequest` | `tool_name`, `tool_input`, `permission_suggestions` | Alternative to channel/permission for Phase C |
+
+Hook configuration types: `command`, `http`, `mcp_tool`, `prompt`, `agent`. BAT uses `http` exclusively: a per-session `settings.json` registers each hook pointing at `<bridgeUrl>/hook/<EventName>`.
+
+## Known Limits
+
+Even with channel + hooks combined, the following are not available to BAT and we should not promise them in UI:
+
+- **Thinking blocks**: not exposed by either channel or hooks. The SDK path can see them; the CLI-via-channel path cannot.
+- **Main-model token usage**: not exposed. `PostToolUse` for the Agent tool includes subagent usage, but the main turn's token counts are not surfaced.
+- **Token-level streaming**: not available. `MessageDisplay` batches at completed lines, not individual tokens.
+- **Per-turn cancel as a first-class API**: not documented. We will rely on PTY Ctrl-C or future CLI surface.
+
+## Out of Scope
+
+### Remote Control (`/remote`, `claude remote-control`, `claude --remote-control`)
+
+Reviewed for observability potential and explicitly rejected:
+- Mechanism: local CLI opens outbound HTTPS poll/stream to Anthropic API; claude.ai web/mobile connects to the same API; **Anthropic's servers route messages between the two**.
+- Protocol: not publicly documented at the wire level. No endpoint, schema, or frame format published.
+- Auth: forces `claude.ai` OAuth with a full-scope session token. API keys, `CLAUDE_CODE_OAUTH_TOKEN`, Bedrock, Vertex, Foundry all rejected.
+- Traffic: traverses Anthropic cloud even though Claude runs locally. Doesn't fit BAT's "everything local, subscription billing" target.
+
+The richer SDKMessage-like stream that claude.ai web shows almost certainly exists inside the CLI to feed Remote Control, but Anthropic only exposes it through this closed, cloud-routed surface. Hooks + channels are what we get for third parties.
+
+## Bridge transport note
+
+The bridge between BAT sidecar and the spawned channel MCP server currently uses HTTP loopback because:
+- Claude CLI spawns the channel MCP server (via `--mcp-config`), not the sidecar — so its stdio is owned by Claude's MCP transport and Node parent-child IPC (`process.send`) is unavailable.
+- The MCP server needs an out-of-band channel to BAT; environment variables carry the connection address.
+- HTTP localhost is the cheapest portable choice on Windows / macOS / Linux.
+
+Named pipe (Windows) / Unix domain socket (macOS / Linux) would be cleaner — no port allocation, no firewall prompts, per-process naming. The frame protocol (Phase A) and permission protocol (Phase C) are independent of the underlying transport, so the switch is deferred to Phase E without blocking parity work.
+
+## Goal (legacy framing, kept for context)
 
 Add an experimental `Claude Channel Agent` session type that keeps a Claude-agent-style workflow, but uses Claude Code Channels as the transport between Better Agent Terminal and a running Claude Code agent session.
 
 This is not a replacement for the existing Claude SDK agent. It is a debug-only experiment that must be easy to remove if the channel approach is not viable.
+
+> Note: the Revised Design Goals above supersede this framing. Sections below were written under the old debug-only assumption and need updating as the path-to-parity phases land. Don't treat them as authoritative when they contradict the goals.
 
 ## Product Shape
 
