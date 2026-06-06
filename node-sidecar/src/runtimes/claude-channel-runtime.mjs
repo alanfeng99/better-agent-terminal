@@ -16,7 +16,7 @@ const sessions = new Map()
 const endedSessions = new Map()
 const POLL_TIMEOUT_MS = 25_000
 const STARTUP_SETTLE_MS = 350
-const CHANNEL_READY_TIMEOUT_MS = 5_000
+const CHANNEL_READY_TIMEOUT_MS = 20_000
 const STDERR_TAIL_LIMIT = 4000
 const ENDED_SESSION_TTL_MS = 10 * 60 * 1000
 const ENDED_SESSION_LIMIT = 100
@@ -435,25 +435,31 @@ function cleanProcessOutput(value) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
 }
 
-function shouldAutoConfirmDevelopmentChannel(session, chunk) {
+// Match against the accumulated output (stderrTail), not a single chunk: the
+// PTY delivers the prompt in pieces, so the "mentions" and "asks" signals can
+// land in different chunks.
+function shouldAutoConfirmDevelopmentChannel(session) {
   if (session.developmentChannelConfirmed) return false
-  const text = stripAnsi(chunk).toLowerCase()
+  const text = stripAnsi(session.stderrTail || '').toLowerCase()
   const mentionsDevelopmentChannel =
     text.includes('development channel')
     || text.includes('dangerously-load-development-channels')
     || (text.includes('allowlist') && text.includes('channel'))
+  if (!mentionsDevelopmentChannel) return false
   const asksForConfirmation =
-    text.includes('y/n')
+    text.includes('enter to confirm')
+    || text.includes('i am using this for local development')
+    || text.includes('y/n')
     || text.includes('yes/no')
     || text.includes('[y')
     || text.includes('continue')
     || text.includes('proceed')
-  return mentionsDevelopmentChannel && asksForConfirmation
+  return asksForConfirmation
 }
 
-function shouldAutoConfirmWorkspaceTrust(session, chunk) {
+function shouldAutoConfirmWorkspaceTrust(session) {
   if (session.workspaceTrustConfirmed) return false
-  const text = stripAnsi(chunk).toLowerCase()
+  const text = stripAnsi(session.stderrTail || '').toLowerCase()
   const mentionsTrustPrompt =
     text.includes('do you trust this folder')
     || text.includes('trust this folder')
@@ -462,6 +468,22 @@ function shouldAutoConfirmWorkspaceTrust(session, chunk) {
     text.includes('yes, i trust this folder')
     || (text.includes('1.') && text.includes('yes') && text.includes('2.') && text.includes('no'))
   return mentionsTrustPrompt && hasTrustChoice
+}
+
+// Send a confirmation keystroke, retrying a couple times: the Ink select may not
+// be mounted the instant its prompt text reaches us, so a single write can be
+// dropped.
+function confirmPromptWithRetries(child, keys) {
+  const send = () => {
+    try {
+      child.write(keys)
+    } catch {
+      // The child may have already exited; ignore.
+    }
+  }
+  send()
+  setTimeout(send, 300)
+  setTimeout(send, 900)
 }
 
 function startupFailureMessage(result) {
@@ -566,39 +588,48 @@ async function spawnClaudeProcess(session, cliPath, args, bridgeUrl) {
   const env = { ...process.env, BAT_CHANNEL_BRIDGE_URL: bridgeUrl, TERM: process.env.TERM || 'xterm-256color' }
   const pty = await loadNodePty()
   if (pty?.spawn) {
-    const child = pty.spawn(cliPath, args, {
-      cwd: session.cwd,
-      env,
-      name: 'xterm-256color',
-      cols: 100,
-      rows: 32,
-    })
-    const processHandle = {
-      kind: 'pty',
-      killed: false,
-      kill(signal = 'SIGTERM') {
-        processHandle.killed = true
-        if (process.platform === 'win32') child.kill()
-        else child.kill(signal)
-      },
-    }
-    child.onData(chunk => {
-      session.stderrTail = appendOutputTail(session.stderrTail, chunk)
-      log('[claude-channel:pty]', session.sessionId, String(chunk).trimEnd())
-      if (shouldAutoConfirmDevelopmentChannel(session, chunk)) {
-        session.developmentChannelConfirmed = true
-        log('[claude-channel:pty]', session.sessionId, 'auto-confirming development channel prompt')
-        child.write('y\r')
-      } else if (shouldAutoConfirmWorkspaceTrust(session, chunk)) {
-        session.workspaceTrustConfirmed = true
-        log('[claude-channel:pty]', session.sessionId, 'auto-confirming workspace trust prompt')
-        child.write('1\r')
+    try {
+      const child = pty.spawn(cliPath, args, {
+        cwd: session.cwd,
+        env,
+        name: 'xterm-256color',
+        cols: 100,
+        rows: 32,
+      })
+      const processHandle = {
+        kind: 'pty',
+        killed: false,
+        kill(signal = 'SIGTERM') {
+          processHandle.killed = true
+          if (process.platform === 'win32') child.kill()
+          else child.kill(signal)
+        },
       }
-    })
-    child.onExit(event => {
-      notifyProcessExit(session, event.exitCode, event.signal || null)
-    })
-    return processHandle
+      child.onData(chunk => {
+        session.stderrTail = appendOutputTail(session.stderrTail, chunk)
+        log('[claude-channel:pty]', session.sessionId, String(chunk).trimEnd())
+        if (shouldAutoConfirmDevelopmentChannel(session)) {
+          session.developmentChannelConfirmed = true
+          log('[claude-channel:pty]', session.sessionId, 'auto-confirming development channel prompt')
+          // Option 1 ("I am using this for local development") is pre-selected;
+          // the prompt says "Enter to confirm", so a carriage return accepts it.
+          // Retry a couple times in case the Ink select isn't mounted yet.
+          confirmPromptWithRetries(child, '\r')
+        } else if (shouldAutoConfirmWorkspaceTrust(session)) {
+          session.workspaceTrustConfirmed = true
+          log('[claude-channel:pty]', session.sessionId, 'auto-confirming workspace trust prompt')
+          confirmPromptWithRetries(child, '1\r')
+        }
+      })
+      child.onExit(event => {
+        notifyProcessExit(session, event.exitCode, event.signal || null)
+      })
+      return processHandle
+    } catch (err) {
+      // node-pty can load but still fail to spawn (e.g. bundled/native mismatch,
+      // missing conpty helper). Don't crash the session — fall back to child_process.
+      warn('[claude-channel] node-pty spawn failed; falling back to child_process', err instanceof Error ? err.message : String(err))
+    }
   }
 
   const child = spawnChildProcess(cliPath, args, {

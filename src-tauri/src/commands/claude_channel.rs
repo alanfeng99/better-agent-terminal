@@ -5,12 +5,18 @@ use std::time::Duration;
 use tauri::{AppHandle, State};
 
 const CHANNEL_TIMEOUT: Duration = Duration::from_secs(15);
+// startSession can block in the sidecar until the channel connects (CLI prompt
+// confirmation + MCP server spawn + bridge handshake), which is bounded by the
+// sidecar's ~20s channel-ready wait. Keep the host timeout above that so Rust
+// receives the sidecar's real result/error instead of timing out first.
+const CHANNEL_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn call_channel(
     app: &AppHandle,
     state: &SidecarState,
     method: &str,
     mut params: Value,
+    timeout: Duration,
 ) -> Result<Value, BridgeError> {
     if let Value::Object(map) = &mut params {
         map.entry("cliPath".to_string())
@@ -18,7 +24,7 @@ fn call_channel(
     }
     let cfg = resolve_spawn_config(app)?;
     let sink = app_handle_emit_sink(app.clone());
-    state.call_with_emit(&cfg, Some(sink), method, params, CHANNEL_TIMEOUT)
+    state.call_with_emit(&cfg, Some(sink), method, params, timeout)
 }
 
 async fn call_channel_blocking(
@@ -26,9 +32,10 @@ async fn call_channel_blocking(
     state: State<'_, SidecarState>,
     method: &'static str,
     params: Value,
+    timeout: Duration,
 ) -> Result<Value, BridgeError> {
     let sidecar = (*state).clone();
-    tauri::async_runtime::spawn_blocking(move || call_channel(&app, &sidecar, method, params))
+    tauri::async_runtime::spawn_blocking(move || call_channel(&app, &sidecar, method, params, timeout))
         .await
         .map_err(|err| BridgeError {
             message: format!("{method} worker failed: {err}"),
@@ -40,7 +47,7 @@ pub async fn claude_channel_get_capabilities(
     app: AppHandle,
     state: State<'_, SidecarState>,
 ) -> Result<Value, BridgeError> {
-    call_channel_blocking(app, state, "claudeChannel.getCapabilities", json!({})).await
+    call_channel_blocking(app, state, "claudeChannel.getCapabilities", json!({}), CHANNEL_TIMEOUT).await
 }
 
 #[tauri::command]
@@ -60,6 +67,7 @@ pub async fn claude_channel_start_session(
         state,
         "claudeChannel.startSession",
         Value::Object(params),
+        CHANNEL_START_TIMEOUT,
     )
     .await
 }
@@ -81,6 +89,7 @@ pub async fn claude_channel_send_message(
             "prompt": prompt,
             "messageId": message_id,
         }),
+        CHANNEL_TIMEOUT,
     )
     .await
 }
@@ -96,6 +105,7 @@ pub async fn claude_channel_stop_session(
         state,
         "claudeChannel.stopSession",
         json!({ "sessionId": session_id }),
+        CHANNEL_TIMEOUT,
     )
     .await
 }
@@ -111,6 +121,7 @@ pub async fn claude_channel_get_status(
         state,
         "claudeChannel.getStatus",
         json!({ "sessionId": session_id }),
+        CHANNEL_TIMEOUT,
     )
     .await
 }

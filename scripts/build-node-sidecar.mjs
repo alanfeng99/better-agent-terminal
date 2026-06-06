@@ -23,6 +23,12 @@ await build({
   target: ['node20'],
   external: [
     '@anthropic-ai/claude-agent-sdk-*',
+    // node-pty is a native module: its Windows conpty path uses `__dirname` and
+    // forks on-disk helper files, neither of which survive ESM bundling. Keep it
+    // external so it loads from node_modules at runtime (createRequire/dynamic
+    // import); when it's unavailable the channel runtime falls back to
+    // child_process instead of crashing with "__dirname is not defined".
+    '@lydell/node-pty',
   ],
   banner: {
     js: "import { createRequire as __batCreateRequire } from 'node:module'; const require = __batCreateRequire(import.meta.url);",
