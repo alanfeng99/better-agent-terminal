@@ -142,14 +142,13 @@ jobs:
             bundle_mode: all-in-one
             asset_mode: ''
             prerelease: false
-          # Linux arm64 AppImage (#113). The aarch64 linuxdeploy gtk plugin has been
-          # failing ("subprocess failed (exit code 2)") and `release` needs the whole
-          # `build` matrix, so one failing leg skips the release for ALL platforms —
-          # that is why v3.1.13/14/15 published nothing (continue-on-error does NOT
-          # exempt a leg from `needs` gating). It is therefore gated `pre_only: true`:
-          # it builds ONLY on -pre tags (for diagnosis) and is SKIPPED on stable tags,
-          # so it can never block a stable `release new tag version`. Flip pre_only to
-          # false once a -pre run produces a green arm64 AppImage.
+          # Linux arm64 AppImage (#113). The earlier "subprocess failed (exit code 2)"
+          # crash was caused by the Tauri bundle-tools cache leaking the x86_64
+          # linuxdeploy-plugin-appimage onto the aarch64 leg (now fixed by arch-scoping
+          # that cache key). With the root cause fixed, arm64 builds green (validated on
+          # v3.1.18-pre.2) and ships on BOTH stable and -pre tags like the other legs —
+          # so pre_only is false. (The pre_only gate stays as a one-line lever in case a
+          # future leg needs to be -pre-only while it is stabilized.)
           - os: ubuntu-22.04-arm
             platform: linux
             arch: arm64
@@ -159,7 +158,7 @@ jobs:
             bundle_mode: all-in-one
             asset_mode: ''
             prerelease: true
-            pre_only: true
+            pre_only: false
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
