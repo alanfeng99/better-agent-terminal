@@ -294,9 +294,16 @@ jobs:
             ~/.cache/tauri
             ~/.cache/tauri-apps
             ~/.cache/linuxdeploy
-          key: ${{ runner.os }}-tauri-tools-${{ hashFiles('src-tauri/Cargo.lock') }}
+          # MUST include matrix.arch. ~/.cache/tauri holds linuxdeploy + the
+          # arch-agnostic-named linuxdeploy-plugin-appimage.AppImage. Keying only on
+          # runner.os ("Linux" for both x64 and arm64) let the x86_64 leg's cache
+          # restore onto the aarch64 leg; tauri re-fetched linuxdeploy-aarch64 but
+          # reused the cached x86_64 appimage plugin, so linuxdeploy aborted at
+          # startup with "subprocess failed (exit code 2)" (Exec format error) — the
+          # #113 arm64 failure. Every other cache below is already arch-scoped.
+          key: ${{ runner.os }}-${{ matrix.arch }}-tauri-tools-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-tauri-tools-
+            ${{ runner.os }}-${{ matrix.arch }}-tauri-tools-
 
       - name: Cache root node_modules
         if: env.BUILD_MATRIX_ENTRY == 'true'
