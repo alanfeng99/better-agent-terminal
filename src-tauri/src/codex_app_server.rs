@@ -2043,9 +2043,16 @@ impl CodexAppServerState {
     }
 
     fn drop_connection(&self) {
-        if let Ok(mut guard) = self.inner.connection.lock() {
-            let old = guard.take();
-            drop(old);
+        let old = match self.inner.connection.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_) => return,
+        };
+        // Dropping a CodexConnection kills AND waits the child app-server, which
+        // can block for up to ~1s. On account switch the identity files are
+        // already swapped, so reap the old process off-thread; this keeps the
+        // switch snappy and lets the new app-server spawn in parallel.
+        if let Some(old) = old {
+            std::thread::spawn(move || drop(old));
         }
     }
 
@@ -2081,9 +2088,44 @@ impl CodexAppServerState {
         let account = codex_account_store::switch_unified_account(&app_data, &shared, &id)
             .map_err(|err| err.to_string())?;
         // Drop the connection so the next request lazily respawns the app-server
-        // with the swapped identity. Keep thread_to_session (the shared sessions
-        // store is unchanged) and do NOT mark sessions "starting".
+        // with the swapped identity.
         self.drop_connection();
+        // Reset every session's thread state (mirrors the legacy switch path). A
+        // codex thread/rollout is bound to the identity that created it, so the
+        // newly swapped-in account cannot resume the previous account's thread
+        // ("thread not found / no rollout found"). Clearing the thread ids makes
+        // the next message start a fresh thread for the new account instead of
+        // trying to resume a stale one.
+        self.inner
+            .thread_to_session
+            .lock()
+            .map_err(|_| "codex thread map lock poisoned".to_string())?
+            .clear();
+        let mut updates = Vec::new();
+        {
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .map_err(|_| "codex sessions lock poisoned".to_string())?;
+            for (session_id, session) in sessions.iter_mut() {
+                session.thread_id = None;
+                session.active_turn_id = None;
+                session.active_turn_key = None;
+                session.is_running = false;
+                session.is_resting = false;
+                session.abort_requested = false;
+                set_runtime_status(
+                    session,
+                    "starting",
+                    "Codex account switched. The next message will start a new Codex thread.",
+                );
+                updates.push((session_id.clone(), session.metadata()));
+            }
+        }
+        for (session_id, meta) in updates {
+            emit(app, "claude:status", &session_id, "meta", meta);
+        }
         app_cmd::log_tauri(app, &format!("[codex-account] unified switch -> {id}"));
         Ok(json!({
             "success": true,

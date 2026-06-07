@@ -402,6 +402,25 @@
   color: #3fb950;
 }
 
+/* While one account is switching, dim the others and stop the cursor hint. */
+.workspace-account-menu-item:disabled {
+  cursor: default;
+}
+
+.workspace-account-menu-item:disabled:not(.switching) {
+  opacity: 0.45;
+}
+
+.workspace-account-menu-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-account-menu-item-main .workspace-account-menu-label {
+  flex: 1 1 auto;
+}
+
 .workspace-account-menu-label,
 .workspace-account-menu-path {
   min-width: 0;

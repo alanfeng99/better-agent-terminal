@@ -208,6 +208,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [cliVersions, setCliVersions] = useState<CliVersions | null>(null)
   const [loginPending, setLoginPending] = useState(false)
+  // Id of the account row currently being switched to, so the menu can show a
+  // spinner immediately (the backend swap is fast, but the agent then respawns).
+  const [switchingId, setSwitchingId] = useState<string | null>(null)
   const lastRenderSummaryRef = useRef<string>('')
   // Preset IDs the host knows how to start. `null` until fetched — fall back
   // to the local list so menus aren't empty during the brief load window.
@@ -523,28 +526,36 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   // Switch Claude/Codex account directly from the chip menu. The id is the
   // correct selector for both agents and both Codex modes (legacy id == path).
   const handleAccountSwitch = useCallback(async (entry: AccountMenuEntry, kind: 'claude' | 'codex') => {
-    if (entry.active || !entry.id) {
+    if (entry.active || !entry.id || switchingId) {
       setAccountMenuOpen(false)
       return
     }
+    // Show an immediate spinner on the clicked row — the backend swap itself is
+    // quick, but the agent then respawns with the new identity, so without this
+    // the menu just sits on the old state and the switch feels unresponsive.
+    setSwitchingId(entry.id)
     try {
       if (kind === 'codex') {
         const result = await host.codex.accountSwitch(entry.id) as { success?: boolean }
-        if (result?.success === false) return
+        if (result?.success === false) { setSwitchingId(null); return }
         window.dispatchEvent(new CustomEvent('codex-account-switched', { detail: { accountId: entry.id } }))
       } else {
         const ok = await host.claude.accountSwitch(entry.id) as boolean
-        if (ok === false) return
+        if (ok === false) { setSwitchingId(null); return }
         window.dispatchEvent(new CustomEvent('claude-account-switched', { detail: { accountId: entry.id } }))
       }
     } catch (error) {
       // Surfaces e.g. the unified-mode "turn is running" denial.
       void host.debug.log(`[WorkspaceView] ${kind} account switch failed: ${errorMessage(error)}`)
+      setSwitchingId(null)
       return
     }
-    setAccountMenuOpen(false)
+    // refreshAccountChip re-reads the (already-swapped) active account and closes
+    // the menu; the agent respawn it triggered keeps running in the background.
     await refreshAccountChip()
-  }, [refreshAccountChip])
+    setSwitchingId(null)
+    setAccountMenuOpen(false)
+  }, [refreshAccountChip, switchingId])
 
   // Initialize terminals when workspace becomes active
   // If terminals were restored from a saved profile, start their PTY/agent processes
@@ -1068,11 +1079,15 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
                 {(accountChip.accounts || []).map(account => (
                   <button
                     key={account.id || account.label}
-                    className={`workspace-account-menu-item${account.active ? ' active' : ''}`}
+                    className={`workspace-account-menu-item${account.active ? ' active' : ''}${switchingId === account.id ? ' switching' : ''}`}
                     onClick={() => { void handleAccountSwitch(account, accountChip.kind) }}
                     title={account.sublabel || account.label}
+                    disabled={Boolean(switchingId)}
                   >
-                    <span className="workspace-account-menu-label">{account.label}</span>
+                    <span className="workspace-account-menu-item-main">
+                      <span className="workspace-account-menu-label">{account.label}</span>
+                      {switchingId === account.id && <span className="workspace-account-spinner" />}
+                    </span>
                     {account.sublabel && (
                       <span className="workspace-account-menu-path">{account.sublabel}</span>
                     )}
