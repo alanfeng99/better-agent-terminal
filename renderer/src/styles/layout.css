@@ -411,6 +411,14 @@
   opacity: 0.45;
 }
 
+.workspace-account-menu-item.needs-login {
+  opacity: 1;
+}
+
+.workspace-account-menu-item.needs-login .workspace-account-menu-label {
+  color: var(--text-secondary);
+}
+
 .workspace-account-menu-item-main {
   display: flex;
   align-items: center;
@@ -437,6 +445,28 @@
 .workspace-account-menu-path {
   color: var(--text-secondary);
   font-size: 10px;
+}
+
+.workspace-account-menu-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid rgba(248, 81, 73, 0.55);
+  border-radius: 999px;
+  color: #f85149;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.workspace-account-menu-error {
+  margin: 2px 2px 4px;
+  padding: 7px 8px;
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  border-radius: 4px;
+  background: rgba(248, 81, 73, 0.10);
+  color: #ffb4ad;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .workspace-account-menu-action .workspace-account-menu-label {

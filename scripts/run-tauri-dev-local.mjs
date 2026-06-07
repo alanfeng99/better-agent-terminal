@@ -65,6 +65,7 @@ const defaultDataDir = isolatedProfileMode
 if (isolatedProfileMode) {
   env.BAT_TAURI_DATA_DIR = env.BAT_TAURI_DEV_DATA_DIR || defaultDataDir
   env.BAT_SIDECAR_DATA_DIR = env.BAT_TAURI_DEV_SIDECAR_DATA_DIR || env.BAT_TAURI_DATA_DIR
+  if (env.BAT_TAURI_DEV_CODEX_HOME) env.CODEX_HOME = env.BAT_TAURI_DEV_CODEX_HOME
 } else {
   if (!env.BAT_TAURI_DATA_DIR) env.BAT_TAURI_DATA_DIR = defaultDataDir
   if (!env.BAT_SIDECAR_DATA_DIR) env.BAT_SIDECAR_DATA_DIR = env.BAT_TAURI_DATA_DIR
@@ -196,6 +197,9 @@ if (isolatedProfileMode && !hasProfileArg(forwardedArgs)) {
 if (process.argv.includes('--print-env')) {
   console.log(`BAT_TAURI_DATA_DIR=${env.BAT_TAURI_DATA_DIR}`)
   console.log(`BAT_SIDECAR_DATA_DIR=${env.BAT_SIDECAR_DATA_DIR}`)
+  if (env.CODEX_HOME) {
+    console.log(`CODEX_HOME=${env.CODEX_HOME}`)
+  }
   if (isolatedProfileMode) {
     console.log(`BAT_TAURI_DEV_PROFILE_ID=${isolatedProfileId}`)
   }

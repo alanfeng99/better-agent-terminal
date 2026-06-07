@@ -77,7 +77,7 @@
     "defaultCodexEffort": "Default Codex Thinking Mode",
     "defaultCodexEffortHint": "Codex effort used for new Codex Agent sessions.",
     "codexUnifiedAccounts": "Share Codex sessions across accounts",
-    "codexUnifiedAccountsHint": "On by default. Runs all Codex accounts from one ~/.codex so they share the same session list and can continue each other's work; switching swaps only the account's auth/memory. Existing .codex-iso-* homes are copied (migrated automatically on first launch), never deleted. Uncheck to go back to separate per-account homes.",
+    "codexUnifiedAccountsHint": "On by default. Runs all Codex accounts from one ~/.codex so they share the same sessions and runtime state; switching replaces only auth.json. Existing .codex-iso-* homes are copied (migrated automatically on first launch), never deleted. Uncheck to go back to separate per-account homes.",
     "codexUnifiedMigrated": "Enabled. Registered {{accounts}} account(s); merged {{sessions}} session(s) into the shared home.",
     "codexUnifiedAlreadyMigrated": "Enabled. Accounts were already migrated.",
     "autoCompactWindow": "Auto-Compact Window",

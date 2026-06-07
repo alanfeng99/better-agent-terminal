@@ -16,7 +16,9 @@
 
 use crate::account_store;
 use crate::app_data;
-use crate::codex_app_server::{active_codex_home, should_handle_codex, CodexAppServerState};
+use crate::codex_app_server::{
+    active_codex_home, is_codex_agent_preset_id, should_handle_codex, CodexAppServerState,
+};
 use crate::commands::app as app_cmd;
 use crate::commands::notification as notification_cmd;
 use crate::commands::profile as profile_cmd;
@@ -2658,9 +2660,16 @@ impl ClaudeRuntimeRouter {
         })
     }
 
-    async fn session_state(&self, session_id: String) -> Result<Value, BridgeError> {
+    async fn session_state(
+        &self,
+        session_id: String,
+        agent_preset: Option<String>,
+    ) -> Result<Value, BridgeError> {
         if let Some(value) = self.codex.get_session_state(&session_id) {
             return Ok(value);
+        }
+        if is_codex_agent_preset_id(agent_preset.as_deref()) {
+            return Ok(Value::Null);
         }
         if let Some(session) = notification_cmd::get_agent_session_snapshot(&self.app, &session_id)
         {
@@ -2674,9 +2683,16 @@ impl ClaudeRuntimeRouter {
         .await
     }
 
-    async fn session_meta(&self, session_id: String) -> Result<Value, BridgeError> {
+    async fn session_meta(
+        &self,
+        session_id: String,
+        agent_preset: Option<String>,
+    ) -> Result<Value, BridgeError> {
         if let Some(value) = self.codex.get_session_meta(&session_id) {
             return Ok(value);
+        }
+        if is_codex_agent_preset_id(agent_preset.as_deref()) {
+            return Ok(Value::Null);
         }
         if let Some(session) = notification_cmd::get_agent_session_snapshot(&self.app, &session_id)
         {
@@ -3713,6 +3729,7 @@ pub async fn claude_get_session_state(
     state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
+    agent_preset: Option<String>,
 ) -> Result<Value, BridgeError> {
     if let Some(result) = remote_invoke_for_window(
         &app,
@@ -3727,7 +3744,7 @@ pub async fn claude_get_session_state(
         return result;
     }
     ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
-        .session_state(session_id)
+        .session_state(session_id, agent_preset)
         .await
 }
 
@@ -3738,6 +3755,7 @@ pub async fn claude_get_session_meta(
     state: State<'_, SidecarState>,
     codex_state: State<'_, CodexAppServerState>,
     session_id: String,
+    agent_preset: Option<String>,
 ) -> Result<Value, BridgeError> {
     if let Some(result) = remote_invoke_for_window(
         &app,
@@ -3752,7 +3770,7 @@ pub async fn claude_get_session_meta(
         return result;
     }
     ClaudeRuntimeRouter::from_states(app, &state, &codex_state)
-        .session_meta(session_id)
+        .session_meta(session_id, agent_preset)
         .await
 }
 

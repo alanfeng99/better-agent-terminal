@@ -329,6 +329,15 @@ async function attachWorkspaceIdentity(
   }
 }
 
+async function getAgentPresetForSession(sessionId: string): Promise<string | undefined> {
+  try {
+    const { workspaceStore } = await import('./stores/workspace-store')
+    return workspaceStore.getState().terminals.find(t => t.id === sessionId)?.agentPreset
+  } catch {
+    return undefined
+  }
+}
+
 const CLAUDE_EVENT_PAYLOAD_KEYS: Record<string, string> = {
   onMessage: 'message',
   onToolUse: 'toolCall',
@@ -1091,7 +1100,10 @@ function createTauriHost(): BatAppAPI {
         }
         if (sessionReadCommands[key]) {
           const cmd = sessionReadCommands[key]
-          return (sessionId: string) => getInvoke()<unknown>(cmd, { sessionId })
+          return async (sessionId: string) => getInvoke()<unknown>(cmd, {
+            sessionId,
+            agentPreset: await getAgentPresetForSession(sessionId),
+          })
         }
         // Listener registrations — the sidecar emits id-less notifications
         // like {"method":"event:claude:message","params":{sessionId,...}}.

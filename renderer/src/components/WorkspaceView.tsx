@@ -27,6 +27,8 @@ type AccountMenuEntry = {
   label: string       // primary line (email)
   sublabel?: string   // secondary line (subscription tier / CODEX_HOME path)
   active?: boolean
+  needsLogin?: boolean
+  lastAuthError?: string
 }
 
 type WorkspaceAccountChip = {
@@ -47,6 +49,8 @@ type CodexAccountEntry = {
   active?: boolean
   unified?: boolean
   accountId?: string
+  needsLogin?: boolean
+  lastAuthError?: string
 }
 
 type ClaudeAccountEntry = {
@@ -208,8 +212,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [cliVersions, setCliVersions] = useState<CliVersions | null>(null)
   const [loginPending, setLoginPending] = useState(false)
+  const [accountMenuError, setAccountMenuError] = useState<string | null>(null)
   // Id of the account row currently being switched to, so the menu can show a
-  // spinner immediately (the backend swap is fast, but the agent then respawns).
+  // spinner immediately (the backend switch is fast, but the agent then respawns).
   const [switchingId, setSwitchingId] = useState<string | null>(null)
   const lastRenderSummaryRef = useRef<string>('')
   // Preset IDs the host knows how to start. `null` until fetched — fall back
@@ -364,7 +369,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
 
   const refreshAccountChip = useCallback(async () => {
     const preset = accountTerminal?.agentPreset
-    setAccountMenuOpen(false)
+    setAccountMenuError(null)
     if (host.debug.isDebugMode) {
       void host.debug.log(
         `[WorkspaceView] account chip resolve preset=${preset ?? 'none'} ` +
@@ -392,8 +397,12 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
         const entries: AccountMenuEntry[] = raw.map(account => ({
           id: account.id,
           label: account.email || account.label || account.codexHome,
-          sublabel: account.unified ? undefined : account.codexHome,
+          sublabel: account.needsLogin
+            ? 'Needs login'
+            : account.unified ? undefined : account.codexHome,
           active: Boolean(account.active) || (!account.unified && account.codexHome === result.activeCodexHome),
+          needsLogin: Boolean(account.needsLogin),
+          lastAuthError: account.lastAuthError,
         }))
         setAccountChip({
           kind: 'codex',
@@ -484,13 +493,16 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     // ask the user to log in from a terminal instead.
     if (isRemoteConnected) {
       setAccountMenuOpen(true)
+      setAccountMenuError('Log in from a terminal on the host.')
       return
     }
     if (loginPending) return
     // Keep the menu open and show a pending state — the CLI takes a few seconds
     // to spin up before the browser opens, so give the user a transition cue.
     setAccountMenuOpen(true)
+    setAccountMenuError(null)
     setLoginPending(true)
+    let loginError: string | null = null
     try {
       if (kind === 'claude') {
         const result = await host.claude.authLogin() as { success?: boolean; error?: string }
@@ -504,11 +516,17 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
         window.dispatchEvent(new CustomEvent('codex-account-switched', { detail: {} }))
       }
     } catch (error) {
-      void host.debug.log(`[WorkspaceView] ${kind} login failed: ${errorMessage(error)}`)
+      loginError = errorMessage(error)
+      void host.debug.log(`[WorkspaceView] ${kind} login failed: ${loginError}`)
     }
     setLoginPending(false)
-    setAccountMenuOpen(false)
     await refreshAccountChip()
+    if (loginError) {
+      setAccountMenuError(loginError)
+      setAccountMenuOpen(true)
+    } else {
+      setAccountMenuOpen(false)
+    }
   }, [refreshAccountChip, isRemoteConnected, loginPending])
 
   // Cancel an in-flight Codex login (the browser OAuth hasn't completed yet).
@@ -527,13 +545,19 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
   // correct selector for both agents and both Codex modes (legacy id == path).
   const handleAccountSwitch = useCallback(async (entry: AccountMenuEntry, kind: 'claude' | 'codex') => {
     if (entry.active || !entry.id || switchingId) {
-      setAccountMenuOpen(false)
+      if (!entry.active) setAccountMenuOpen(false)
       return
     }
-    // Show an immediate spinner on the clicked row — the backend swap itself is
-    // quick, but the agent then respawns with the new identity, so without this
+    if (entry.needsLogin) {
+      setAccountMenuError(`${entry.label} needs login before it can be used again.`)
+      setAccountMenuOpen(true)
+      return
+    }
+    // Show an immediate spinner on the clicked row — the backend switch itself is
+    // quick, but the agent then respawns with the new auth, so without this
     // the menu just sits on the old state and the switch feels unresponsive.
     setSwitchingId(entry.id)
+    setAccountMenuError(null)
     try {
       if (kind === 'codex') {
         const result = await host.codex.accountSwitch(entry.id) as { success?: boolean }
@@ -546,11 +570,15 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       }
     } catch (error) {
       // Surfaces e.g. the unified-mode "turn is running" denial.
-      void host.debug.log(`[WorkspaceView] ${kind} account switch failed: ${errorMessage(error)}`)
+      await refreshAccountChip()
+      const message = errorMessage(error)
+      void host.debug.log(`[WorkspaceView] ${kind} account switch failed: ${message}`)
+      setAccountMenuError(message)
+      setAccountMenuOpen(true)
       setSwitchingId(null)
       return
     }
-    // refreshAccountChip re-reads the (already-swapped) active account and closes
+    // refreshAccountChip re-reads the updated active account and closes
     // the menu; the agent respawn it triggered keeps running in the background.
     await refreshAccountChip()
     setSwitchingId(null)
@@ -1076,16 +1104,22 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
             </button>
             {accountMenuOpen && (
               <div className="workspace-account-menu">
+                {accountMenuError && (
+                  <div className="workspace-account-menu-error">
+                    {accountMenuError}
+                  </div>
+                )}
                 {(accountChip.accounts || []).map(account => (
                   <button
                     key={account.id || account.label}
-                    className={`workspace-account-menu-item${account.active ? ' active' : ''}${switchingId === account.id ? ' switching' : ''}`}
+                    className={`workspace-account-menu-item${account.active ? ' active' : ''}${account.needsLogin ? ' needs-login' : ''}${switchingId === account.id ? ' switching' : ''}`}
                     onClick={() => { void handleAccountSwitch(account, accountChip.kind) }}
-                    title={account.sublabel || account.label}
+                    title={account.lastAuthError || account.sublabel || account.label}
                     disabled={Boolean(switchingId)}
                   >
                     <span className="workspace-account-menu-item-main">
                       <span className="workspace-account-menu-label">{account.label}</span>
+                      {account.needsLogin && <span className="workspace-account-menu-badge">Login required</span>}
                       {switchingId === account.id && <span className="workspace-account-spinner" />}
                     </span>
                     {account.sublabel && (

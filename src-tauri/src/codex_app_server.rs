@@ -15,15 +15,17 @@ use crate::subprocess::hide_console_window;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::Hasher;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
@@ -71,6 +73,7 @@ struct CodexConnection {
     pending: Arc<PendingTable>,
     child: Mutex<Child>,
     pid: u32,
+    auth_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -169,8 +172,8 @@ struct CodexInner {
     connection: Mutex<Option<Arc<CodexConnection>>>,
     sessions: Mutex<HashMap<String, CodexSession>>,
     thread_to_session: Mutex<HashMap<String, String>>,
-    // Serializes unified-account identity-bundle file operations (switch /
-    // migrate / capture / remove) so concurrent windows can't interleave swaps.
+    // Serializes unified-account auth catalog operations so concurrent windows
+    // cannot interleave auth.json switches/captures.
     unified_swap_lock: Mutex<()>,
     // Set by account_login_cancel() to abort an in-flight `codex login` child;
     // the run_codex_login poll loop kills the process when it sees this.
@@ -303,12 +306,16 @@ fn bridge_error(message: impl Into<String>) -> BridgeError {
     }
 }
 
-fn is_codex_agent_preset(options: &Value) -> bool {
-    match options.get("agentPreset").and_then(Value::as_str) {
+pub fn is_codex_agent_preset_id(preset: Option<&str>) -> bool {
+    match preset {
         Some("codex-agent") => true,
         Some("codex-agent-worktree") => true,
         _ => false,
     }
+}
+
+fn is_codex_agent_preset(options: &Value) -> bool {
+    is_codex_agent_preset_id(options.get("agentPreset").and_then(Value::as_str))
 }
 
 pub fn should_handle_codex(options: &Option<Value>) -> bool {
@@ -672,9 +679,22 @@ pub fn snapshot_active_identity_on_exit(app: &AppHandle) {
     let (Some(app_data), Some(shared)) = (app_data::app_data_dir_opt(app), shared_home(app)) else {
         return;
     };
+    app_cmd::log_tauri(
+        app,
+        &format!(
+            "[codex-account] snapshot on exit before shared=[{}]",
+            CodexAppServerState::auth_debug_summary(&shared)
+        ),
+    );
     codex_account_store::snapshot_active_for_exit(&app_data, &shared);
+    app_cmd::log_tauri(
+        app,
+        &format!(
+            "[codex-account] snapshot on exit after shared=[{}]",
+            CodexAppServerState::auth_debug_summary(&shared)
+        ),
+    );
 }
-
 
 fn codex_home_label(path: &Path) -> String {
     path.file_name()
@@ -736,6 +756,10 @@ fn unified_account_info_value(
         "active": active,
         "isDefault": false,
         "unified": true,
+        "needsLogin": account.needs_login,
+        "lastValidatedAt": account.last_validated_at,
+        "lastInvalidatedAt": account.last_invalidated_at,
+        "lastAuthError": account.last_auth_error,
     })
 }
 
@@ -1993,7 +2017,156 @@ impl CodexAppServerState {
 
     // --- Tier 2 unified-account operations ---------------------------------
 
+    fn shared_auth_account_id(shared: &Path) -> Option<String> {
+        if shared.join("auth.json").exists() {
+            Some(codex_account_store::derive_account_id(shared))
+        } else {
+            None
+        }
+    }
+
+    fn auth_failure_message(message: &str) -> bool {
+        let lower = message.to_ascii_lowercase();
+        lower.contains("your session has ended")
+            || lower.contains("please log in again")
+            || lower.contains("token_invalidated")
+            || lower.contains("app_session_terminated")
+            || lower.contains("access token could not be refreshed")
+            || lower.contains("failed to refresh token")
+            || lower.contains("401 unauthorized")
+    }
+
+    fn mark_shared_auth_valid(&self, app: &AppHandle, reason: &str) {
+        if !codex_unified_enabled(app) {
+            return;
+        }
+        let (Some(app_data), Some(shared)) = (app_data::app_data_dir_opt(app), shared_home(app))
+        else {
+            return;
+        };
+        match codex_account_store::mark_shared_auth_valid(&app_data, &shared) {
+            Ok(Some(account)) => app_cmd::log_tauri(
+                app,
+                &format!(
+                    "[codex-account] marked valid reason={reason} account={} email={} shared=[{}]",
+                    account.id,
+                    account.email.as_deref().unwrap_or("none"),
+                    Self::auth_debug_summary(&shared)
+                ),
+            ),
+            Ok(None) => {}
+            Err(err) => app_cmd::log_tauri(
+                app,
+                &format!("[codex-account] mark valid failed reason={reason}: {err}"),
+            ),
+        }
+    }
+
+    fn mark_shared_auth_needs_login(&self, app: &AppHandle, reason: &str) {
+        if !codex_unified_enabled(app) {
+            return;
+        }
+        let (Some(app_data), Some(shared)) = (app_data::app_data_dir_opt(app), shared_home(app))
+        else {
+            return;
+        };
+        match codex_account_store::mark_shared_auth_needs_login(&app_data, &shared, reason) {
+            Ok(Some(account)) => app_cmd::log_tauri(
+                app,
+                &format!(
+                    "[codex-account] marked needsLogin account={} email={} reason={} shared=[{}]",
+                    account.id,
+                    account.email.as_deref().unwrap_or("none"),
+                    reason,
+                    Self::auth_debug_summary(&shared)
+                ),
+            ),
+            Ok(None) => {}
+            Err(err) => app_cmd::log_tauri(
+                app,
+                &format!("[codex-account] mark needsLogin failed reason={reason}: {err}"),
+            ),
+        }
+    }
+
+    fn auth_debug_summary(home: &Path) -> String {
+        let auth_path = home.join("auth.json");
+        let (account_id, email) = codex_account_store::read_auth_identity(home);
+        let metadata = fs::metadata(&auth_path).ok();
+        let size = metadata.as_ref().map(|m| m.len());
+        let modified_ms = metadata
+            .and_then(|m| m.modified().ok())
+            .and_then(|mtime| mtime.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis());
+        let fingerprint = fs::read(&auth_path).ok().map(|bytes| {
+            let mut hasher = DefaultHasher::new();
+            hasher.write(&bytes);
+            format!("{:016x}", hasher.finish())
+        });
+        format!(
+            "home={} exists={} accountId={} email={} size={} mtimeMs={} fp={}",
+            home.to_string_lossy(),
+            auth_path.exists(),
+            account_id.as_deref().unwrap_or("none"),
+            email.as_deref().unwrap_or("none"),
+            size.map(|v| v.to_string()).unwrap_or_else(|| "none".to_string()),
+            modified_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            fingerprint.as_deref().unwrap_or("none")
+        )
+    }
+
+    fn sync_unified_active_from_shared(
+        &self,
+        app: &AppHandle,
+        reason: &str,
+    ) -> Result<(bool, Option<String>), String> {
+        if !codex_unified_enabled(app) {
+            return Ok((false, None));
+        }
+        let _swap = self
+            .inner
+            .unified_swap_lock
+            .lock()
+            .map_err(|_| "codex swap lock poisoned".to_string())?;
+        let app_data = app_data::app_data_dir_opt(app)
+            .ok_or_else(|| "could not resolve app data dir".to_string())?;
+        let shared =
+            shared_home(app).ok_or_else(|| "could not resolve shared Codex home".to_string())?;
+        let before = codex_account_store::read_index(&app_data).active_account_id;
+        let shared_before = Self::auth_debug_summary(&shared);
+        let account = codex_account_store::sync_active_from_shared_home(&app_data, &shared)
+            .map_err(|err| err.to_string())?;
+        let after = codex_account_store::read_index(&app_data).active_account_id;
+        let changed = before != after;
+        let shared_after = Self::auth_debug_summary(&shared);
+        if changed {
+            app_cmd::log_tauri(
+                app,
+                &format!(
+                    "[codex-account] sync active from CODEX_HOME reason={reason} beforeActive={} afterActive={} sharedBefore=[{}] sharedAfter=[{}]",
+                    before.as_deref().unwrap_or("none"),
+                    after.as_deref().unwrap_or("none"),
+                    shared_before,
+                    shared_after
+                ),
+            );
+        } else {
+            log_codex_global(
+                app,
+                format!(
+                    "account sync unchanged reason={reason} active={} shared=[{}]",
+                    after.as_deref().unwrap_or("none"),
+                    shared_after
+                ),
+            );
+        }
+        Ok((changed, account.map(|a| a.id).or(after)))
+    }
+
     fn unified_account_info(&self, app: &AppHandle) -> Value {
+        let _ = self.sync_unified_active_from_shared(app, "account-info");
         let Some(app_data) = app_data::app_data_dir_opt(app) else {
             return json!({ "label": "Codex", "authenticated": false, "active": true, "unified": true });
         };
@@ -2005,11 +2178,14 @@ impl CodexAppServerState {
             .and_then(|id| index.accounts.iter().find(|a| &a.id == id));
         match active {
             Some(account) => unified_account_info_value(account, &shared, true),
-            None => json!({ "label": "Codex", "authenticated": false, "active": true, "unified": true }),
+            None => {
+                json!({ "label": "Codex", "authenticated": false, "active": true, "unified": true })
+            }
         }
     }
 
     fn unified_account_list(&self, app: &AppHandle) -> Value {
+        let _ = self.sync_unified_active_from_shared(app, "account-list");
         let Some(app_data) = app_data::app_data_dir_opt(app) else {
             return json!({ "accounts": [], "unified": true });
         };
@@ -2042,7 +2218,7 @@ impl CodexAppServerState {
             .unwrap_or(false)
     }
 
-    fn drop_connection(&self) {
+    fn drop_connection(&self, app: &AppHandle, reason: &str) {
         let old = match self.inner.connection.lock() {
             Ok(mut guard) => guard.take(),
             Err(_) => return,
@@ -2052,7 +2228,14 @@ impl CodexAppServerState {
         // already swapped, so reap the old process off-thread; this keeps the
         // switch snappy and lets the new app-server spawn in parallel.
         if let Some(old) = old {
+            let pid = old.pid;
+            log_codex_global(
+                app,
+                format!("drop_connection reason={reason} pid={pid} action=kill-and-wait"),
+            );
             std::thread::spawn(move || drop(old));
+        } else {
+            log_codex_global(app, format!("drop_connection reason={reason} pid=none"));
         }
     }
 
@@ -2066,14 +2249,52 @@ impl CodexAppServerState {
             .ok_or_else(|| "could not resolve app data dir".to_string())?;
         let shared =
             shared_home(app).ok_or_else(|| "could not resolve shared Codex home".to_string())?;
+        let _ = codex_account_store::sync_active_from_shared_home(&app_data, &shared);
         let index = codex_account_store::read_index(&app_data);
         let id = codex_account_store::resolve_selector(&index, selector.trim())
             .ok_or_else(|| format!("unknown Codex account: {selector}"))?;
+        let target_account = index
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .ok_or_else(|| format!("unknown Codex account: {selector}"))?;
+        if target_account.needs_login {
+            return Err(format!(
+                "Codex account {} needs login before it can be used again.",
+                target_account
+                    .email
+                    .as_deref()
+                    .unwrap_or(target_account.label.as_str())
+            ));
+        }
+        let target_store = codex_account_store::account_store_home(&app_data, &id);
+        let target_auth = Self::auth_debug_summary(&target_store);
+        let shared_before = Self::auth_debug_summary(&shared);
+        app_cmd::log_tauri(
+            app,
+            &format!(
+                "[codex-account] switch requested target={id} selector={} targetAuth=[{}] sharedBefore=[{}]",
+                selector.trim(),
+                target_auth,
+                shared_before
+            ),
+        );
 
-        if index.active_account_id.as_deref() == Some(id.as_str()) {
+        let shared_id = Self::shared_auth_account_id(&shared);
+        if index.active_account_id.as_deref() == Some(id.as_str())
+            && shared_id.as_deref() == Some(id.as_str())
+        {
             let account = index.accounts.iter().find(|a| a.id == id);
+            app_cmd::log_tauri(
+                app,
+                &format!(
+                    "[codex-account] switch no-op target={id} shared=[{}]",
+                    Self::auth_debug_summary(&shared)
+                ),
+            );
             return Ok(json!({
                 "success": true,
+                "verified": true,
                 "account": account.map(|a| unified_account_info_value(a, &shared, true)),
             }));
         }
@@ -2087,12 +2308,28 @@ impl CodexAppServerState {
 
         let account = codex_account_store::switch_unified_account(&app_data, &shared, &id)
             .map_err(|err| err.to_string())?;
+        let shared_after_copy = Self::auth_debug_summary(&shared);
+        let verified = Self::shared_auth_account_id(&shared).as_deref() == Some(id.as_str());
+        app_cmd::log_tauri(
+            app,
+            &format!(
+                "[codex-account] switch copied target={id} verified={verified} targetAuth=[{}] sharedAfter=[{}]",
+                target_auth,
+                shared_after_copy
+            ),
+        );
+        if !verified {
+            return Err(format!(
+                "Codex account switch did not take effect; target={id} sharedAfter=[{}]",
+                shared_after_copy
+            ));
+        }
         // Drop the connection so the next request lazily respawns the app-server
-        // with the swapped identity.
-        self.drop_connection();
+        // with the switched auth.
+        self.drop_connection(app, "unified-switch");
         // Reset every session's thread state (mirrors the legacy switch path). A
         // codex thread/rollout is bound to the identity that created it, so the
-        // newly swapped-in account cannot resume the previous account's thread
+        // newly selected account cannot resume the previous account's thread
         // ("thread not found / no rollout found"). Clearing the thread ids makes
         // the next message start a fresh thread for the new account instead of
         // trying to resume a stale one.
@@ -2126,9 +2363,17 @@ impl CodexAppServerState {
         for (session_id, meta) in updates {
             emit(app, "claude:status", &session_id, "meta", meta);
         }
-        app_cmd::log_tauri(app, &format!("[codex-account] unified switch -> {id}"));
+        app_cmd::log_tauri(
+            app,
+            &format!(
+                "[codex-account] unified auth switch -> {id} label={} verified=true shared=[{}]",
+                account.label,
+                Self::auth_debug_summary(&shared)
+            ),
+        );
         Ok(json!({
             "success": true,
+            "verified": true,
             "account": unified_account_info_value(&account, &shared, true),
         }))
     }
@@ -2140,8 +2385,7 @@ impl CodexAppServerState {
         if !codex_unified_enabled(app) {
             return;
         }
-        let (Some(app_data), Some(shared)) =
-            (app_data::app_data_dir_opt(app), shared_home(app))
+        let (Some(app_data), Some(shared)) = (app_data::app_data_dir_opt(app), shared_home(app))
         else {
             return;
         };
@@ -2150,7 +2394,10 @@ impl CodexAppServerState {
             return;
         }
         if let Err(err) = self.unified_migrate(app) {
-            app_cmd::log_tauri(app, &format!("[codex-account] startup auto-migrate failed: {err}"));
+            app_cmd::log_tauri(
+                app,
+                &format!("[codex-account] startup auto-migrate failed: {err}"),
+            );
         }
     }
 
@@ -2187,7 +2434,7 @@ impl CodexAppServerState {
         let report =
             codex_account_store::migrate_from_homes(&app_data, &shared, &homes, prefer.as_deref())
                 .map_err(|err| err.to_string())?;
-        self.drop_connection();
+        self.drop_connection(app, "unified-migrate");
         serde_json::to_value(&report).map_err(|err| err.to_string())
     }
 
@@ -2224,6 +2471,7 @@ impl CodexAppServerState {
                     Ok(account) => {
                         // The shared home already holds this identity → just mark active.
                         let _ = codex_account_store::set_active(&app_data, &account.id);
+                        let _ = codex_account_store::mark_account_valid(&app_data, &account.id);
                     }
                     Err(err) => app_cmd::log_tauri(
                         app,
@@ -2234,7 +2482,7 @@ impl CodexAppServerState {
         }
 
         // Next request respawns the app-server with the new auth.
-        self.drop_connection();
+        self.drop_connection(app, "account-login");
         Ok(json!({ "success": true, "account": self.account_info(app) }))
     }
 
@@ -2268,7 +2516,11 @@ impl CodexAppServerState {
         }))
     }
 
-    pub fn account_remove_unified(&self, app: &AppHandle, account_id: String) -> Result<Value, String> {
+    pub fn account_remove_unified(
+        &self,
+        app: &AppHandle,
+        account_id: String,
+    ) -> Result<Value, String> {
         let _swap = self
             .inner
             .unified_swap_lock
@@ -2281,7 +2533,7 @@ impl CodexAppServerState {
         let removed = codex_account_store::remove_account(&app_data, &shared, account_id.trim())
             .map_err(|err| err.to_string())?;
         if removed {
-            self.drop_connection();
+            self.drop_connection(app, "account-remove");
         }
         Ok(json!({ "success": removed }))
     }
@@ -2306,13 +2558,7 @@ impl CodexAppServerState {
             },
         )?;
 
-        let old_connection = self
-            .inner
-            .connection
-            .lock()
-            .map_err(|_| "codex connection lock poisoned".to_string())?
-            .take();
-        drop(old_connection);
+        self.drop_connection(app, "legacy-switch");
         self.inner
             .thread_to_session
             .lock()
@@ -2380,7 +2626,14 @@ impl CodexAppServerState {
             return Ok(thread_id);
         }
 
-        let connection = self.ensure_connection(app).map_err(bridge_error)?;
+        let connection = self.ensure_connection(app).map_err(|err| {
+            self.inner
+                .sessions
+                .lock()
+                .expect("codex sessions lock")
+                .remove(session_id);
+            bridge_error(err)
+        })?;
         let response = connection
             .request_logged(
                 app,
@@ -2396,13 +2649,22 @@ impl CodexAppServerState {
                 REQUEST_TIMEOUT,
             )
             .map_err(bridge_error)?;
-        let thread_id = response
+        let Some(thread_id) = response
             .get("thread")
             .and_then(|v| v.get("id"))
             .and_then(Value::as_str)
             .or_else(|| response.get("threadId").and_then(Value::as_str))
-            .ok_or_else(|| bridge_error("codex app-server thread/start returned no thread id"))?
-            .to_string();
+            .map(str::to_string)
+        else {
+            self.inner
+                .sessions
+                .lock()
+                .expect("codex sessions lock")
+                .remove(session_id);
+            return Err(bridge_error(
+                "codex app-server thread/start returned no thread id",
+            ));
+        };
         {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             if let Some(session) = sessions.get_mut(session_id) {
@@ -2645,6 +2907,12 @@ impl CodexAppServerState {
     }
 
     fn ensure_connection(&self, app: &AppHandle) -> Result<Arc<CodexConnection>, String> {
+        let (active_changed, current_auth_id) =
+            self.sync_unified_active_from_shared(app, "ensure-connection")?;
+        if active_changed {
+            self.drop_connection(app, "sync-active-changed");
+        }
+
         if let Some(existing) = self
             .inner
             .connection
@@ -2652,14 +2920,46 @@ impl CodexAppServerState {
             .map_err(|_| "codex connection lock poisoned")?
             .clone()
         {
-            log_codex_global(
-                app,
-                format!("ensure_connection reuse existing pid={}", existing.pid),
-            );
-            return Ok(existing);
+            if codex_unified_enabled(app) && existing.auth_account_id != current_auth_id {
+                log_codex_global(
+                    app,
+                    format!(
+                        "ensure_connection dropping pid={} auth changed from {} to {}",
+                        existing.pid,
+                        existing.auth_account_id.as_deref().unwrap_or("none"),
+                        current_auth_id.as_deref().unwrap_or("none")
+                    ),
+                );
+                self.drop_connection(app, "connection-auth-mismatch");
+            } else {
+                log_codex_global(
+                    app,
+                    format!("ensure_connection reuse existing pid={}", existing.pid),
+                );
+                return Ok(existing);
+            }
         }
 
-        log_codex_global(app, "ensure_connection spawning codex app-server");
+        let (spawn_auth_id, spawn_auth_summary) = if codex_unified_enabled(app) {
+            if let Some(shared) = shared_home(app) {
+                (
+                    Self::shared_auth_account_id(&shared),
+                    Some(Self::auth_debug_summary(&shared)),
+                )
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+        log_codex_global(
+            app,
+            format!(
+                "ensure_connection spawning codex app-server spawnAuthId={} spawnAuth=[{}]",
+                spawn_auth_id.as_deref().unwrap_or("none"),
+                spawn_auth_summary.as_deref().unwrap_or("non-unified")
+            ),
+        );
         let mut child = build_codex_command(app)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2683,6 +2983,7 @@ impl CodexAppServerState {
             pending: pending.clone(),
             child: Mutex::new(child),
             pid,
+            auth_account_id: spawn_auth_id,
         });
 
         let app_for_reader = app.clone();
@@ -2835,7 +3136,14 @@ impl CodexAppServerState {
             .expect("codex sessions lock")
             .insert(session_id.clone(), session);
 
-        let connection = self.ensure_connection(app).map_err(bridge_error)?;
+        let connection = self.ensure_connection(app).map_err(|err| {
+            self.inner
+                .sessions
+                .lock()
+                .expect("codex sessions lock")
+                .remove(&session_id);
+            bridge_error(err)
+        })?;
         let response = connection
             .request_logged(
                 app,
@@ -3432,6 +3740,9 @@ impl CodexAppServerState {
 
     fn fail_turn(&self, app: &AppHandle, session_id: &str, message: String) {
         log_codex(app, session_id, format!("fail_turn: {message}"));
+        if Self::auth_failure_message(&message) {
+            self.mark_shared_auth_needs_login(app, &message);
+        }
         let (meta, turn_id, thread_id) = {
             let mut sessions = self.inner.sessions.lock().expect("codex sessions lock");
             sessions.get_mut(session_id).map(|session| {
@@ -4575,6 +4886,7 @@ fn handle_turn_completed(
     };
     emit(app, "claude:status", session_id, "meta", meta);
     if reason == "completed" {
+        state.mark_shared_auth_valid(app, "turn-completed");
         emit(
             app,
             "claude:result",
@@ -4583,6 +4895,9 @@ fn handle_turn_completed(
             json!({ "subtype": "success", "result": if result.is_empty() { Value::Null } else { json!(result) }, "totalCost": 0 }),
         );
     } else if reason == "error" {
+        if CodexAppServerState::auth_failure_message(&error_message) {
+            state.mark_shared_auth_needs_login(app, &error_message);
+        }
         emit(
             app,
             "claude:error",

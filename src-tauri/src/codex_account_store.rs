@@ -1,14 +1,10 @@
 // Codex unified-account store (Tier 2).
 //
-// Mirrors the Claude credential-swap model (`account_store.rs`) but for Codex.
-// In unified mode the single Codex app-server always runs with
-// `CODEX_HOME = ~/.codex`, so `~/.codex/sessions` is a SHARED session store.
-// Each account's *identity bundle* — everything in a CODEX_HOME EXCEPT the
-// `sessions/` directory (i.e. `auth.json`, `config.toml`, memory files, …) —
-// is stored on disk under `<app-data>/codex-accounts/<id>/`. Switching an
-// account swaps that bundle into `~/.codex` without ever touching `sessions/`,
-// so both accounts see the same sessions and can continue each other's work,
-// while auth/memory stay per-account.
+// In unified mode the single Codex app-server always runs with a shared
+// `CODEX_HOME` (normally `~/.codex`). That home is the runtime source of truth:
+// the account currently in `CODEX_HOME/auth.json` is the account Codex runs as.
+// The account store is an auth catalog only. Switching accounts replaces only
+// `auth.json`, leaving sessions/config/memory/cache in the shared home intact.
 //
 // Everything here is filesystem-only (no OS keyring) because a Codex identity
 // is multiple files, not a single secret string. The whole feature is gated by
@@ -18,8 +14,7 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -58,6 +53,14 @@ pub struct CodexUnifiedAccount {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_home: Option<String>,
     pub created_at: i64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_login: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_validated_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_invalidated_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_auth_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +101,10 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 // Deterministic, version-stable hash (FNV-1a 64-bit). Used only for fallback
 // id derivation; `auth.json` account_id is the primary, fully-stable key.
 fn stable_hash(input: &str) -> String {
@@ -129,10 +136,6 @@ fn is_staging_name(name: &OsStr) -> bool {
     name.to_str()
         .map(|n| n.starts_with(STAGING_PREFIX))
         .unwrap_or(false)
-}
-
-fn is_sessions_name(name: &OsStr) -> bool {
-    name == OsStr::new(SESSIONS_DIRNAME)
 }
 
 /// Decode a JWT and return its `email` claim (Codex ChatGPT-OAuth stores the
@@ -261,23 +264,7 @@ pub fn write_index(
     Ok(())
 }
 
-// --- identity file operations (never touch `sessions/`) --------------------
-
-fn list_identity_top_level(dir: &Path) -> io::Result<HashSet<OsString>> {
-    let mut names = HashSet::new();
-    if !dir.exists() {
-        return Ok(names);
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if is_sessions_name(&name) || is_staging_name(&name) {
-            continue;
-        }
-        names.insert(name);
-    }
-    Ok(names)
-}
+// --- auth file operations --------------------------------------------------
 
 fn copy_file_atomic(from: &Path, to: &Path) -> io::Result<()> {
     if let Some(parent) = to.parent() {
@@ -289,73 +276,16 @@ fn copy_file_atomic(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        let ft = entry.file_type()?;
-        if ft.is_symlink() {
-            continue; // don't follow/copy symlinks
-        } else if ft.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            copy_file_atomic(&from, &to)?;
-        }
-    }
-    Ok(())
+fn auth_path(home: &Path) -> PathBuf {
+    home.join("auth.json")
 }
 
-/// Make `dst`'s identity files mirror `src`'s, NEVER removing or copying the
-/// `sessions/` directory (or any leftover staging dirs). Used for both
-/// snapshot (src=shared_home, dst=store) and load (src=store, dst=shared_home).
-fn sync_identity(src: &Path, dst: &Path) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
-    let src_names = list_identity_top_level(src)?;
-    // Remove stale identity entries in dst not present in src.
-    for entry in fs::read_dir(dst)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if is_sessions_name(&name) || is_staging_name(&name) {
-            continue;
-        }
-        if !src_names.contains(&name) {
-            let path = entry.path();
-            if path.is_dir() {
-                let _ = fs::remove_dir_all(&path);
-            } else {
-                let _ = fs::remove_file(&path);
-            }
-        }
-    }
-    // Copy src identity entries into dst (overwrite).
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if is_sessions_name(&name) || is_staging_name(&name) {
-            continue;
-        }
-        let from = entry.path();
-        let to = dst.join(&name);
-        let ft = entry.file_type()?;
-        if ft.is_symlink() {
-            continue;
-        } else if ft.is_dir() {
-            // Replace dir wholesale to drop stale nested files.
-            let _ = fs::remove_dir_all(&to);
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            copy_file_atomic(&from, &to)?;
-        }
-    }
-    Ok(())
+pub fn account_store_home(app_data_dir: &Path, id: &str) -> PathBuf {
+    account_store_dir(app_data_dir, id)
 }
 
-fn dir_has_entries(dir: &Path) -> bool {
-    fs::read_dir(dir)
-        .map(|mut it| it.next().is_some())
-        .unwrap_or(false)
+fn copy_auth_json(src_home: &Path, dst_home: &Path) -> io::Result<()> {
+    copy_file_atomic(&auth_path(src_home), &auth_path(dst_home))
 }
 
 // --- public operations ----------------------------------------------------
@@ -376,72 +306,55 @@ pub fn resolve_selector(index: &CodexUnifiedIndex, selector: &str) -> Option<Str
         .map(|a| a.id.clone())
 }
 
-/// Snapshot the live identity in `shared_home` back into the active account's
-/// store (captures token refresh / new memory). Best-effort.
+/// Snapshot the live auth in `shared_home` back into the matching account's
+/// store. The shared home is the source of truth; do not infer identity from
+/// the previously-active index entry.
 pub fn snapshot_active_for_exit(app_data_dir: &Path, shared_home: &Path) {
-    let index = read_index(app_data_dir);
-    let Some(active) = index.active_account_id else {
-        return;
-    };
-    // Don't overwrite the store with a torn/empty auth.json read.
-    let (acct, _email) = read_auth_identity(shared_home);
-    if acct.is_none() && !shared_home.join("auth.json").exists() {
-        return;
-    }
-    let store = account_store_dir(app_data_dir, &active);
-    let _ = sync_identity(shared_home, &store);
+    let _ = sync_active_from_shared_home(app_data_dir, shared_home);
 }
 
-/// Switch the active unified account A→B by swapping identity bundles.
+/// Switch the active unified account A→B by replacing only `auth.json`.
 pub fn switch_unified_account(
     app_data_dir: &Path,
     shared_home: &Path,
     target_id: &str,
 ) -> Result<CodexUnifiedAccount, CodexAccountStoreError> {
-    let mut index = read_index(app_data_dir);
+    let index = read_index(app_data_dir);
     let account = find_account(&index, target_id)
         .cloned()
         .ok_or_else(|| other(format!("unknown codex account: {target_id}")))?;
 
     let target_store = account_store_dir(app_data_dir, target_id);
-    if !target_store.join("auth.json").exists() && !dir_has_entries(&target_store) {
+    if !auth_path(&target_store).exists() {
         return Err(other(format!(
-            "identity bundle for codex account {target_id} is missing; not switching"
+            "auth.json for codex account {target_id} is missing; not switching"
         )));
     }
 
-    // (a) snapshot active A (capture refreshed tokens / memory) — best effort.
-    if let Some(active) = index.active_account_id.clone() {
-        if active != target_id {
-            let store_a = account_store_dir(app_data_dir, &active);
-            let _ = sync_identity(shared_home, &store_a);
-        }
-    }
-
-    // (b) load B into shared_home (never touches sessions/).
+    // Load B's auth into shared_home. Nothing else in CODEX_HOME is touched.
     fs::create_dir_all(shared_home)?;
-    sync_identity(&target_store, shared_home)?;
+    copy_auth_json(&target_store, shared_home)?;
 
-    // (c) record active.
+    let mut index = read_index(app_data_dir);
     index.active_account_id = Some(target_id.to_string());
     write_index(app_data_dir, &index)?;
     Ok(account)
 }
 
-/// Capture the identity currently in `shared_home` as a (new or existing)
+/// Capture the auth currently in `shared_home` as a (new or existing)
 /// account — used after a fresh `codex login` into `~/.codex`.
 pub fn capture_current(
     app_data_dir: &Path,
     shared_home: &Path,
     label: Option<String>,
 ) -> Result<CodexUnifiedAccount, CodexAccountStoreError> {
-    if !shared_home.join("auth.json").exists() {
+    if !auth_path(shared_home).exists() {
         return Err(other("no auth.json in codex home to capture".to_string()));
     }
     let id = derive_account_id(shared_home);
     let (account_id, email) = read_auth_identity(shared_home);
     let store = account_store_dir(app_data_dir, &id);
-    sync_identity(shared_home, &store)?;
+    copy_auth_json(shared_home, &store)?;
 
     let mut index = read_index(app_data_dir);
     let label = label
@@ -460,15 +373,105 @@ pub fn capture_current(
             label,
             source_home: Some(shared_home.to_string_lossy().to_string()),
             created_at: now_millis(),
+            needs_login: false,
+            last_validated_at: None,
+            last_invalidated_at: None,
+            last_auth_error: None,
         };
         index.accounts.push(account.clone());
         account
     };
-    if index.active_account_id.is_none() {
-        index.active_account_id = Some(id);
-    }
+    index.active_account_id = Some(id);
     write_index(app_data_dir, &index)?;
     Ok(account)
+}
+
+/// Align the account index with the auth currently in the shared home. This is
+/// the normal startup/send-time reconciliation path: it never restores or
+/// overwrites shared_home, it only updates the catalog/active pointer.
+pub fn sync_active_from_shared_home(
+    app_data_dir: &Path,
+    shared_home: &Path,
+) -> Result<Option<CodexUnifiedAccount>, CodexAccountStoreError> {
+    if !auth_path(shared_home).exists() {
+        let mut index = read_index(app_data_dir);
+        if index.active_account_id.take().is_some() {
+            write_index(app_data_dir, &index)?;
+        }
+        return Ok(None);
+    }
+    capture_current(app_data_dir, shared_home, None).map(Some)
+}
+
+pub fn mark_account_valid(
+    app_data_dir: &Path,
+    id: &str,
+) -> Result<Option<CodexUnifiedAccount>, CodexAccountStoreError> {
+    let mut index = read_index(app_data_dir);
+    let Some(account) = index.accounts.iter_mut().find(|a| a.id == id) else {
+        return Ok(None);
+    };
+    account.needs_login = false;
+    account.last_validated_at = Some(now_millis());
+    account.last_invalidated_at = None;
+    account.last_auth_error = None;
+    let account = account.clone();
+    write_index(app_data_dir, &index)?;
+    Ok(Some(account))
+}
+
+pub fn mark_shared_auth_valid(
+    app_data_dir: &Path,
+    shared_home: &Path,
+) -> Result<Option<CodexUnifiedAccount>, CodexAccountStoreError> {
+    if !auth_path(shared_home).exists() {
+        return Ok(None);
+    }
+    let account = capture_current(app_data_dir, shared_home, None)?;
+    mark_account_valid(app_data_dir, &account.id)
+}
+
+pub fn mark_shared_auth_needs_login(
+    app_data_dir: &Path,
+    shared_home: &Path,
+    reason: &str,
+) -> Result<Option<CodexUnifiedAccount>, CodexAccountStoreError> {
+    if !auth_path(shared_home).exists() {
+        return Ok(None);
+    }
+    let id = derive_account_id(shared_home);
+    let (account_id, email) = read_auth_identity(shared_home);
+    let mut index = read_index(app_data_dir);
+    let label = label_for(shared_home, &email);
+    let now = now_millis();
+    if let Some(existing) = index.accounts.iter_mut().find(|a| a.id == id) {
+        existing.email = email;
+        existing.account_id = account_id;
+        existing.label = label;
+        existing.needs_login = true;
+        existing.last_invalidated_at = Some(now);
+        existing.last_auth_error = Some(reason.to_string());
+        let account = existing.clone();
+        write_index(app_data_dir, &index)?;
+        Ok(Some(account))
+    } else {
+        let account = CodexUnifiedAccount {
+            id: id.clone(),
+            email,
+            account_id,
+            label,
+            source_home: Some(shared_home.to_string_lossy().to_string()),
+            created_at: now,
+            needs_login: true,
+            last_validated_at: None,
+            last_invalidated_at: Some(now),
+            last_auth_error: Some(reason.to_string()),
+        };
+        index.accounts.push(account.clone());
+        index.active_account_id = Some(id);
+        write_index(app_data_dir, &index)?;
+        Ok(Some(account))
+    }
 }
 
 /// Mark an account active in the index WITHOUT moving any files. Use only when
@@ -484,11 +487,10 @@ pub fn set_active(app_data_dir: &Path, id: &str) -> Result<(), CodexAccountStore
 }
 
 /// Remove an account from the index + delete its identity store. Never touches
-/// `sessions/`. If the removed account was active, reassign + load a remaining
-/// account's identity into `shared_home`.
+/// the shared CODEX_HOME.
 pub fn remove_account(
     app_data_dir: &Path,
-    shared_home: &Path,
+    _shared_home: &Path,
     id: &str,
 ) -> Result<bool, CodexAccountStoreError> {
     let mut index = read_index(app_data_dir);
@@ -498,11 +500,7 @@ pub fn remove_account(
     let _ = fs::remove_dir_all(account_store_dir(app_data_dir, id));
     index.accounts.retain(|a| a.id != id);
     if index.active_account_id.as_deref() == Some(id) {
-        index.active_account_id = index.accounts.first().map(|a| a.id.clone());
-        if let Some(active) = index.active_account_id.clone() {
-            let store = account_store_dir(app_data_dir, &active);
-            let _ = sync_identity(&store, shared_home);
-        }
+        index.active_account_id = None;
     }
     write_index(app_data_dir, &index)?;
     Ok(true)
@@ -617,12 +615,15 @@ pub fn migrate_from_homes(
         if !home.exists() {
             continue;
         }
-        let id = derive_account_id(home);
-        let (account_id, email) = read_auth_identity(home);
-        let label = label_for(home, &email);
         let is_shared = fs::canonicalize(home)
             .map(|c| c == shared_canon)
             .unwrap_or_else(|_| home == shared_home);
+        if !auth_path(home).exists() {
+            continue;
+        }
+        let id = derive_account_id(home);
+        let (account_id, email) = read_auth_identity(home);
+        let label = label_for(home, &email);
 
         // Upsert account entry.
         if let Some(existing) = index.accounts.iter_mut().find(|a| a.id == id) {
@@ -640,14 +641,18 @@ pub fn migrate_from_homes(
                 label,
                 source_home: Some(home.to_string_lossy().to_string()),
                 created_at: now_millis(),
+                needs_login: false,
+                last_validated_at: None,
+                last_invalidated_at: None,
+                last_auth_error: None,
             });
             report.accounts_registered += 1;
         }
 
-        // Capture identity bundle (skip re-copy if already populated → resumable).
+        // Capture auth (skip re-copy if already populated → resumable).
         let store = account_store_dir(app_data_dir, &id);
-        if !dir_has_entries(&store) {
-            let _ = sync_identity(home, &store);
+        if !auth_path(&store).exists() && auth_path(home).exists() {
+            let _ = copy_auth_json(home, &store);
         }
 
         // Merge this home's sessions into the shared store (skip the shared home).
@@ -674,17 +679,11 @@ pub fn migrate_from_homes(
         }
     }
 
-    // Choose active: preferred (OFF-mode active) → shared (~/.codex) → first.
-    let active = prefer_id
-        .or(shared_id)
-        .or_else(|| index.accounts.first().map(|a| a.id.clone()));
-
-    if let Some(active_id) = &active {
-        let store = account_store_dir(app_data_dir, active_id);
-        if dir_has_entries(&store) {
-            let _ = sync_identity(&store, shared_home);
-        }
-    }
+    // Choose active from the runtime source of truth first. Do not restore a
+    // preferred/first account into shared_home during migration.
+    let active = shared_id
+        .or(prefer_id)
+        .filter(|id| index.accounts.iter().any(|a| &a.id == id));
 
     index.active_account_id = active.clone();
     index.migrated = true;
@@ -694,8 +693,8 @@ pub fn migrate_from_homes(
     Ok(report)
 }
 
-/// Startup recovery: drop leftover staging dirs, and if `shared_home` identity
-/// looks inconsistent with the active account, re-apply the active bundle.
+/// Startup recovery: drop leftover staging dirs, then align the active index
+/// with the auth already present in shared_home.
 pub fn recover_shared_home(app_data_dir: &Path, shared_home: &Path) {
     if let Ok(entries) = fs::read_dir(shared_home) {
         for entry in entries.flatten() {
@@ -704,18 +703,7 @@ pub fn recover_shared_home(app_data_dir: &Path, shared_home: &Path) {
             }
         }
     }
-    let index = read_index(app_data_dir);
-    let Some(active) = index.active_account_id else {
-        return;
-    };
-    let store = account_store_dir(app_data_dir, &active);
-    if !dir_has_entries(&store) {
-        return;
-    }
-    // If shared_home lost its auth.json (e.g. crash mid-swap), restore it.
-    if !shared_home.join("auth.json").exists() {
-        let _ = sync_identity(&store, shared_home);
-    }
+    let _ = sync_active_from_shared_home(app_data_dir, shared_home);
 }
 
 #[cfg(test)]
@@ -763,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_preserves_sessions_and_swaps_identity() {
+    fn switch_preserves_sessions_and_replaces_only_auth() {
         let root = temp_dir("switch");
         let app_data = root.join("app-data");
         let shared = root.join(".codex");
@@ -776,9 +764,13 @@ mod tests {
         write(&store_a.join("config.toml"), "model='a'");
         write(&store_b.join("auth.json"), r#"{"account_id":"B"}"#);
 
-        // Shared home starts as A with live sessions.
-        sync_identity(&store_a, &shared).unwrap();
-        write(&shared.join("sessions/2026/01/01/uuid.jsonl"), "session-data");
+        // Shared home starts as A with live runtime files.
+        write(&shared.join("auth.json"), r#"{"account_id":"A"}"#);
+        write(&shared.join("config.toml"), "model='a'");
+        write(
+            &shared.join("sessions/2026/01/01/uuid.jsonl"),
+            "session-data",
+        );
 
         let mut index = CodexUnifiedIndex::default();
         index.accounts.push(CodexUnifiedAccount {
@@ -788,6 +780,10 @@ mod tests {
             label: "a".into(),
             source_home: None,
             created_at: 1,
+            needs_login: false,
+            last_validated_at: None,
+            last_invalidated_at: None,
+            last_auth_error: None,
         });
         index.accounts.push(CodexUnifiedAccount {
             id: "b".into(),
@@ -796,25 +792,35 @@ mod tests {
             label: "b".into(),
             source_home: None,
             created_at: 2,
+            needs_login: false,
+            last_validated_at: None,
+            last_invalidated_at: None,
+            last_auth_error: None,
         });
         index.active_account_id = Some("a".into());
         write_index(&app_data, &index).unwrap();
 
         switch_unified_account(&app_data, &shared, "b").unwrap();
 
-        // Identity is now B; A's config.toml is gone from shared; sessions intact.
+        // Auth is now B; config and sessions in the shared runtime home stay intact.
         assert_eq!(
             fs::read_to_string(shared.join("auth.json")).unwrap(),
             r#"{"account_id":"B"}"#
         );
-        assert!(!shared.join("config.toml").exists());
+        assert_eq!(
+            fs::read_to_string(shared.join("config.toml")).unwrap(),
+            "model='a'"
+        );
         assert_eq!(
             fs::read_to_string(shared.join("sessions/2026/01/01/uuid.jsonl")).unwrap(),
             "session-data"
         );
-        assert_eq!(read_index(&app_data).active_account_id.as_deref(), Some("b"));
+        assert_eq!(
+            read_index(&app_data).active_account_id.as_deref(),
+            Some("b")
+        );
 
-        // Switch back restores A's identity (snapshot captured it).
+        // Switch back replaces auth only.
         switch_unified_account(&app_data, &shared, "a").unwrap();
         assert_eq!(
             fs::read_to_string(shared.join("auth.json")).unwrap(),
@@ -843,10 +849,14 @@ mod tests {
         let homes = vec![shared.clone(), iso.clone()];
         let report = migrate_from_homes(&app_data, &shared, &homes, Some(&iso)).unwrap();
         assert_eq!(report.sessions_copied, 1); // s-iso copied in
-        assert_eq!(report.active_account_id.as_deref(), Some("acct-ISO"));
+        assert_eq!(report.active_account_id.as_deref(), Some("acct-DEFAULT"));
         // Both sessions visible in the shared store.
         assert!(shared.join("sessions/s-default.jsonl").exists());
         assert!(shared.join("sessions/s-iso.jsonl").exists());
+        assert_eq!(
+            fs::read_to_string(shared.join("auth.json")).unwrap(),
+            r#"{"account_id":"DEFAULT"}"#
+        );
         // Source iso home untouched.
         assert!(iso.join("sessions/s-iso.jsonl").exists());
         assert!(iso.join("auth.json").exists());
@@ -854,6 +864,27 @@ mod tests {
         // Re-run is a no-op.
         let again = migrate_from_homes(&app_data, &shared, &homes, Some(&iso)).unwrap();
         assert!(again.already_migrated);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn migrate_does_not_activate_empty_shared_home() {
+        let root = temp_dir("migrate-empty-shared");
+        let app_data = root.join("app-data");
+        let shared = root.join("codex-home");
+        let iso = root.join(".codex-iso-x");
+        fs::create_dir_all(&app_data).unwrap();
+
+        write(&shared.join("sessions/s-shared.jsonl"), "shared");
+        write(&iso.join("auth.json"), r#"{"account_id":"ISO"}"#);
+        write(&iso.join("sessions/s-iso.jsonl"), "iso");
+
+        let homes = vec![shared.clone(), iso.clone()];
+        let report = migrate_from_homes(&app_data, &shared, &homes, Some(&shared)).unwrap();
+        assert_eq!(report.active_account_id, None);
+        assert_eq!(read_index(&app_data).accounts.len(), 1);
+        assert!(!shared.join("auth.json").exists());
+        assert!(shared.join("sessions/s-iso.jsonl").exists());
         fs::remove_dir_all(root).ok();
     }
 
@@ -904,6 +935,10 @@ mod tests {
             label: "a".into(),
             source_home: None,
             created_at: 1,
+            needs_login: false,
+            last_validated_at: None,
+            last_invalidated_at: None,
+            last_auth_error: None,
         });
         index.active_account_id = Some("missing".into());
         write_index(&dir, &index).unwrap();
