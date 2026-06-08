@@ -363,6 +363,19 @@
   font-variant-numeric: tabular-nums;
 }
 
+.workspace-account-plan {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+
 .workspace-account-menu {
   position: absolute;
   top: 28px;

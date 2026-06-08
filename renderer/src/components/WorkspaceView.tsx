@@ -35,6 +35,7 @@ type WorkspaceAccountChip = {
   kind: 'claude' | 'codex'
   label: string
   title: string
+  plan?: string       // active account's subscription tier (Claude only)
   accounts?: AccountMenuEntry[]
   loggedIn?: boolean
   unified?: boolean
@@ -434,12 +435,15 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           sublabel: account.subscriptionType || undefined,
           active: account.id === activeId,
         }))
-        const activeEmail = accounts.find(account => account.id === activeId)?.email
+        const activeAccount = accounts.find(account => account.id === activeId)
+        const activeEmail = activeAccount?.email
         const label = info?.email || activeEmail || info?.organization || 'Claude'
+        const plan = info?.subscriptionType || activeAccount?.subscriptionType || undefined
         setAccountChip({
           kind: 'claude',
           label,
           title: info?.email ? `${info.email} (${info.subscriptionType || 'unknown'})` : 'Claude account',
+          plan,
           accounts: entries,
           loggedIn: Boolean(info?.email || activeEmail || entries.length > 0),
         })
@@ -1101,6 +1105,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
               <span className="workspace-account-label">
                 {accountChip.loggedIn ? accountChip.label : t('workspace.accountLogin')}
               </span>
+              {accountChip.loggedIn && accountChip.plan && (
+                <span className="workspace-account-plan">{accountChip.plan}</span>
+              )}
             </button>
             {accountMenuOpen && (
               <div className="workspace-account-menu">

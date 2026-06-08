@@ -46,7 +46,6 @@ const MAX_SNIPPET_WIDTH = 500
 const RECONNECT_BACKOFF_MIN = 3000
 const RECONNECT_BACKOFF_MAX = 30000
 
-type WindowAuthInfo = { email: string; subscriptionType?: string }
 type ProfileEntryLike = {
   id?: string
   type?: string
@@ -62,20 +61,6 @@ type ProfileWindowCloseRequest = {
   profileId: string
   windowIndex: number
   windowCount: number
-}
-
-function normalizeWindowAuthInfo(info: unknown): WindowAuthInfo | null {
-  if (!info || typeof info !== 'object') return null
-  const record = info as Record<string, unknown>
-  const email = typeof record.email === 'string' ? record.email.trim() : ''
-  if (!email) return null
-  const subscriptionType = typeof record.subscriptionType === 'string'
-    ? record.subscriptionType.trim()
-    : ''
-  return {
-    email,
-    ...(subscriptionType ? { subscriptionType } : {}),
-  }
 }
 
 function normalizeProfileChangedPayload(payload: unknown): ProfileChangedPayload | null {
@@ -242,30 +227,12 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  // Sync window title with active profile, window index, and account info
+  // Sync window title with active profile and window index. The account email
+  // and plan are intentionally not shown here — the per-workspace account chip
+  // (top-right) already surfaces the active account and its plan.
   const [windowIndex, setWindowIndex] = useState<number>(1)
-  const [authInfo, setAuthInfo] = useState<WindowAuthInfo | null>(null)
   useEffect(() => {
     host.app.getWindowIndex().then(setWindowIndex)
-  }, [])
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null
-    const fetchAuth = () => {
-      host.claude.authStatus().then(info => {
-        setAuthInfo(normalizeWindowAuthInfo(info))
-      }).catch(() => setAuthInfo(null))
-    }
-    const onAccountSwitch = () => fetchAuth()
-    const cancelStart = scheduleTauriStartupBackgroundWork(() => {
-      fetchAuth()
-      interval = setInterval(fetchAuth, 120_000)
-      window.addEventListener('claude-account-switched', onAccountSwitch)
-    })
-    return () => {
-      cancelStart()
-      if (interval) clearInterval(interval)
-      window.removeEventListener('claude-account-switched', onAccountSwitch)
-    }
   }, [])
 
   useEffect(() => {
@@ -306,13 +273,10 @@ export default function App() {
       ? activeProfileName
       : `${activeProfileName}:${windowIndex}`
     const profilePart = `${profileTitle}${activeProfileIsRemote ? ' (Remote)' : ''}`
-    const titleParts = [profilePart]
-    if (authInfo?.email) titleParts.push(`(${authInfo.email} / ${authInfo.subscriptionType || 'unknown'})`)
-    titleParts.push('Better Agent Terminal')
-    const title = titleParts.join(' | ')
+    const title = `${profilePart} | Better Agent Terminal`
     document.title = title
     host.app.setTitle(title).catch(() => {})
-  }, [activeProfileName, windowIndex, activeProfileIsRemote, authInfo])
+  }, [activeProfileName, windowIndex, activeProfileIsRemote])
 
   // Lazy mount: only render a workspace's terminals once it has been activated
   useEffect(() => {
