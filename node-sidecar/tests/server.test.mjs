@@ -442,7 +442,7 @@ async function inProcess() {
   const arrayMatch = presetsFile.match(/CLAUDE_BUILTIN_MODELS:[^=]*=\s*\[([\s\S]*?)\n\]/m)
   assert.ok(arrayMatch, 'could not locate CLAUDE_BUILTIN_MODELS array in source')
   const arrayBody = arrayMatch[1]
-  const tsValues = [...arrayBody.matchAll(/value:\s*(?:(CLAUDE_OPUS_(?:47|48)_\w+)|'([^']+)')/g)]
+  const tsValues = [...arrayBody.matchAll(/value:\s*(?:((?:CLAUDE_OPUS_(?:47|48)|CLAUDE_FABLE_5)_\w+)|'([^']+)')/g)]
     .map(m => {
       if (m[1]) {
         // Resolve the symbolic constant via a regex-extracted assignment.
