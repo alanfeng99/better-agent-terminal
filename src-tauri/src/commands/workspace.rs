@@ -144,10 +144,18 @@ async fn remote_workspace_invoke(
     let target_profile_id = remote_profile_target_id(app, window_label)?;
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
     let routing_label = window_label.to_string();
-    let mut invoke_args = Vec::with_capacity(args.len() + 2);
+    // Deliberately do NOT send this window's label as the windowId param.
+    // Client labels are ephemeral (profile-<id>-<timestamp>-<n>) and never name
+    // a registry entry on the HOST, so a trusted host ignores them anyway —
+    // while pre-validation hosts fabricate an empty phantom entry from the
+    // unknown label on workspace:load and serve an empty list on every
+    // reconnect (the saved data stays stranded under the previous label's
+    // phantom entry). Omitting windowId makes every host fall back to the
+    // profile-level snapshot for both load and save, which is the host-owned
+    // source of truth.
+    let mut invoke_args = Vec::with_capacity(args.len() + 1);
     invoke_args.push(json!(target_profile_id));
     invoke_args.extend(args);
-    invoke_args.push(json!(window_label));
     let result = tauri::async_runtime::spawn_blocking(move || {
         remote_client.invoke(&routing_label, channel, invoke_args, Duration::from_secs(30))
     })
