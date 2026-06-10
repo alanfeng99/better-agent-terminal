@@ -156,11 +156,12 @@ async fn remote_invoke_for_window(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let window_label = window.label().to_string();
     let remote_channel = remote_agent_channel(channel);
     let error_channel = remote_channel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         remote_client
-            .invoke(&remote_channel, args, timeout)
+            .invoke(&window_label, &remote_channel, args, timeout)
             .map_err(BridgeError::from)
     })
     .await

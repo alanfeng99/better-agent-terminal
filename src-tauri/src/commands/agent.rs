@@ -52,9 +52,11 @@ async fn remote_supported_session_types(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let window_label = window.label().to_string();
     Some(
         tauri::async_runtime::spawn_blocking(move || {
             remote_client.invoke(
+                &window_label,
                 "agent:get-supported-session-types",
                 Vec::new(),
                 Duration::from_secs(10),
@@ -76,9 +78,15 @@ async fn remote_agent_presets(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let window_label = window.label().to_string();
     Some(
         tauri::async_runtime::spawn_blocking(move || {
-            remote_client.invoke("agent:list-presets", Vec::new(), Duration::from_secs(10))
+            remote_client.invoke(
+                &window_label,
+                "agent:list-presets",
+                Vec::new(),
+                Duration::from_secs(10),
+            )
         })
         .await
         .map_err(|err| format!("remote.invoke agent:list-presets worker failed: {err}"))

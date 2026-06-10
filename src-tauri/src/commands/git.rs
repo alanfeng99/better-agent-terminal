@@ -66,8 +66,9 @@ async fn remote_invoke_for_window(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let window_label = window.label().to_string();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        remote_client.invoke(channel, args, REMOTE_GIT_TIMEOUT)
+        remote_client.invoke(&window_label, channel, args, REMOTE_GIT_TIMEOUT)
     })
     .await
     .map_err(|err| format!("remote.invoke {channel} worker failed: {err}"));

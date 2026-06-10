@@ -358,6 +358,12 @@ pub fn attach_window_lifecycle(window: &WebviewWindow) {
             }
         } else if matches!(event, WindowEvent::Destroyed) {
             log_tauri(&app, &format!("[window] destroyed label={window_id}"));
+            // Release this window's remote connection binding. The shared socket
+            // is torn down only if this window was its last referrer, so sibling
+            // windows on the same host keep their connection.
+            app.state::<RustRemoteClientState>()
+                .inner()
+                .disconnect(&window_id);
             clear_profile_window_close_state(&window_id);
             if let Some(profile_id) = window_registry::profile_id_for_window(&app, &window_id) {
                 if !window_registry::has_other_live_profile_windows(&app, &profile_id, &window_id) {
@@ -443,7 +449,7 @@ pub fn app_resolve_profile_window_close(
 #[tauri::command]
 pub fn app_new_window(app: AppHandle, window: WebviewWindow) -> String {
     let current = window_registry::get_entry(&app, window.label());
-    if let Some(id) = remote_app_new_window(&app, &current.profile_id) {
+    if let Some(id) = remote_app_new_window(&app, window.label(), &current.profile_id) {
         let _ =
             window_registry::create_empty_entry_with_id_for_profile(&app, &id, &current.profile_id);
         let _ = build_window(&app, &id);
@@ -459,7 +465,7 @@ pub(crate) fn app_new_window_for_profile(app: &AppHandle, profile_id: &str) -> S
     id
 }
 
-fn remote_app_new_window(app: &AppHandle, profile_id: &str) -> Option<String> {
+fn remote_app_new_window(app: &AppHandle, window_label: &str, profile_id: &str) -> Option<String> {
     let profile = profile_cmd::profile_get(app.clone(), profile_id.to_string())?;
     if profile.kind != "remote" {
         return None;
@@ -469,6 +475,7 @@ fn remote_app_new_window(app: &AppHandle, profile_id: &str) -> Option<String> {
         .unwrap_or_else(|| "default".to_string());
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
     let result = remote_client.invoke(
+        window_label,
         "app:new-window",
         vec![Value::String(target_profile_id)],
         REMOTE_APP_TIMEOUT,

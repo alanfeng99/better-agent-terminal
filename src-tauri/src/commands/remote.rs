@@ -179,16 +179,18 @@ pub async fn remote_connect(
 
 #[tauri::command]
 pub async fn remote_disconnect(
+    window: WebviewWindow,
     client_state: State<'_, RustRemoteClientState>,
 ) -> Result<Value, BridgeError> {
-    Ok(Value::Bool(client_state.disconnect()))
+    Ok(Value::Bool(client_state.disconnect(window.label())))
 }
 
 #[tauri::command]
 pub async fn remote_client_status(
+    window: WebviewWindow,
     client_state: State<'_, RustRemoteClientState>,
 ) -> Result<Value, BridgeError> {
-    Ok(client_state.status())
+    Ok(client_state.status(window.label()))
 }
 
 #[tauri::command]

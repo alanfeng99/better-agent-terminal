@@ -70,7 +70,7 @@ fn remote_invoke_for_window(
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
     Some(
         remote_client
-            .invoke(channel, args, REMOTE_PTY_TIMEOUT)
+            .invoke(window.label(), channel, args, REMOTE_PTY_TIMEOUT)
             .map_err(CommandError::from),
     )
 }

@@ -11,7 +11,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme, StreamOwned};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -44,16 +44,61 @@ type RemoteWebSocket = WebSocket<StreamOwned<ClientConnection, TcpStream>>;
 
 #[derive(Clone, Default)]
 pub struct RustRemoteClientState {
-    inner: Arc<Mutex<Option<RunningClient>>>,
+    // Connections are pooled by identity (host, port, token) and shared by every
+    // window that targets the same host. `bindings` records which connection each
+    // window owns, so an invoke from one window can only ever ride that window's
+    // own connection — never another window's (or another host's). This keeps two
+    // windows on two different hosts fully isolated.
+    pool: Arc<Mutex<HashMap<ConnectionKey, Arc<RunningClient>>>>,
+    bindings: Arc<Mutex<HashMap<String, ConnectionKey>>>,
     next_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct ConnectionKey {
+    host: String,
+    port: u16,
+    // SHA-256 of the token, hex-encoded. Never the plaintext token, so the key is
+    // safe to keep in maps and to render in logs (truncated, see Display).
+    token_hash: String,
+}
+
+impl ConnectionKey {
+    fn new(host: &str, port: u16, token: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(token.as_bytes());
+        let token_hash = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Self {
+            host: host.to_string(),
+            port,
+            token_hash,
+        }
+    }
+}
+
+impl std::fmt::Display for ConnectionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Log-safe: host:port plus the first 8 hex chars of the token hash.
+        let short = &self.token_hash[..8.min(self.token_hash.len())];
+        write!(f, "{}:{}#{}", self.host, self.port, short)
+    }
 }
 
 struct RunningClient {
     host: String,
     port: u16,
     compression: RemoteCompression,
+    protocol: String,
     connected: Arc<AtomicBool>,
     tx: mpsc::Sender<ClientCommand>,
+    // window_labels currently bound to this connection. The socket is torn down
+    // only when the last referrer is released, so sibling windows on the same
+    // host keep sharing it.
+    referrers: Mutex<HashSet<String>>,
 }
 
 enum ClientCommand {
@@ -142,49 +187,146 @@ impl RustRemoteClientState {
         let label = label
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(default_client_label);
-        self.disconnect();
-        let device_id = load_or_create_client_device_id(&app);
-        let connection = connect_socket(
-            &host,
-            port,
-            &token,
-            &fingerprint,
-            &label,
-            window_id,
-            device_id,
-        )?;
-        let compression = connection.compression;
-        let protocol = connection.protocol.clone();
-        let (tx, rx) = mpsc::channel();
-        let connected = Arc::new(AtomicBool::new(true));
-        let connected_for_loop = Arc::clone(&connected);
-        thread::spawn(move || client_loop(app, connection.ws, rx, connected_for_loop, compression));
-        let info = json!({ "host": host, "port": port, "compression": compression.as_str() });
-        let running = RunningClient {
-            host: info["host"].as_str().unwrap_or_default().to_string(),
-            port,
-            compression,
-            connected,
-            tx,
+        let key = ConnectionKey::new(&host, port, &token);
+
+        // Re-bind safety: if this window was bound to a different connection,
+        // release that first (tearing the old socket down only if this window was
+        // its last referrer). Covers an in-window host switch.
+        if let Some(window_label) = window_id.as_deref() {
+            let previous = self
+                .bindings
+                .lock()
+                .expect("remote client bindings lock")
+                .get(window_label)
+                .cloned();
+            if matches!(previous, Some(previous_key) if previous_key != key) {
+                self.release_binding(window_label);
+            }
+        }
+
+        // Reuse a live connection to the same host identity, otherwise open one.
+        let existing = self
+            .pool
+            .lock()
+            .expect("remote client pool lock")
+            .get(&key)
+            .cloned();
+        let client = match existing {
+            Some(client) if client.connected.load(Ordering::SeqCst) => client,
+            _ => {
+                let device_id = load_or_create_client_device_id(&app);
+                let connection = connect_socket(
+                    &host,
+                    port,
+                    &token,
+                    &fingerprint,
+                    &label,
+                    window_id.clone(),
+                    device_id,
+                )?;
+                let compression = connection.compression;
+                let protocol = connection.protocol.clone();
+                let (tx, rx) = mpsc::channel();
+                let connected = Arc::new(AtomicBool::new(true));
+                let connected_for_loop = Arc::clone(&connected);
+                thread::spawn(move || {
+                    client_loop(app, connection.ws, rx, connected_for_loop, compression)
+                });
+                let client = Arc::new(RunningClient {
+                    host: host.clone(),
+                    port,
+                    compression,
+                    protocol,
+                    connected,
+                    tx,
+                    referrers: Mutex::new(HashSet::new()),
+                });
+                self.pool
+                    .lock()
+                    .expect("remote client pool lock")
+                    .insert(key.clone(), Arc::clone(&client));
+                client
+            }
         };
-        *self.inner.lock().expect("remote client lock") = Some(running);
-        Ok(json!({ "connected": true, "info": info, "protocol": protocol }))
+
+        // Bind this window to the chosen connection.
+        if let Some(window_label) = window_id.as_deref() {
+            client
+                .referrers
+                .lock()
+                .expect("remote client referrers lock")
+                .insert(window_label.to_string());
+            self.bindings
+                .lock()
+                .expect("remote client bindings lock")
+                .insert(window_label.to_string(), key.clone());
+        }
+
+        let info = json!({
+            "host": client.host,
+            "port": client.port,
+            "compression": client.compression.as_str(),
+        });
+        Ok(json!({ "connected": true, "info": info, "protocol": client.protocol }))
     }
 
-    pub fn disconnect(&self) -> bool {
-        let running = self.inner.lock().expect("remote client lock").take();
-        if let Some(client) = running {
+    /// Release a window's connection binding. The underlying socket is torn down
+    /// only when the last referrer is dropped, so sibling windows on the same host
+    /// keep sharing it. Returns false when the window had no binding.
+    fn release_binding(&self, window_label: &str) -> bool {
+        let key = {
+            let mut bindings = self.bindings.lock().expect("remote client bindings lock");
+            match bindings.remove(window_label) {
+                Some(key) => key,
+                None => return false,
+            }
+        };
+        let client = self
+            .pool
+            .lock()
+            .expect("remote client pool lock")
+            .get(&key)
+            .cloned();
+        let Some(client) = client else {
+            return true;
+        };
+        let now_empty = {
+            let mut referrers = client.referrers.lock().expect("remote client referrers lock");
+            referrers.remove(window_label);
+            referrers.is_empty()
+        };
+        if now_empty {
             client.connected.store(false, Ordering::SeqCst);
             let _ = client.tx.send(ClientCommand::Disconnect);
-            true
-        } else {
-            false
+            self.pool
+                .lock()
+                .expect("remote client pool lock")
+                .remove(&key);
         }
+        true
     }
 
-    pub fn status(&self) -> Value {
-        let guard = self.inner.lock().expect("remote client lock");
-        let Some(client) = guard.as_ref() else {
+    pub fn disconnect(&self, window_label: &str) -> bool {
+        self.release_binding(window_label)
+    }
+
+    pub fn status(&self, window_label: &str) -> Value {
+        let key = self
+            .bindings
+            .lock()
+            .expect("remote client bindings lock")
+            .get(window_label)
+            .cloned();
+        let Some(key) = key else {
+            return json!({ "connected": false, "info": null });
+        };
+        let client = self
+            .pool
+            .lock()
+            .expect("remote client pool lock")
+            .get(&key)
+            .cloned();
+        let Some(client) = client else {
             return json!({ "connected": false, "info": null });
         };
         let connected = client.connected.load(Ordering::SeqCst);
@@ -204,6 +346,7 @@ impl RustRemoteClientState {
 
     pub fn invoke(
         &self,
+        window_label: &str,
         channel: &str,
         args: Vec<Value>,
         timeout: Duration,
@@ -211,16 +354,31 @@ impl RustRemoteClientState {
         if channel.trim().is_empty() {
             return Err("remote.invoke: channel is required".to_string());
         }
-        let (tx, connected) = {
-            let guard = self.inner.lock().expect("remote client lock");
-            let Some(client) = guard.as_ref() else {
-                return Err("remote.invoke: not connected to remote server".to_string());
-            };
-            (client.tx.clone(), client.connected.load(Ordering::SeqCst))
+        // Route strictly to this window's own connection. If the window has no
+        // live binding, fail closed — never fall back to another window's/host's
+        // connection (that was the cross-host bleed bug).
+        let key = self
+            .bindings
+            .lock()
+            .expect("remote client bindings lock")
+            .get(window_label)
+            .cloned();
+        let Some(key) = key else {
+            return Err("remote.invoke: not connected to remote server".to_string());
         };
-        if !connected {
+        let client = self
+            .pool
+            .lock()
+            .expect("remote client pool lock")
+            .get(&key)
+            .cloned();
+        let Some(client) = client else {
+            return Err("remote.invoke: not connected to remote server".to_string());
+        };
+        if !client.connected.load(Ordering::SeqCst) {
             return Err("remote.invoke: not connected to remote server".to_string());
         }
+        let tx = client.tx.clone();
         let id = self.next_id();
         let (reply_tx, reply_rx) = mpsc::channel();
         tx.send(ClientCommand::Invoke {
@@ -804,5 +962,82 @@ mod tests {
         assert!(validate_connection_fields("localhost", 0, "token", "AA").is_err());
         assert!(validate_connection_fields("localhost", 9876, "", "AA").is_err());
         assert!(validate_connection_fields("localhost", 9876, "token", "").is_err());
+    }
+
+    #[test]
+    fn connection_key_is_stable_and_token_safe() {
+        let a = ConnectionKey::new("host", 9001, "secret-token");
+        let b = ConnectionKey::new("host", 9001, "secret-token");
+        let c = ConnectionKey::new("host", 9001, "other-token");
+        let d = ConnectionKey::new("host", 9002, "secret-token");
+        assert_eq!(a, b, "same (host, port, token) must collapse to one key");
+        assert_ne!(a, c, "different token must be a different connection");
+        assert_ne!(a, d, "different port must be a different connection");
+        let shown = a.to_string();
+        assert!(shown.starts_with("host:9001#"));
+        assert!(
+            !shown.contains("secret-token"),
+            "Display must never leak the plaintext token"
+        );
+    }
+
+    #[test]
+    fn invoke_without_binding_fails_closed() {
+        let state = RustRemoteClientState::default();
+        let err = state
+            .invoke("win-A", "pty:read-buffer", Vec::new(), Duration::from_secs(1))
+            .expect_err("an unbound window must not reach any connection");
+        assert!(err.contains("not connected"));
+    }
+
+    // Build a fake pooled connection without opening a socket, so the
+    // pool/binding/referrer lifecycle can be exercised in isolation.
+    fn register_fake_client(state: &RustRemoteClientState, windows: &[&str]) -> ConnectionKey {
+        let key = ConnectionKey::new("host", 9001, "tok");
+        let (tx, _rx) = mpsc::channel();
+        let client = Arc::new(RunningClient {
+            host: "host".to_string(),
+            port: 9001,
+            compression: RemoteCompression::None,
+            protocol: "v2".to_string(),
+            connected: Arc::new(AtomicBool::new(true)),
+            tx,
+            referrers: Mutex::new(HashSet::new()),
+        });
+        state
+            .pool
+            .lock()
+            .unwrap()
+            .insert(key.clone(), Arc::clone(&client));
+        for window in windows {
+            client.referrers.lock().unwrap().insert((*window).to_string());
+            state
+                .bindings
+                .lock()
+                .unwrap()
+                .insert((*window).to_string(), key.clone());
+        }
+        key
+    }
+
+    #[test]
+    fn last_referrer_release_tears_down_shared_connection() {
+        let state = RustRemoteClientState::default();
+        let key = register_fake_client(&state, &["win-A", "win-B"]);
+
+        // Each bound window sees its own connection as live.
+        assert_eq!(state.status("win-A")["connected"], json!(true));
+        assert_eq!(state.status("win-B")["connected"], json!(true));
+
+        // Releasing one referrer keeps the shared socket alive for the sibling.
+        assert!(state.disconnect("win-A"));
+        assert!(state.pool.lock().unwrap().contains_key(&key));
+        assert_eq!(state.status("win-A")["connected"], json!(false));
+        assert_eq!(state.status("win-B")["connected"], json!(true));
+
+        // Releasing the last referrer tears the connection down.
+        assert!(state.disconnect("win-B"));
+        assert!(!state.pool.lock().unwrap().contains_key(&key));
+        assert!(!state.disconnect("win-B"), "second release is a no-op");
     }
 }

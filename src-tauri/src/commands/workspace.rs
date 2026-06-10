@@ -143,12 +143,13 @@ async fn remote_workspace_invoke(
 ) -> Option<Result<Value, CommandError>> {
     let target_profile_id = remote_profile_target_id(app, window_label)?;
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let routing_label = window_label.to_string();
     let mut invoke_args = Vec::with_capacity(args.len() + 2);
     invoke_args.push(json!(target_profile_id));
     invoke_args.extend(args);
     invoke_args.push(json!(window_label));
     let result = tauri::async_runtime::spawn_blocking(move || {
-        remote_client.invoke(channel, invoke_args, Duration::from_secs(30))
+        remote_client.invoke(&routing_label, channel, invoke_args, Duration::from_secs(30))
     })
     .await
     .map_err(|err| CommandError {

@@ -75,8 +75,9 @@ async fn remote_invoke_for_window(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
+    let window_label = window.label().to_string();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        remote_client.invoke(channel, args, REMOTE_FS_TIMEOUT)
+        remote_client.invoke(&window_label, channel, args, REMOTE_FS_TIMEOUT)
     })
     .await
     .map_err(|err| format!("remote.invoke {channel} worker failed: {err}"));
@@ -96,7 +97,7 @@ fn remote_invoke_for_window_blocking(
         return None;
     }
     let remote_client = app.state::<RustRemoteClientState>().inner().clone();
-    Some(remote_client.invoke(channel, args, REMOTE_FS_TIMEOUT))
+    Some(remote_client.invoke(window.label(), channel, args, REMOTE_FS_TIMEOUT))
 }
 
 fn from_remote_value<T>(value: Value) -> Result<T, String>
