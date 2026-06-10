@@ -1934,8 +1934,19 @@ fn invoke_rust_for_remote(
             let profile_id = optional_string_param(params, "profileId")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "default".to_string());
-            if let Some(window_id) =
-                optional_string_param(params, "windowId").filter(|value| !value.trim().is_empty())
+            // Client window ids are untrusted: only serve a per-window snapshot
+            // when the id names an EXISTING registry entry bound to the
+            // requested profile. An unknown id must not fabricate an entry (it
+            // would bind to the default profile and shadow the requested one),
+            // and an id colliding with one of the host's own windows — both
+            // sides label their main window "main" — must not leak another
+            // profile's data.
+            if let Some(window_id) = optional_string_param(params, "windowId")
+                .filter(|value| !value.trim().is_empty())
+                .filter(|value| {
+                    window_registry::profile_id_for_window(app, value).as_deref()
+                        == Some(profile_id.as_str())
+                })
             {
                 if let Some(data) = window_registry::workspace_json(app, &window_id) {
                     return Some(Ok(Value::String(data)));
@@ -1952,8 +1963,18 @@ fn invoke_rust_for_remote(
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "default".to_string());
             string_param(params, "data", channel).map(|data| {
+                // Same trust rule as workspace:load: a client-supplied windowId
+                // may only target a registry entry that is already bound to the
+                // requested profile. Without this check a save claiming
+                // windowId "main" would overwrite the HOST's own main-window
+                // workspace (and its global workspaces.json + profile
+                // snapshot) regardless of the requested target profile.
                 let window_id = optional_string_param(params, "windowId")
-                    .filter(|value| !value.trim().is_empty());
+                    .filter(|value| !value.trim().is_empty())
+                    .filter(|value| {
+                        window_registry::profile_id_for_window(app, value).as_deref()
+                            == Some(profile_id.as_str())
+                    });
                 let saved = if let Some(window_id) = window_id.as_deref() {
                     window_registry::save_workspace_json(app, window_id, &data)
                 } else if let Some(target) =

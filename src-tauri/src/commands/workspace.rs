@@ -191,6 +191,19 @@ fn workspace_save_impl(
     if window_registry::save_workspace_json(&app, &window_label, &data) {
         return Ok(true);
     }
+    // Only the main window may fall back to the legacy global workspaces.json
+    // write (covers first-run ordering before its registry entry exists). For
+    // any other window a rejected save means the registry entry is gone — e.g.
+    // the final teardown save after "Remove from profile" — and writing it to
+    // the global file would overwrite the main window's workspace list with
+    // this window's state (which may even be remote-adopted host data).
+    if window_label != "main" {
+        debug_workspace_log(
+            &app,
+            format!("save dropped window={window_label} reason=no-registry-entry"),
+        );
+        return Ok(false);
+    }
     let path = workspace_path(&app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(WorkspaceError::from)?;

@@ -163,6 +163,10 @@ export default function App() {
   const [remoteClientConnected, setRemoteClientConnected] = useState(false)
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
   const [activeRemoteProfileId, setActiveRemoteProfileId] = useState<string | null>(null)
+  // "host:port" of the remote connection this window is viewing (null for
+  // local profiles). Mirrored into the workspace store so reload broadcasts
+  // can be scoped to the right host connection.
+  const [activeRemoteOrigin, setActiveRemoteOrigin] = useState<string | null>(null)
   const isRemoteConnected = activeProfileIsRemote && remoteClientConnected
   const [appNotification, setAppNotification] = useState<string | null>(null)
   const [profileWindowCloseRequest, setProfileWindowCloseRequest] = useState<ProfileWindowCloseRequest | null>(null)
@@ -214,7 +218,10 @@ export default function App() {
     workspaceStore.setViewedRemoteProfileId(
       activeProfileIsRemote ? (activeRemoteProfileId || null) : null,
     )
-  }, [activeProfileIsRemote, activeRemoteProfileId])
+    workspaceStore.setViewedRemoteOrigin(
+      activeProfileIsRemote ? activeRemoteOrigin : null,
+    )
+  }, [activeProfileIsRemote, activeRemoteProfileId, activeRemoteOrigin])
 
   // Background auto-update: run only in the main window so multiple windows
   // never install concurrently.
@@ -572,6 +579,7 @@ export default function App() {
               setActiveProfileIsRemote(false)
               setActiveProfileId(localProfile.id)
               setActiveRemoteProfileId(null)
+              setActiveRemoteOrigin(null)
             }
           } else {
             // Scope host workspace:reload broadcasts to the profile we're viewing.
@@ -579,6 +587,7 @@ export default function App() {
             // arrives immediately after the socket connects can never fall through
             // to the local windowId branch (see workspace-store.listenForReload).
             workspaceStore.setViewedRemoteProfileId(active.remoteProfileId || 'default')
+            workspaceStore.setViewedRemoteOrigin(`${active.remoteHost}:${active.remotePort || 9876}`)
             const winIdx = await host.app.getWindowIndex()
             // Show the HOST-side target profile name when we have it (persisted on
             // the alias at selection time) so the title/sidebar reflect which
@@ -591,6 +600,7 @@ export default function App() {
             setActiveProfileIsRemote(true)
             setActiveProfileId(active.id)
             setActiveRemoteProfileId(active.remoteProfileId || 'default')
+            setActiveRemoteOrigin(`${active.remoteHost}:${active.remotePort || 9876}`)
             setRemoteClientConnected(true)
             // Remember how we connected so the status poll can silently
             // re-dial after an idle drop without restarting the app.
@@ -617,6 +627,7 @@ export default function App() {
             setActiveProfileIsRemote(false)
             setActiveProfileId(localProfile.id)
             setActiveRemoteProfileId(null)
+            setActiveRemoteOrigin(null)
           }
         } else if (active) {
           // For local profiles opened in a new window, load the profile snapshot
@@ -641,6 +652,7 @@ export default function App() {
           setActiveProfileIsRemote(false)
           setActiveProfileId(active.id)
           setActiveRemoteProfileId(null)
+          setActiveRemoteOrigin(null)
         } else if (result.profiles.length > 0) {
           // Fallback: activeProfileId didn't match any profile — use first local profile
           const fallback = result.profiles.find(p => p.type !== 'remote') || result.profiles[0]
@@ -649,6 +661,11 @@ export default function App() {
           setActiveProfileIsRemote(fallback.type === 'remote')
           setActiveProfileId(fallback.id)
           setActiveRemoteProfileId(fallback.type === 'remote' ? (fallback.remoteProfileId || 'default') : null)
+          setActiveRemoteOrigin(
+            fallback.type === 'remote' && fallback.remoteHost
+              ? `${fallback.remoteHost}:${fallback.remotePort || 9876}`
+              : null,
+          )
         }
 
         // Store windowId for cross-window workspace drag

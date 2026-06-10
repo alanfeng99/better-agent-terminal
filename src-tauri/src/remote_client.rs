@@ -229,8 +229,16 @@ impl RustRemoteClientState {
                 let (tx, rx) = mpsc::channel();
                 let connected = Arc::new(AtomicBool::new(true));
                 let connected_for_loop = Arc::clone(&connected);
+                let remote_origin = format!("{host}:{port}");
                 thread::spawn(move || {
-                    client_loop(app, connection.ws, rx, connected_for_loop, compression)
+                    client_loop(
+                        app,
+                        connection.ws,
+                        rx,
+                        connected_for_loop,
+                        compression,
+                        remote_origin,
+                    )
                 });
                 let client = Arc::new(RunningClient {
                     host: host.clone(),
@@ -476,6 +484,7 @@ fn client_loop(
     rx: mpsc::Receiver<ClientCommand>,
     connected: Arc<AtomicBool>,
     compression: RemoteCompression,
+    remote_origin: String,
 ) {
     let mut pending: HashMap<String, PendingInvoke> = HashMap::new();
     let mut last_ping = Instant::now();
@@ -533,12 +542,12 @@ fn client_loop(
         match ws.read() {
             Ok(Message::Text(text)) if compression == RemoteCompression::None => {
                 if let Ok(frame) = decode_remote_text_frame(&text) {
-                    handle_frame(&app, &mut pending, frame);
+                    handle_frame(&app, &mut pending, frame, &remote_origin);
                 }
             }
             Ok(Message::Binary(bytes)) if compression == RemoteCompression::Gzip => {
                 if let Ok(frame) = decode_remote_binary_frame(&bytes) {
-                    handle_frame(&app, &mut pending, frame);
+                    handle_frame(&app, &mut pending, frame, &remote_origin);
                 }
             }
             Ok(Message::Ping(bytes)) => {
@@ -575,7 +584,33 @@ fn log_remote_pty_write_args(app: &AppHandle, phase: &str, channel: &str, args: 
     );
 }
 
-fn handle_frame(app: &AppHandle, pending: &mut HashMap<String, PendingInvoke>, frame: Value) {
+/// Stamp host-origin `workspace:reload` payloads so the renderer can tell them
+/// apart from local-origin reloads. Host and client both label their main
+/// window "main", so windowId alone cannot distinguish a host broadcast from a
+/// reload targeted at this machine's own local window — without the tag, a
+/// local window would adopt the HOST's workspace list and the next local save
+/// would persist it over this machine's own data. Legacy hosts (<= v3.1.8)
+/// still send the bare workspace JSON string; wrap it so the tag survives.
+fn tag_remote_workspace_reload(params: Value, remote_origin: &str) -> Value {
+    match params {
+        Value::Object(mut map) => {
+            map.insert(
+                "remoteOrigin".to_string(),
+                Value::String(remote_origin.to_string()),
+            );
+            Value::Object(map)
+        }
+        Value::String(data) => json!({ "data": data, "remoteOrigin": remote_origin }),
+        other => other,
+    }
+}
+
+fn handle_frame(
+    app: &AppHandle,
+    pending: &mut HashMap<String, PendingInvoke>,
+    frame: Value,
+    remote_origin: &str,
+) {
     let frame_type = frame.get("type").and_then(Value::as_str).unwrap_or("");
     if matches!(frame_type, "invoke-result" | "invoke-error") {
         let Some(id) = frame.get("id").and_then(Value::as_str) else {
@@ -603,7 +638,7 @@ fn handle_frame(app: &AppHandle, pending: &mut HashMap<String, PendingInvoke>, f
         if !is_proxied_remote_event(&channel) {
             return;
         }
-        let params = frame.get("params").cloned().unwrap_or_else(|| {
+        let mut params = frame.get("params").cloned().unwrap_or_else(|| {
             let args = frame
                 .get("args")
                 .and_then(Value::as_array)
@@ -611,6 +646,9 @@ fn handle_frame(app: &AppHandle, pending: &mut HashMap<String, PendingInvoke>, f
                 .unwrap_or_default();
             legacy_v1_event_args_to_params(&channel, &args)
         });
+        if channel == "workspace:reload" {
+            params = tag_remote_workspace_reload(params, remote_origin);
+        }
         publish_runtime_event(app, &channel, params, "rust-remote-client");
     }
 }
@@ -979,6 +1017,22 @@ mod tests {
             !shown.contains("secret-token"),
             "Display must never leak the plaintext token"
         );
+    }
+
+    #[test]
+    fn tags_remote_workspace_reload_payloads() {
+        // Object payloads gain the origin tag in place.
+        let tagged = tag_remote_workspace_reload(
+            json!({ "windowId": "main", "profileId": "default", "data": "{}" }),
+            "hostb:9876",
+        );
+        assert_eq!(tagged["remoteOrigin"], json!("hostb:9876"));
+        assert_eq!(tagged["windowId"], json!("main"));
+        // Legacy bare-string payloads are wrapped so the tag survives.
+        let wrapped =
+            tag_remote_workspace_reload(Value::String("{\"workspaces\":[]}".into()), "hostb:9876");
+        assert_eq!(wrapped["remoteOrigin"], json!("hostb:9876"));
+        assert_eq!(wrapped["data"], json!("{\"workspaces\":[]}"));
     }
 
     #[test]

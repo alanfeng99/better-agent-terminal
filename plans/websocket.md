@@ -483,8 +483,14 @@ Workspace state:
 
 - `workspace:load` returns the current host workspace JSON for the selected remote profile.
 - `workspace:save` is client-to-host. A client must not assume its local state is accepted until the host returns success.
+- The `windowId` a client attaches to `workspace:load`/`workspace:save` is untrusted. The host honors it only when it names an existing host registry entry already bound to the requested profile; otherwise the host falls back to profile-targeted handling. Client window ids must never fabricate host registry entries or address the host's own windows (both sides label their main window `main`).
 - After a successful `workspace:save`, the host broadcasts `workspace:reload` with the saved workspace JSON.
 - Clients receiving `workspace:reload` must replace/reload their workspace state from the payload.
+- The client-side Rust remote client stamps every `workspace:reload` it republishes from a host connection with `remoteOrigin: "<host>:<port>"`. Legacy bare-string payloads (hosts <= v3.1.8) are wrapped as `{ "data": "<workspace json>", "remoteOrigin": "<host>:<port>" }` so the tag survives.
+- Renderer gating for `workspace:reload`:
+  - A window viewing a remote profile applies only payloads carrying a `remoteOrigin` that matches its own connection, and whose `profileId` matches the viewed host profile. Untagged (local-origin) payloads are ignored on remote windows.
+  - A window on a local profile must ignore any payload carrying `remoteOrigin` — otherwise a host broadcast with `windowId: "main"` would collide with the local main window, get adopted, and the next local save would persist the host's list over the machine's own data.
+  - Bare-string payloads are never adopted directly; the window re-fetches through its own `workspace:load` routing instead.
 - Host-side window/workspace changes that affect the serialized workspace view should also broadcast `workspace:reload`.
 - `workspace:move-to-window` moves one workspace from a source host window to a target host window. Clients must send the source window id, target window id, workspace id, and insert index. The host applies the move, persists both affected window/profile snapshots, then emits `workspace:reload` for both affected windows.
 

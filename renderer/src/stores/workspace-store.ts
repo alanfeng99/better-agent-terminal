@@ -48,6 +48,11 @@ class WorkspaceStore {
   // client both label their main window "main", so windowId can't tell them
   // apart on the wire — remote reloads are scoped by this profile id instead.
   private viewedRemoteProfileId: string | null = null
+  // For a remote client window, the "host:port" of the connection this window
+  // is bound to. The Rust remote client stamps every host-originated
+  // workspace:reload with a matching `remoteOrigin`, so reloads can be scoped
+  // to the right host even when two connections use the same profile id.
+  private viewedRemoteOrigin: string | null = null
   private listeners: Set<Listener> = new Set()
 
   // Usage polling removed — OAuth API calls to Anthropic have been removed.
@@ -731,21 +736,47 @@ class WorkspaceStore {
   // host workspace:reload broadcasts this window is allowed to apply.
   setViewedRemoteProfileId(id: string | null): void { this.viewedRemoteProfileId = id }
   getViewedRemoteProfileId(): string | null { return this.viewedRemoteProfileId }
+  setViewedRemoteOrigin(origin: string | null): void { this.viewedRemoteOrigin = origin }
+  getViewedRemoteOrigin(): string | null { return this.viewedRemoteOrigin }
 
   listenForReload(): () => void {
     return host.workspace.onReload((payload?: unknown) => {
       if (typeof payload === 'string' && payload) {
-        this.applySerializedData(payload, { preserveActiveSelection: true })
+        // Bare-string reloads carry no origin/window/profile attribution, so
+        // adopting the attached data is unsafe (a host broadcast leaking here
+        // would overwrite this window's list — and the next save would persist
+        // it). Current builds never emit strings locally and the Rust remote
+        // client wraps legacy host strings into tagged objects, so just
+        // re-fetch through this window's own routing.
+        debugLog('[workspace-store] string reload payload; refetching own workspace instead of adopting')
+        this.load({ preserveActiveSelection: true })
         return
       }
       if (payload && typeof payload === 'object') {
-        const reload = payload as { windowId?: unknown; data?: unknown; profileId?: unknown }
+        const reload = payload as { windowId?: unknown; data?: unknown; profileId?: unknown; remoteOrigin?: unknown }
+        const remoteOrigin = typeof reload.remoteOrigin === 'string' ? reload.remoteOrigin : null
         if (this.viewedRemoteProfileId !== null) {
-          // Remote client: the host and this client both label their main window
-          // "main", so windowId can't distinguish them. The reload's profileId
-          // names the HOST profile that changed — apply it only when it matches
-          // the host profile this window is viewing, otherwise the host editing
-          // an unrelated profile (e.g. its own default) would clobber us.
+          // Remote client window: only host-originated reloads (stamped with
+          // remoteOrigin by the Rust remote client) may be applied, and only
+          // from the host this window is connected to. An untagged reload is
+          // local-origin — adopting it here would push LOCAL data into the
+          // remote view and the next save would write it to the host.
+          if (remoteOrigin === null) {
+            debugLog('[workspace-store] reload ignored: local-origin payload on remote client window')
+            return
+          }
+          if (this.viewedRemoteOrigin !== null && remoteOrigin !== this.viewedRemoteOrigin) {
+            debugLog('[workspace-store] reload ignored: remote origin mismatch', {
+              viewedRemoteOrigin: this.viewedRemoteOrigin,
+              remoteOrigin,
+            })
+            return
+          }
+          // The host and this client both label their main window "main", so
+          // windowId can't distinguish them. The reload's profileId names the
+          // HOST profile that changed — apply it only when it matches the host
+          // profile this window is viewing, otherwise the host editing an
+          // unrelated profile (e.g. its own default) would clobber us.
           const reloadProfileId = typeof reload.profileId === 'string' ? reload.profileId : null
           if (reloadProfileId === null) {
             // Legacy host that doesn't tag reloads with a profileId — we can't
@@ -763,13 +794,26 @@ class WorkspaceStore {
             })
             return
           }
-        } else if (typeof reload.windowId === 'string' && reload.windowId !== this.windowId) {
-          // Local window: windowId selects the target window.
-          debugLog('[workspace-store] reload ignored: target window mismatch', {
-            windowId: this.windowId,
-            targetWindowId: reload.windowId,
-          })
-          return
+        } else {
+          // Local window: NEVER apply a host-originated reload. The host's
+          // main window and ours are both labelled "main", so without this
+          // check a host broadcast would pass the windowId gate below, this
+          // window would adopt the HOST's workspace list, and the next local
+          // save would persist it over this machine's own data.
+          if (remoteOrigin !== null) {
+            debugLog('[workspace-store] reload ignored: remote-origin payload on local window', {
+              remoteOrigin,
+            })
+            return
+          }
+          if (typeof reload.windowId === 'string' && reload.windowId !== this.windowId) {
+            // windowId selects the target window.
+            debugLog('[workspace-store] reload ignored: target window mismatch', {
+              windowId: this.windowId,
+              targetWindowId: reload.windowId,
+            })
+            return
+          }
         }
         if (typeof reload.data === 'string' && reload.data) {
           this.applySerializedData(reload.data, { preserveActiveSelection: true })
