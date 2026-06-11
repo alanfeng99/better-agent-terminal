@@ -1190,6 +1190,36 @@ function createTauriHost(): BatAppAPI {
       onResult: (callback: (payload: unknown) => void) =>
         listenAdapter<unknown>('claude-channel:result', callback),
     },
+    claudeCli: {
+      getCapabilities: () => getInvoke()<unknown>('claude_cli_get_capabilities'),
+      startSession: async (sessionId: string, options: unknown) =>
+        getInvoke()<unknown>('claude_cli_start_session', {
+          sessionId,
+          options: options == null
+            ? options
+            : await attachWorkspaceIdentity(sessionId, options as Record<string, unknown>),
+        }),
+      stopSession: (sessionId: string) =>
+        getInvoke()<unknown>('claude_cli_stop_session', { sessionId }),
+      getStatus: (sessionId: string) =>
+        getInvoke()<unknown>('claude_cli_get_status', { sessionId }),
+      onMessage: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:message', callback),
+      onStatus: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:status', callback),
+      onTurnEnd: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:turn-end', callback),
+      onAssistant: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:assistant', callback),
+      onToolUse: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:tool-use', callback),
+      onToolResult: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:tool-result', callback),
+      onThinking: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:thinking', callback),
+      onUsage: (callback: (payload: unknown) => void) =>
+        listenAdapter<unknown>('claude-cli:usage', callback),
+    },
     worktree: new Proxy({}, {
       // worktree.* — agent-tied. Sidecar handlers mirror the host
       // WorktreeManager while keeping the renderer-facing shape stable.
@@ -1389,7 +1419,7 @@ const PORTED_NAMESPACES = new Set([
   'settings', 'runtime', 'shell', 'dialog', 'fs', 'clipboard', 'image',
   'pty', 'workspace', 'update', 'debug', 'git', 'app',
   'notification', 'system', 'github', 'snippet', 'profile',
-  'claude', 'claudeChannel', 'worktree', 'agent', 'workerBuffer',
+  'claude', 'claudeChannel', 'claudeCli', 'worktree', 'agent', 'workerBuffer',
   'remote', 'tunnel',
 ])
 

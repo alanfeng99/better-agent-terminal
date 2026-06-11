@@ -10,6 +10,7 @@ pub mod agent;
 pub mod app;
 pub mod claude;
 pub mod claude_channel;
+pub mod claude_cli;
 pub mod clipboard;
 pub mod debug;
 pub mod dialog;

@@ -230,6 +230,10 @@ async function run() {
       if (cmd === 'claude_channel_send_message') return { ok: true, messageId: 'm-1' } as unknown as T
       if (cmd === 'claude_channel_stop_session') return { ok: true, existed: true } as unknown as T
       if (cmd === 'claude_channel_get_status') return { ok: true, status: 'ready' } as unknown as T
+      if (cmd === 'claude_cli_get_capabilities') return { supported: false } as unknown as T
+      if (cmd === 'claude_cli_start_session') return { ok: true, sessionId: 'cli-1' } as unknown as T
+      if (cmd === 'claude_cli_stop_session') return { ok: true, existed: true } as unknown as T
+      if (cmd === 'claude_cli_get_status') return { ok: true, status: 'ready' } as unknown as T
       if (cmd === 'worktree_create') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'worktree_remove') return { success: false, error: 'stub' } as unknown as T
       if (cmd === 'worktree_status') return null as unknown as T
@@ -630,6 +634,14 @@ async function run() {
     mod.host.claudeChannel.onMessage(() => {})()
     mod.host.claudeChannel.onStatus(() => {})()
     mod.host.claudeChannel.onTurnEnd(() => {})()
+    // claudeCli.* — debug-only subscription CLI transcript runtime surface.
+    assert.deepEqual(await mod.host.claudeCli.getCapabilities(), { supported: false })
+    assert.deepEqual(await mod.host.claudeCli.startSession('cli-1', { cwd: '/cwd' }), { ok: true, sessionId: 'cli-1' })
+    assert.deepEqual(await mod.host.claudeCli.getStatus('cli-1'), { ok: true, status: 'ready' })
+    assert.deepEqual(await mod.host.claudeCli.stopSession('cli-1'), { ok: true, existed: true })
+    mod.host.claudeCli.onMessage(() => {})()
+    mod.host.claudeCli.onStatus(() => {})()
+    mod.host.claudeCli.onTurnEnd(() => {})()
 
     // worktree.* — sidecar-routed. The fixture returns shaped failures so
     // this adapter test can focus on command names + payloads.
@@ -897,6 +909,10 @@ async function run() {
       { cmd: 'claude_channel_send_message', args: { sessionId: 'ch-1', prompt: 'hello', messageId: 'm-1' } },
       { cmd: 'claude_channel_get_status', args: { sessionId: 'ch-1' } },
       { cmd: 'claude_channel_stop_session', args: { sessionId: 'ch-1' } },
+      { cmd: 'claude_cli_get_capabilities', args: undefined },
+      { cmd: 'claude_cli_start_session', args: { sessionId: 'cli-1', options: { cwd: '/cwd' } } },
+      { cmd: 'claude_cli_get_status', args: { sessionId: 'cli-1' } },
+      { cmd: 'claude_cli_stop_session', args: { sessionId: 'cli-1' } },
       { cmd: 'worktree_create', args: { sessionId: 's-1', cwd: '/cwd' } },
       { cmd: 'worktree_remove', args: { sessionId: 's-1', deleteBranch: true } },
       { cmd: 'worktree_status', args: { sessionId: 's-1' } },

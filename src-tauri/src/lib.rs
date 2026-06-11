@@ -28,7 +28,7 @@ mod window_registry;
 
 use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, claude_channel as claude_channel_cmd,
-    clipboard as clipboard_cmd, debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd,
+    claude_cli as claude_cli_cmd, clipboard as clipboard_cmd, debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd,
     git as git_cmd, github as github_cmd, image as image_cmd, notification as notification_cmd,
     profile as profile_cmd, pty as pty_cmd, remote as remote_cmd, runtime as runtime_cmd, settings,
     shell as shell_cmd, snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
@@ -341,6 +341,10 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
             claude_channel_cmd::claude_channel_send_message,
             claude_channel_cmd::claude_channel_stop_session,
             claude_channel_cmd::claude_channel_get_status,
+            claude_cli_cmd::claude_cli_get_capabilities,
+            claude_cli_cmd::claude_cli_start_session,
+            claude_cli_cmd::claude_cli_stop_session,
+            claude_cli_cmd::claude_cli_get_status,
             worktree_cmd::worktree_create,
             worktree_cmd::worktree_remove,
             worktree_cmd::worktree_status,

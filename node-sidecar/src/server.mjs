@@ -50,6 +50,7 @@ const CLAUDE_HANDLER_MODULES = [
   './handlers/claude-readonly.mjs',
   './handlers/claude-mcp.mjs',
   './handlers/claude-channel.mjs',
+  './handlers/claude-cli.mjs',
 ]
 
 // Keep the import specifiers as string literals. The Tauri release build
@@ -65,6 +66,7 @@ const CLAUDE_HANDLER_LOADERS = new Map([
   ['./handlers/claude-readonly.mjs', () => import('./handlers/claude-readonly.mjs')],
   ['./handlers/claude-mcp.mjs', () => import('./handlers/claude-mcp.mjs')],
   ['./handlers/claude-channel.mjs', () => import('./handlers/claude-channel.mjs')],
+  ['./handlers/claude-cli.mjs', () => import('./handlers/claude-cli.mjs')],
 ])
 
 export let findClaudeCliPath
