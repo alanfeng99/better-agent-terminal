@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 pub const AGENT_PRESET_IDS: &[&str] = &[
     "claude-code",
     "claude-channel",
+    "claude-cli-agent",
     "claude-code-worktree",
     "claude-cli",
     "claude-cli-worktree",
@@ -19,7 +20,7 @@ pub const AGENT_PRESET_IDS: &[&str] = &[
     "none",
 ];
 
-const DEBUG_ONLY_AGENT_PRESET_IDS: &[&str] = &["claude-channel"];
+const DEBUG_ONLY_AGENT_PRESET_IDS: &[&str] = &["claude-channel", "claude-cli-agent"];
 
 fn bat_debug_enabled() -> bool {
     matches!(
@@ -149,6 +150,14 @@ fn agent_preset_metadata(id: &str) -> Option<Value> {
             "debug": true,
             "backend": "channel",
         }),
+        "claude-cli-agent" => json!({
+            "id": "claude-cli-agent",
+            "name": "Claude CLI Agent (Subscription)",
+            "icon": "◈",
+            "color": "#d97706",
+            "debug": true,
+            "backend": "cli",
+        }),
         "claude-code-worktree" => json!({
             "id": "claude-code-worktree",
             "name": "Claude Agent (Worktree)",
@@ -225,9 +234,20 @@ mod tests {
         let regular = agent_supported_session_type_ids_for_debug(false);
         assert!(regular.contains(&"claude-code"));
         assert!(!regular.contains(&"claude-channel"));
+        assert!(!regular.contains(&"claude-cli-agent"));
 
         let debug = agent_supported_session_type_ids_for_debug(true);
         assert!(debug.contains(&"claude-channel"));
+        assert!(debug.contains(&"claude-cli-agent"));
+    }
+
+    #[test]
+    fn claude_cli_agent_preset_metadata_present_in_debug() {
+        let presets = agent_supported_session_presets_for_debug(true);
+        assert!(presets.iter().any(|preset| {
+            preset.get("id").and_then(Value::as_str) == Some("claude-cli-agent")
+                && preset.get("backend").and_then(Value::as_str) == Some("cli")
+        }));
     }
 
     #[test]

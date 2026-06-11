@@ -58,7 +58,7 @@ function getWindowsBuildNumber(): number | undefined {
 }
 
 function isClaudeCliPreset(agentPreset?: AgentPresetId): boolean {
-  return agentPreset === 'claude-cli' || agentPreset === 'claude-cli-worktree'
+  return agentPreset === 'claude-cli' || agentPreset === 'claude-cli-worktree' || agentPreset === 'claude-cli-agent'
 }
 
 function isTerminalKeyboardEventTarget(container: HTMLElement, target: EventTarget | null): boolean {

@@ -49,7 +49,7 @@
     "test:rust-base-cache-key": "node tests/rust-base-cache-key.test.mjs",
     "test:tauri-resource-cache-keys": "node tests/tauri-resource-cache-keys.test.mjs",
     "check:tauri-rust": "cd src-tauri && cargo check --quiet",
-    "test:sidecar": "node node-sidecar/tests/server.test.mjs && node node-sidecar/tests/claude-channel-runtime.test.mjs",
+    "test:sidecar": "node node-sidecar/tests/server.test.mjs && node node-sidecar/tests/claude-channel-runtime.test.mjs && node node-sidecar/tests/claude-cli.test.mjs && node node-sidecar/tests/claude-cli-runtime.test.mjs",
     "test:tauri-bundle-prune": "node tests/prune-node-sidecar-modules.test.mjs",
     "test:tauri-resources": "node tests/check-tauri-resources.test.mjs",
     "test:release-asset-names": "node tests/normalize-release-asset-names.test.mjs",

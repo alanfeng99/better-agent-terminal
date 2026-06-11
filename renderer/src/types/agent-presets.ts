@@ -15,7 +15,7 @@ export interface AgentPreset {
   needsGitRepo?: boolean; // 需要 git repo（worktree 類）
 }
 
-export type AgentPresetId = 'claude-code' | 'claude-channel' | 'claude-code-v2' | 'claude-code-worktree' | 'claude-cli' | 'claude-cli-worktree' | 'codex-agent' | 'codex-agent-worktree' | 'codex-cli' | 'none';
+export type AgentPresetId = 'claude-code' | 'claude-channel' | 'claude-cli-agent' | 'claude-code-v2' | 'claude-code-worktree' | 'claude-cli' | 'claude-cli-worktree' | 'codex-agent' | 'codex-agent-worktree' | 'codex-cli' | 'none';
 
 export const AGENT_PRESETS: AgentPreset[] = [
   {
@@ -42,6 +42,14 @@ export const AGENT_PRESETS: AgentPreset[] = [
     color: '#f97316',
     debug: true,
     backend: 'channel',
+  },
+  {
+    id: 'claude-cli-agent',
+    name: 'Claude CLI Agent (Subscription)',
+    icon: '◈',
+    color: '#d97706',
+    debug: true,
+    backend: 'cli',
   },
   {
     id: 'claude-code-worktree',

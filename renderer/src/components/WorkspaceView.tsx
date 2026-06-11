@@ -421,7 +421,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
       }
       return
     }
-    if (preset === 'claude-code' || preset === 'claude-code-v2' || preset === 'claude-code-worktree' || preset === 'claude-channel') {
+    if (preset === 'claude-code' || preset === 'claude-code-v2' || preset === 'claude-code-worktree' || preset === 'claude-channel' || preset === 'claude-cli-agent') {
       try {
         const [info, list] = await Promise.all([
           (host.claude.getAccountInfo(accountTerminal.id) as Promise<{ email?: string; organization?: string; subscriptionType?: string } | null>).catch(() => null),
@@ -612,7 +612,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
         for (const terminal of terminals) {
           // Worker terminals manage their own PTYs internally via WorkerPanel
           if (terminal.procfilePath) continue
-          if (terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-channel' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree') continue
+          if (terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-channel' || terminal.agentPreset === 'claude-cli-agent' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree') continue
           // Claude CLI presets are started by ClaudeCliPanel so it can own session restore.
           if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') continue
           const created = await createWorkspacePty({
@@ -666,7 +666,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           } else {
             agentTerminal = workspaceStore.addTerminal(workspace.id, defaultAgent as AgentPresetId)
           }
-          if (defaultAgent !== 'claude-cli' && defaultAgent !== 'claude-cli-worktree' && defaultAgent !== 'claude-code' && defaultAgent !== 'claude-channel' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
+          if (defaultAgent !== 'claude-cli' && defaultAgent !== 'claude-cli-worktree' && defaultAgent !== 'claude-cli-agent' && defaultAgent !== 'claude-code' && defaultAgent !== 'claude-channel' && defaultAgent !== 'claude-code-v2' && defaultAgent !== 'claude-code-worktree' && defaultAgent !== 'codex-agent' && defaultAgent !== 'codex-agent-worktree') {
             const created = await createWorkspacePty({
               id: agentTerminal.id,
               cwd: workspace.folderPath,
@@ -945,7 +945,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
           agentPreset: terminal.agentPreset,
           ...(terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent-worktree' ? { useWorktree: true, worktreePath: terminal.worktreePath, worktreeBranch: terminal.worktreeBranch } : {}),
         })
-      } else if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree') {
+      } else if (terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree' || terminal.agentPreset === 'claude-cli-agent') {
         await host.pty.kill(id)
         workspaceStore.bumpTerminalClaudeCliRestart(id)
       } else {
