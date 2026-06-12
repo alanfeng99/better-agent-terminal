@@ -636,11 +636,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     className="settings-btn"
                     onClick={() => { void checkUpdatesNow() }}
                     disabled={updateState.status === 'checking' || updateState.status === 'downloading'}
+                    title={t('settings.updateCheckHint')}
                   >
                     {updateState.status === 'checking'
                       ? t('settings.updateChecking')
                       : t('settings.updateCheckNow')}
                   </button>
+                  <span className="settings-inline-status">{t('settings.updateCheckHint')}</span>
                   {updateState.status === 'downloading' && (
                     <span className="settings-inline-status">
                       {updateState.total
