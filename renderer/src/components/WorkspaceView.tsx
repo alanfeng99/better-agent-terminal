@@ -249,12 +249,53 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
     }
     return () => { cancelled = true }
   }, [accountMenuOpen, accountChip])
-  const peekWindowPct = (snap: Record<string, unknown> | null | undefined, key: 'fiveHour' | 'sevenDay'): number | null => {
+  // Extract one window (pct + resetsAt ms) from either a HostUsageSnapshot
+  // (resetsAt already ms) or a raw peek payload (resetsAt may be an ISO
+  // string straight from the endpoint).
+  const usageWindowOf = (
+    snap: Record<string, unknown> | HostUsageSnapshot | null | undefined,
+    key: 'fiveHour' | 'sevenDay',
+  ): { pct: number; resetsAt: number | null } | null => {
     if (!snap) return null
-    const window = snap[key]
+    const window = (snap as Record<string, unknown>)[key]
     if (!window || typeof window !== 'object') return null
-    const utilization = (window as Record<string, unknown>).utilization
-    return typeof utilization === 'number' ? Math.round(utilization * 100) : null
+    const w = window as Record<string, unknown>
+    if (typeof w.utilization !== 'number') return null
+    let resetsAt: number | null = null
+    if (typeof w.resetsAt === 'number' && Number.isFinite(w.resetsAt)) resetsAt = w.resetsAt
+    else if (typeof w.resetsAt === 'string') {
+      const parsed = Date.parse(w.resetsAt)
+      if (Number.isFinite(parsed)) resetsAt = parsed
+    }
+    return { pct: Math.round(w.utilization * 100), resetsAt }
+  }
+  // Per-account usage lines rendered inside each menu row:
+  //   5h 0%  ↻ in 4h 56m
+  //   7d 19% ↻ in 2d 12h · Mon 10:59
+  const renderAccountUsage = (snap: Record<string, unknown> | HostUsageSnapshot | null | undefined) => {
+    const fiveHour = usageWindowOf(snap, 'fiveHour')
+    const sevenDay = usageWindowOf(snap, 'sevenDay')
+    if (!fiveHour && !sevenDay) return null
+    return (
+      <span className="workspace-account-menu-usage-lines">
+        {fiveHour && (
+          <span className="workspace-account-menu-usage-row" title={fiveHour.resetsAt ? new Date(fiveHour.resetsAt).toLocaleString() : undefined}>
+            <span>5h</span>
+            <span className="workspace-account-menu-usage-pct" style={{ color: usagePctColor(fiveHour.pct) }}>{fiveHour.pct}%</span>
+            {fiveHour.resetsAt != null && <span>↻ {formatUsageRemaining(fiveHour.resetsAt - Date.now())}</span>}
+          </span>
+        )}
+        {sevenDay && (
+          <span className="workspace-account-menu-usage-row" title={sevenDay.resetsAt ? new Date(sevenDay.resetsAt).toLocaleString() : undefined}>
+            <span>7d</span>
+            <span className="workspace-account-menu-usage-pct" style={{ color: usagePctColor(sevenDay.pct) }}>{sevenDay.pct}%</span>
+            {sevenDay.resetsAt != null && (
+              <span>↻ {formatUsageRemaining(sevenDay.resetsAt - Date.now())} · {formatUsageResetAt(sevenDay.resetsAt)}</span>
+            )}
+          </span>
+        )}
+      </span>
+    )
   }
   const formatUsageRemaining = (ms: number): string => {
     const totalMinutes = Math.max(0, Math.floor(ms / 60_000))
@@ -1187,6 +1228,7 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
                     {accountChip.plan && (
                       <span className="workspace-account-menu-path">{accountChip.plan}</span>
                     )}
+                    {renderAccountUsage(hostUsage)}
                   </div>
                 )}
                 {(accountChip.accounts || []).map(account => (
@@ -1205,19 +1247,9 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
                     {account.sublabel && (
                       <span className="workspace-account-menu-path">{account.sublabel}</span>
                     )}
-                    {!account.active && account.id && (() => {
-                      const peek = peekedUsage[account.id]
-                      const fiveHour = peekWindowPct(peek, 'fiveHour')
-                      const sevenDay = peekWindowPct(peek, 'sevenDay')
-                      if (fiveHour === null && sevenDay === null) return null
-                      return (
-                        <span className="workspace-account-menu-path">
-                          {fiveHour !== null && <>5h <span style={{ color: usagePctColor(fiveHour) }}>{fiveHour}%</span></>}
-                          {fiveHour !== null && sevenDay !== null && ' · '}
-                          {sevenDay !== null && <>7d <span style={{ color: usagePctColor(sevenDay) }}>{sevenDay}%</span></>}
-                        </span>
-                      )
-                    })()}
+                    {account.active
+                      ? renderAccountUsage(hostUsage)
+                      : (account.id ? renderAccountUsage(peekedUsage[account.id]) : null)}
                   </button>
                 ))}
                 {loginPending ? (
@@ -1247,40 +1279,6 @@ export function WorkspaceView({ workspace, terminals, focusedTerminalId, isActiv
                       {accountChip.loggedIn ? t('workspace.accountAdd') : t('workspace.accountLogin')}
                     </span>
                   </button>
-                )}
-                {hostUsage && (hostUsage.fiveHour?.utilization != null || hostUsage.sevenDay?.utilization != null) && (
-                  <div className="workspace-account-menu-usage">
-                    {hostUsage.fiveHour?.utilization != null && (
-                      <span
-                        className="workspace-account-menu-usage-row"
-                        title={hostUsage.fiveHour.resetsAt ? new Date(hostUsage.fiveHour.resetsAt).toLocaleString() : undefined}
-                      >
-                        <span>5h</span>
-                        <span className="workspace-account-menu-usage-pct" style={{ color: usagePctColor(Math.round(hostUsage.fiveHour.utilization * 100)) }}>
-                          {Math.round(hostUsage.fiveHour.utilization * 100)}%
-                        </span>
-                        {hostUsage.fiveHour.resetsAt != null && (
-                          <span>↻ {formatUsageRemaining(hostUsage.fiveHour.resetsAt - Date.now())}</span>
-                        )}
-                      </span>
-                    )}
-                    {hostUsage.sevenDay?.utilization != null && (
-                      <span
-                        className="workspace-account-menu-usage-row"
-                        title={hostUsage.sevenDay.resetsAt ? new Date(hostUsage.sevenDay.resetsAt).toLocaleString() : undefined}
-                      >
-                        <span>7d</span>
-                        <span className="workspace-account-menu-usage-pct" style={{ color: usagePctColor(Math.round(hostUsage.sevenDay.utilization * 100)) }}>
-                          {Math.round(hostUsage.sevenDay.utilization * 100)}%
-                        </span>
-                        {hostUsage.sevenDay.resetsAt != null && (
-                          <span>
-                            ↻ {formatUsageRemaining(hostUsage.sevenDay.resetsAt - Date.now())} · {formatUsageResetAt(hostUsage.sevenDay.resetsAt)}
-                          </span>
-                        )}
-                      </span>
-                    )}
-                  </div>
                 )}
                 <div className="workspace-account-menu-versions">
                   <span>Claude Code: {cliVersions ? (cliVersions.claude || '—') : '…'}</span>
