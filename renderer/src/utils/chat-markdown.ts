@@ -65,11 +65,53 @@ function resolveRelativePath(cwd: string, rel: string): string {
   return cwdParts.join('/')
 }
 
+// Models occasionally hard-wrap a table row mid-cell (seen in the wild: the
+// header row split inside a CJK word). One broken row makes GFM reject the
+// whole table and render it as a run-on paragraph. Repair: inside table-ish
+// blocks (the text must contain a delimiter row), a line that STARTS a row
+// (`|...`) but doesn't terminate it gets joined with following lines until one
+// ends with `|`. Fenced code is left untouched; if no terminator shows up
+// within a few lines we leave the text alone.
+const TABLE_DELIMITER_ROW_RE = /^\s*\|?[\s:-]*-+[\s:-]*(\|[\s:-]*-*[\s:-]*)+\|?\s*$/m
+export function repairBrokenTableRows(text: string): string {
+  if (!text.includes('|') || !TABLE_DELIMITER_ROW_RE.test(text)) return text
+  const lines = text.split('\n')
+  const out: string[] = []
+  let inFence = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^\s*(`{3,}|~{3,})/.test(line)) {
+      inFence = !inFence
+      out.push(line)
+      continue
+    }
+    if (!inFence && /^\s*\|/.test(line) && !/\|\s*$/.test(line)) {
+      let joined = line
+      let j = i + 1
+      let terminated = false
+      while (j < lines.length && j - i <= 3) {
+        const next = lines[j]
+        if (!next.trim() || /^\s*(`{3,}|~{3,})/.test(next)) break
+        joined += next
+        if (/\|\s*$/.test(next)) { terminated = true; break }
+        j++
+      }
+      if (terminated) {
+        out.push(joined)
+        i = j
+        continue
+      }
+    }
+    out.push(line)
+  }
+  return out.join('\n')
+}
+
 export function renderChatMarkdown(text: string, cwd: string): string {
   const cacheKey = cwd + '\0' + text
   const cached = markdownCache.get(cacheKey)
   if (cached !== undefined) return cached
-  const processed = text.replace(
+  const processed = repairBrokenTableRows(text).replace(
     /(`{1,3}[\s\S]*?`{1,3})|(file:\/\/\/[^\s<>)\]`'"]+)/g,
     (match, codeBlock, fileUrl, offset, str) => {
       if (codeBlock) return match
