@@ -278,6 +278,15 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   const [isStreaming, setIsStreaming] = useState(false)
   const [runtimeWaitNow, setRuntimeWaitNow] = useState(() => Date.now())
   const [isInterrupted, setIsInterrupted] = useState(false)
+  // Turn liveness: when the turn started, when the LAST event (message, tool,
+  // stream delta, status) arrived, and a 1s ticker that drives the elapsed /
+  // quiet-time display. Answers "is the agent actually still doing anything?"
+  const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
+  const lastAgentEventAtRef = useRef<number>(Date.now())
+  const [turnNow, setTurnNow] = useState(() => Date.now())
+  const noteAgentEvent = useCallback(() => {
+    lastAgentEventAtRef.current = Date.now()
+  }, [])
   const lastEscRef = useRef(0)
   const streamingTextStore = useRafBatchedString('')
   const streamingThinkingStore = useRafBatchedString('')
@@ -487,6 +496,27 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const timer = window.setInterval(() => setRuntimeWaitNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [isStreaming, sessionMeta?.runtimeStatus, sessionMeta?.runtimeStatusStartedAt])
+  // Track turn start + tick once a second while a turn is in flight so the
+  // elapsed / quiet-time readouts stay current.
+  useEffect(() => {
+    if (isStreaming) {
+      setTurnStartedAt(Date.now())
+      lastAgentEventAtRef.current = Date.now()
+      setTurnNow(Date.now())
+      const timer = window.setInterval(() => setTurnNow(Date.now()), 1000)
+      return () => window.clearInterval(timer)
+    }
+    setTurnStartedAt(null)
+    return undefined
+  }, [isStreaming])
+  const TURN_QUIET_WARN_SEC = 30
+  const turnElapsedSec = isStreaming && turnStartedAt
+    ? Math.max(0, Math.floor((turnNow - turnStartedAt) / 1000))
+    : 0
+  const turnQuietSec = isStreaming
+    ? Math.max(0, Math.floor((turnNow - lastAgentEventAtRef.current) / 1000))
+    : 0
+  const turnStalled = isStreaming && turnQuietSec >= TURN_QUIET_WARN_SEC
   const [filePickerPreview, setFilePickerPreview] = useState<string | null>(null)
   const filePickerInputRef = useRef<HTMLInputElement>(null)
   // Message archiving — keep renderer memory bounded
@@ -979,6 +1009,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     const unsubs = [
       api.onMessage((sid: string, msg: unknown) => {
         if (sid !== sessionId) return
+        noteAgentEvent()
         if (host.debug.isDebugMode === true) host.debug.log(`${tag} onMessage`, (msg as ClaudeMessage).id)
         workspaceStore.updateTerminalActivity(sessionId)
         const message = msg as ClaudeMessage
@@ -1083,6 +1114,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       api.onToolUse((sid: string, tool: unknown) => {
         if (sid !== sessionId) return
+        noteAgentEvent()
         workspaceStore.updateTerminalActivity(sessionId)
         setSessionMeta(prev => clearRuntimeStatusMeta(prev))
         const toolCall = tool as ClaudeToolCall
@@ -1121,6 +1153,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       api.onToolResult((sid: string, result: unknown) => {
         if (sid !== sessionId) return
+        noteAgentEvent()
         workspaceStore.updateTerminalActivity(sessionId)
         const { id, ...updates } = result as { id: string; status: string; result?: string; description?: string }
         if (host.debug.isDebugMode === true && (updates as { description?: string }).description) {
@@ -1171,6 +1204,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       // agent-tree visibility, so flush like Agent/Task tool updates.
       api.onTask((sid: string, payload: unknown) => {
         if (sid !== sessionId) return
+        noteAgentEvent()
         const task = payload as TaskLifecycle | null | undefined
         if (!task || typeof task.id !== 'string') return
         if (host.debug.isDebugMode === true) {
@@ -1280,6 +1314,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       api.onStream((sid: string, data: unknown) => {
         if (sid !== sessionId) return
+        noteAgentEvent()
         workspaceStore.updateTerminalActivity(sessionId)
         setSessionMeta(prev => clearRuntimeStatusMeta(prev))
         const d = data as { text?: string; thinking?: string; parentToolUseId?: string }
@@ -1307,6 +1342,7 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
 
       api.onStatus((sid: string, meta: unknown) => {
         if (sid !== sessionId) return
+        noteAgentEvent()
         const m = meta as unknown as SessionMeta
         if (m.runtimeStatus) {
           host.debug.log(`${tag} onStatus runtimeStatus=${m.runtimeStatus} startedAt=${m.runtimeStatusStartedAt ?? 'null'} sdkSessionId=${(m.sdkSessionId || '').slice(0, 8)}`)
@@ -1706,7 +1742,21 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     // Remember this turn's display prompt so a later barge-in can recap it.
     inFlightPromptRef.current = clientMessage?.displayContent ?? prompt
     await ensureSessionStarted()
-    return host.claude.sendMessage(sessionId, prompt, images, autoCompactWindow, clientMessage)
+    try {
+      return await host.claude.sendMessage(sessionId, prompt, images, autoCompactWindow, clientMessage)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      // "session has no cwd" means the sidecar restarted underneath us: its
+      // session map is empty but our module-level started-session tracking is
+      // stale, so ensureSessionStarted skipped the (re)start. Clear the stale
+      // tracking, re-establish (the resume path keeps the transcript), and
+      // retry once with the same clientMessage so the user echo dedupes.
+      if (!/session has no cwd/i.test(message)) throw err
+      host.debug.log(`[Claude:${sessionId.slice(0, 8)}] sendMessage hit no-cwd (sidecar restarted) — re-establishing session and retrying`)
+      clearStartedSessionTracking(sessionId)
+      await ensureSessionStarted()
+      return await host.claude.sendMessage(sessionId, prompt, images, autoCompactWindow, clientMessage)
+    }
   }, [ensureSessionStarted, sessionId])
 
   // Project .mcp.json detection. The Claude SDK silently ignores
@@ -4220,9 +4270,16 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           {isStreaming && !streamingText && (!streamingThinking || !showThinkingMsg) && (
             <div className="tl-item">
               <div className="tl-dot dot-thinking" />
-              <div className="tl-content claude-thinking">
-                <span className="claude-thinking-text">{runtimeWaitMessage || t('claude.thinking')}</span>
-                <span className="claude-thinking-dots"><span>.</span><span>.</span><span>.</span></span>
+              <div className={`tl-content claude-thinking${turnStalled ? ' claude-thinking-stalled' : ''}`}>
+                <span className="claude-thinking-text">
+                  {turnStalled
+                    ? t('claude.turnQuiet', { quiet: turnQuietSec, elapsed: turnElapsedSec })
+                    : (runtimeWaitMessage || t('claude.thinking'))}
+                </span>
+                {!turnStalled && <span className="claude-thinking-dots"><span>.</span><span>.</span><span>.</span></span>}
+                {!turnStalled && turnElapsedSec >= 3 && (
+                  <span className="claude-thinking-elapsed">{turnElapsedSec}s</span>
+                )}
               </div>
             </div>
           )}
@@ -4701,6 +4758,25 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         className={`claude-input-area${isDragOver ? ' drag-over' : ''}`}
         style={pendingPermission || pendingQuestion || showResumeList || showModelList ? { display: 'none' } : undefined}
       >
+        {/* Always-visible turn status: the in-list "Thinking" row scrolls away
+            and disappears once content streams; this strip answers "is the
+            agent still doing anything?" from anywhere in the conversation. */}
+        {isStreaming && (
+          <div className={`claude-turn-status${turnStalled ? ' stalled' : ''}`}>
+            <span className="claude-turn-status-dot" />
+            <span className="claude-turn-status-text">
+              {turnStalled
+                ? t('claude.turnQuiet', { quiet: turnQuietSec, elapsed: turnElapsedSec })
+                : `${runtimeWaitMessage
+                  || (streamingText
+                    ? t('claude.turnResponding')
+                    : streamingThinking
+                      ? t('claude.thinking')
+                      : t('claude.turnWorking'))} · ${turnElapsedSec}s`}
+            </span>
+            <span className="claude-turn-status-hint">{t('claude.turnStopHint')}</span>
+          </div>
+        )}
         {/* Prompt suggestion chip */}
         {promptSuggestion && !isStreaming && (
           <div className="claude-prompt-suggestion" onClick={() => {

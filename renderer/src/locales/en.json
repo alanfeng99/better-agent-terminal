@@ -469,6 +469,10 @@
 
   "claude": {
     "thinking": "Thinking",
+    "turnWorking": "Working",
+    "turnResponding": "Responding",
+    "turnQuiet": "No new events for {{quiet}}s — the agent may still be on a long step ({{elapsed}}s total)",
+    "turnStopHint": "Esc to interrupt",
     "filterUser": "You",
     "filterMessage": "Message",
     "filterTool": "Tool",

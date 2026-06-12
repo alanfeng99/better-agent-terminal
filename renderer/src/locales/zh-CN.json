@@ -445,6 +445,10 @@
   },
   "claude": {
     "thinking": "思考中",
+    "turnWorking": "处理中",
+    "turnResponding": "回应中",
+    "turnQuiet": "已 {{quiet}} 秒没有新事件 — agent 可能仍在执行较长的步骤（共 {{elapsed}} 秒）",
+    "turnStopHint": "Esc 可中断",
     "filterUser": "你",
     "filterMessage": "消息",
     "filterTool": "工具",

@@ -720,6 +720,66 @@
   30% { opacity: 1; }
 }
 
+.claude-thinking-elapsed {
+  margin-left: 6px;
+  font-size: 11px;
+  font-style: normal;
+  opacity: 0.65;
+}
+
+.claude-thinking-stalled {
+  color: var(--warning, #e8a33d);
+  font-style: normal;
+}
+
+/* Always-visible turn status strip above the input box. Tells the user the
+   agent is (still) working without relying on the in-list thinking row. */
+.claude-turn-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+}
+
+.claude-turn-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--agent-color, var(--claude-accent));
+  animation: turn-status-pulse 1.6s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.claude-turn-status.stalled {
+  color: var(--warning, #e8a33d);
+}
+
+.claude-turn-status.stalled .claude-turn-status-dot {
+  background: var(--warning, #e8a33d);
+  animation-duration: 0.8s;
+}
+
+.claude-turn-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-turn-status-hint {
+  margin-left: auto;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+@keyframes turn-status-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
 /* Thinking Content Block */
 .claude-thinking-block {
   padding: 2px 0;
