@@ -499,6 +499,15 @@ function processMessage(s, sessionId, msg) {
         resultLen: typeof msg.result === 'string' ? msg.result.length : 0,
       })
       sendEvent('claude:result', { sessionId, result: msg })
+      // A turn cannot complete while foreground tasks still run, but the
+      // SDK's terminal task_updated is best-effort and often missing (e.g.
+      // shell-tool tasks) — drop the ghosts so they don't tick forever.
+      // Background tasks legitimately outlive the turn and stay tracked.
+      if (s.activeTasks) {
+        for (const [taskId, task] of s.activeTasks) {
+          if (task.isBackground !== true) s.activeTasks.delete(taskId)
+        }
+      }
       debugLog('emit-turn-end', sessionId, { reason: 'completed' })
       sendEvent('claude:turn-end', { sessionId, payload: { reason: 'completed', result: msg.result, sdkSessionId: msg.session_id } })
     } else {

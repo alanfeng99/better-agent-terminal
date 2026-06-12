@@ -770,6 +770,10 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
   // Combine archived + live messages for rendering and scanning
   const allMessages = useMemo(() => [...loadedArchive, ...messages], [loadedArchive, messages])
   messageCountRef.current = allMessages.length
+  // Mirror for event handlers (subscribed once per session) that need the
+  // current message list without re-subscribing on every message.
+  const allMessagesRef = useRef<MessageItem[]>(allMessages)
+  allMessagesRef.current = allMessages
   const lastRenderDlogRef = useRef<{ at: number; summary: string }>({ at: 0, summary: '' })
   const archiveDlog = useCallback((message: string) => {
     if (host.debug.isDebugMode === true) host.debug.log(message)
@@ -1180,13 +1184,14 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
               setSubagentStreamingText(p => { const n = new Map(p); n.delete(id); return n })
               setSubagentStreamingThinking(p => { const n = new Map(p); n.delete(id); return n })
             }
-            // A terminal Agent/Task result also ends the bound `claude:task`
+            // A terminal tool result also ends the bound `claude:task`
             // lifecycle entry — the SDK never emits task_updated for denied
-            // tool calls, which otherwise leaves a ghost running entry.
+            // tool calls, which otherwise leaves a ghost running entry. Any
+            // tool name qualifies: the SDK emits task_started for plain shell
+            // tools too (Bash/PowerShell), bound via tool_use_id.
             // Exception: a successful run_in_background result only means
             // "launched"; the background task keeps running past it.
             if (isAgentStatusChange
-              && (m.toolName === 'Agent' || m.toolName === 'Task' || m.toolName === 'Workflow')
               && !((m as ClaudeToolCall).input.run_in_background === true && updates.status !== 'error')) {
               const terminal = updates.status === 'error' ? 'failed' : 'completed'
               setTaskLifecycle(lifePrev => terminateLifecycleEntries(
@@ -1256,6 +1261,19 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
           // (closeLiveQuery) without emitting terminal task events — mirror
           // that here or still-running lifecycle entries tick forever.
           setTaskLifecycle(prev => terminateLifecycleEntries(prev, () => true, 'killed'))
+        } else {
+          // Normal completion: a turn cannot end while foreground tasks are
+          // still running, so any leftover running lifecycle entry is a
+          // ghost (the SDK's terminal task_updated is best-effort and often
+          // missing, e.g. for shell-tool tasks). Only background tasks
+          // legitimately outlive the turn — leave those alone.
+          const bgToolIds = new Set(allMessagesRef.current
+            .filter(m => isToolCall(m) && m.input?.run_in_background === true)
+            .map(m => m.id))
+          setTaskLifecycle(prev => terminateLifecycleEntries(
+            prev,
+            life => life.isBackground !== true && !(life.toolUseId && bgToolIds.has(life.toolUseId)),
+            'completed'))
         }
       }),
 

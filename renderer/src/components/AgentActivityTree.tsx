@@ -94,9 +94,13 @@ export function AgentActivityTree({
     return (
       <div className="claude-active-tasks claude-agent-tree-bar">
         {roots.filter(node => node.status === 'running').map(node => {
-          const progressDesc = node.progressText || ''
-          const isStalled = progressDesc.startsWith('[stalled]')
-          const liveLine = !progressDesc ? lastStreamLine(streamingText.get(node.id)) : ''
+          const rawProgress = node.progressText || ''
+          const isStalled = rawProgress.startsWith('[stalled]')
+          // Skip the progress line when it merely repeats the label — it
+          // doubles each chip's width without adding information.
+          const progressDesc = rawProgress.trim() === node.label.trim() ? '' : rawProgress
+          const rawLive = !rawProgress ? lastStreamLine(streamingText.get(node.id)) : ''
+          const liveLine = rawLive.trim() === node.label.trim() ? '' : rawLive
           return (
             <div key={node.id} className="claude-active-task-item" onClick={() => onOpenTask(node)}>
               <span className="claude-active-task-dot" />
@@ -120,8 +124,9 @@ export function AgentActivityTree({
   const renderNode = (node: AgentTaskNode, depth: number): JSX.Element => {
     const hasChildren = node.children.length > 0
     const isCollapsed = collapsedIds.has(node.id)
-    const progressDesc = node.progressText || ''
-    const isStalled = progressDesc.startsWith('[stalled]')
+    const rawProgress = node.progressText || ''
+    const isStalled = rawProgress.startsWith('[stalled]')
+    const progressDesc = rawProgress.trim() === node.label.trim() ? '' : rawProgress
     const liveLine = node.status === 'running' ? lastStreamLine(streamingText.get(node.id)) : ''
     const elapsed = nodeElapsed(node)
     return (
