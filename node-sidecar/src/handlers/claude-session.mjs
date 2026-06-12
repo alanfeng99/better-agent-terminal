@@ -28,7 +28,7 @@ function applyEffortOptions(session, options) {
   }
 }
 import { loadSessionHistory } from './claude-history.mjs'
-import { warn as logWarn } from '../lib/logger.mjs'
+import { warn as logWarn, info as logInfo } from '../lib/logger.mjs'
 import { worktreeRehydrate } from './worktree.mjs'
 import {
   abortCodexSession,
@@ -152,6 +152,17 @@ registerHandler('claude.resumeSession', async (params) => {
     return resumeCodexSession(params)
   }
   const existing = sessions.get(sessionId)
+  // Remote clients call resumeSession when (re)opening a session view, so a
+  // resume that targets the sdkSessionId the session is already attached to
+  // must be read-only while a turn is in flight — the teardown below would
+  // abort the running turn just because someone looked at the session.
+  const alreadyLive = !!existing
+    && existing.sdkSessionId === sdkSessionIdToResume
+    && (existing.streaming === true || (existing.liveQuery && !existing.liveQuery.isClosed))
+  if (alreadyLive) {
+    logInfo(`claude.resumeSession(${sessionId}): already attached to live sdkSessionId=${sdkSessionIdToResume}; skipping rebuild`)
+    return { ok: true, sessionId, sdkSessionId: sdkSessionIdToResume, alreadyLive: true }
+  }
   if (existing?.abortController) {
     try { existing.abortController.abort() } catch { /* already aborted */ }
   }
