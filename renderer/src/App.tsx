@@ -7,6 +7,7 @@ import { settingsStore } from './stores/settings-store'
 import { Sidebar } from './components/Sidebar'
 import { UpdateBanner } from './components/UpdateBanner'
 import { startAutoUpdate } from './lib/auto-update'
+import { startRuntimeAutoInstall } from './lib/runtime-auto-install'
 import { WorkspaceView, clearInitializedWorkspaces } from './components/WorkspaceView'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SnippetSidebar } from './components/SnippetPanel'
@@ -223,13 +224,17 @@ export default function App() {
     )
   }, [activeProfileIsRemote, activeRemoteProfileId, activeRemoteOrigin])
 
-  // Background auto-update: run only in the main window so multiple windows
-  // never install concurrently.
+  // Background auto-update + first-run runtime auto-install: run only in the
+  // main window so multiple windows never install concurrently.
   useEffect(() => {
     if (!isTauri) return
     let cancelled = false
     host.app.getWindowId()
-      .then((id: string | null) => { if (!cancelled && id === 'main') startAutoUpdate() })
+      .then((id: string | null) => {
+        if (cancelled || id !== 'main') return
+        startAutoUpdate()
+        startRuntimeAutoInstall()
+      })
       .catch(() => { /* not the main window or no window id — skip */ })
     return () => { cancelled = true }
   }, [])
