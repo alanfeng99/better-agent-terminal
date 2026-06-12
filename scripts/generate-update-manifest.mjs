@@ -118,13 +118,24 @@ export async function generateUpdateManifests(options = {}) {
     platforms[target] = { signature, url }
   }
 
+  // A stable release is also the newest build the Preview channel should see:
+  // without this, pre-channel users stay pinned to the last -pre tag until the
+  // NEXT -pre tag ships, skipping newer stable releases entirely. So stable
+  // releases publish the same manifest content to BOTH channels (the pre copy
+  // simply points at the stable assets). Pre releases never touch the stable
+  // channel — stable installs must never be offered a -pre build. If a stable
+  // manifest ever overwrites a newer -pre entry, clients are still safe: the
+  // Tauri updater only offers versions greater than the installed one.
+  const channels = channel === 'stable' ? ['stable', 'pre'] : [channel]
   const written = []
   for (const [mode, platforms] of byMode) {
     const manifest = { version, notes: '', pub_date: pubDate, platforms }
-    const name = `latest-${channel}-${mode}.json`
-    const outPath = join(outDir, name)
-    await writeFile(outPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-    written.push({ name, targets: Object.keys(platforms) })
+    const body = `${JSON.stringify(manifest, null, 2)}\n`
+    for (const ch of channels) {
+      const name = `latest-${ch}-${mode}.json`
+      await writeFile(join(outDir, name), body, 'utf8')
+      written.push({ name, targets: Object.keys(platforms) })
+    }
   }
   return { channel, version, written }
 }
