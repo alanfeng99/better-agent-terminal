@@ -5,7 +5,7 @@ use crate::commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, fs as fs_cmd, git as git_cmd,
     github as github_cmd, image as image_cmd, notification as notification_cmd,
     profile as profile_cmd, pty as pty_cmd, settings as settings_cmd, snippet as snippet_cmd,
-    worker_buffer::WorkerBufferState, worktree as worktree_cmd,
+    update as update_cmd, worker_buffer::WorkerBufferState, worktree as worktree_cmd,
 };
 use crate::electron_safe_storage::{
     read_secret_json, read_secret_string, write_secret_json, write_secret_string, SecretJsonRead,
@@ -1543,6 +1543,34 @@ fn invoke_rust_for_remote(
         })),
         "app:new-window" => profile_id_from_params(channel, params)
             .map(|profile_id| Value::String(app_cmd::app_new_window_for_profile(app, &profile_id))),
+        // Let a paired remote client (e.g. BAT Mobile) drive the desktop host's
+        // self-update: check the per-channel manifest, download+install the new
+        // bundle, then relaunch so it takes effect. Channel defaults to "stable".
+        "app:check-update" => {
+            let update_channel =
+                optional_string_param(params, "channel").unwrap_or_else(|| "stable".to_string());
+            tauri::async_runtime::block_on(update_cmd::update_check_native(
+                app.clone(),
+                update_channel,
+            ))
+            .map_err(bridge_error_message)
+        }
+        "app:install-update" => {
+            let update_channel =
+                optional_string_param(params, "channel").unwrap_or_else(|| "stable".to_string());
+            tauri::async_runtime::block_on(update_cmd::update_install(app.clone(), update_channel))
+                .map_err(bridge_error_message)
+        }
+        "app:relaunch" => {
+            // Ack first, then relaunch on a detached thread so the response
+            // frame flushes to the client before the process restarts.
+            let restart_app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                restart_app.restart();
+            });
+            Ok(json!({ "ok": true }))
+        }
         "agent:get-supported-session-types" => Ok(agent_cmd::agent_supported_session_type_ids()),
         "agent:list-presets" => Ok(agent_cmd::agent_supported_session_presets()),
         "claude:start-session" => {
