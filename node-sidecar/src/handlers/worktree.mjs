@@ -95,24 +95,33 @@ export async function worktreeCreate(sessionId, cwd) {
   const { mkdir } = await import('node:fs/promises')
   const { existsSync } = await import('node:fs')
 
-  const shortId = sessionId.slice(0, 8)
   const worktreeBase = join(gitRoot, WORKTREE_DIR)
-  const worktreePath = join(worktreeBase, shortId)
   const sourceBranch = await worktreeGetBranch(gitRoot)
-  let branch = `bat/worktree-${shortId}`
 
   await mkdir(worktreeBase, { recursive: true })
   await worktreeAddToGitExclude(gitRoot)
 
-  if (existsSync(worktreePath)) {
-    throw new Error(`Worktree already exists at ${worktreePath}. Use rehydrate() to reuse it.`)
+  // The host owns the filesystem, so it — not the client — picks the worktree
+  // folder/branch. The name used to be the client session id's first 8 chars,
+  // but client id formats whose first 8 chars aren't unique (e.g. a shared
+  // "session-" prefix) made every worktree collide on the same path. Allocate
+  // a free, collision-proof slot here instead. The hex token matches the
+  // renderer's [0-9a-f]+ worktree-folder regex.
+  let branch
+  let worktreePath
+  for (let counter = 0; ; counter++) {
+    const token = ((Date.now() + counter) & 0xffffffff) >>> 0
+    const shortId = token.toString(16).padStart(8, '0')
+    worktreePath = join(worktreeBase, shortId)
+    branch = `bat/worktree-${shortId}`
+    if (existsSync(worktreePath)) continue
+    let branchTaken = false
+    try {
+      await execFileP('git', ['rev-parse', '--verify', branch], { cwd: gitRoot })
+      branchTaken = true
+    } catch { /* branch missing — slot is free */ }
+    if (!branchTaken) break
   }
-
-  // If the branch already exists, append a timestamp suffix.
-  try {
-    await execFileP('git', ['rev-parse', '--verify', branch], { cwd: gitRoot })
-    branch = `${branch}-${Date.now().toString(36)}`
-  } catch { /* branch missing — keep as-is */ }
 
   await execFileP('git', ['worktree', 'add', worktreePath, '-b', branch], { cwd: gitRoot })
   await worktreeLinkClaudeUntracked(gitRoot, worktreePath)
