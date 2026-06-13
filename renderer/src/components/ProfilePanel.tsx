@@ -60,6 +60,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
   const [editRemoteProfiles, setEditRemoteProfiles] = useState<RemoteProfileOption[]>([])
   const [editSelectedRemoteProfileId, setEditSelectedRemoteProfileId] = useState<string>('')
   const [editFetchingRemoteProfiles, setEditFetchingRemoteProfiles] = useState(false)
+  const [editRemoteProfileError, setEditRemoteProfileError] = useState<string>('')
   const [siblingSourceId, setSiblingSourceId] = useState<string | null>(null)
   const [siblingProfiles, setSiblingProfiles] = useState<RemoteProfileOption[]>([])
   const [siblingLoading, setSiblingLoading] = useState(false)
@@ -228,11 +229,13 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
     setEditRemoteFingerprint(profile.remoteFingerprint || '')
     setEditRemoteProfiles([])
     setEditSelectedRemoteProfileId(profile.remoteProfileId || '')
+    setEditRemoteProfileError('')
   }
 
   const handleFetchEditRemoteProfiles = async () => {
     if (!editRemoteHost.trim() || !editRemoteToken.trim() || !editRemoteFingerprint.trim()) return
     setEditFetchingRemoteProfiles(true)
+    setEditRemoteProfileError('')
     try {
       const profiles = await fetchRemoteProfileList(editRemoteHost.trim(), parseInt(editRemotePort) || 9876, editRemoteToken.trim(), editRemoteFingerprint.trim())
       setEditRemoteProfiles(profiles)
@@ -241,7 +244,8 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
         const defaultP = profiles.find(p => p.id === 'default') || profiles[0]
         setEditSelectedRemoteProfileId(defaultP?.id || '')
       }
-    } catch {
+    } catch (err) {
+      setEditRemoteProfileError(err instanceof Error ? err.message : String(err))
       setEditRemoteProfiles([])
     } finally {
       setEditFetchingRemoteProfiles(false)
@@ -654,6 +658,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                         setEditRemoteToken(parsed.token)
                         setEditRemoteFingerprint(parsed.fingerprint)
                         setEditRemoteProfiles([])
+                        setEditRemoteProfileError('')
                         e.target.value = ''
                       }}
                       style={{ flex: '1 1 100%', fontFamily: 'monospace', fontSize: 11 }}
@@ -663,7 +668,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                       className="profile-name-input"
                       placeholder={t('profiles.host')}
                       value={editRemoteHost}
-                      onChange={e => { setEditRemoteHost(e.target.value); setEditRemoteProfiles([]) }}
+                      onChange={e => { setEditRemoteHost(e.target.value); setEditRemoteProfiles([]); setEditRemoteProfileError('') }}
                       style={{ flex: '1 1 120px' }}
                     />
                     <input
@@ -671,7 +676,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                       className="profile-name-input"
                       placeholder={t('profiles.portPlaceholder')}
                       value={editRemotePort}
-                      onChange={e => { setEditRemotePort(e.target.value); setEditRemoteProfiles([]) }}
+                      onChange={e => { setEditRemotePort(e.target.value); setEditRemoteProfiles([]); setEditRemoteProfileError('') }}
                       style={{ width: 70 }}
                     />
                     <input
@@ -679,7 +684,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                       className="profile-name-input"
                       placeholder={t('profiles.tokenPlaceholder')}
                       value={editRemoteToken}
-                      onChange={e => { setEditRemoteToken(e.target.value); setEditRemoteProfiles([]) }}
+                      onChange={e => { setEditRemoteToken(e.target.value); setEditRemoteProfiles([]); setEditRemoteProfileError('') }}
                       style={{ flex: '1 1 160px' }}
                     />
                     <input
@@ -687,7 +692,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                       className="profile-name-input"
                       placeholder={t('profiles.fingerprintPlaceholder', 'Cert fingerprint (SHA-256)')}
                       value={editRemoteFingerprint}
-                      onChange={e => { setEditRemoteFingerprint(e.target.value); setEditRemoteProfiles([]) }}
+                      onChange={e => { setEditRemoteFingerprint(e.target.value); setEditRemoteProfiles([]); setEditRemoteProfileError('') }}
                       style={{ flex: '1 1 100%', fontFamily: 'monospace', fontSize: 11 }}
                     />
                     <div style={{ display: 'flex', gap: 6, width: '100%', alignItems: 'center' }}>
@@ -698,7 +703,11 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                       >
                         {editFetchingRemoteProfiles ? t('profiles.fetchingProfiles') : t('profiles.fetchProfiles')}
                       </button>
-                      {editSelectedRemoteProfileId && editRemoteProfiles.length === 0 && (
+                      {editRemoteProfileError ? (
+                        <span style={{ color: '#e5534b', fontSize: 11 }}>
+                          {t('profiles.connectionFailed')}: {editRemoteProfileError}
+                        </span>
+                      ) : editSelectedRemoteProfileId && editRemoteProfiles.length === 0 && (
                         <span style={{ fontSize: 11, color: '#8b949e' }}>
                           {t('profiles.currentTarget')}: {editSelectedRemoteProfileId}
                         </span>
@@ -720,7 +729,7 @@ export function ProfilePanel({ onClose, onSwitchNewWindow, onProfileRenamed }: P
                     )}
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button className="profile-action-btn" onClick={() => handleSaveRemote(profile.id)}>{t('common.save')}</button>
-                      <button className="profile-action-btn" onClick={() => { setEditingRemoteId(null); setEditRemoteProfiles([]) }}>{t('common.cancel')}</button>
+                      <button className="profile-action-btn" onClick={() => { setEditingRemoteId(null); setEditRemoteProfiles([]); setEditRemoteProfileError('') }}>{t('common.cancel')}</button>
                     </div>
                   </div>
                 )}
