@@ -1670,8 +1670,15 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
         const meta = await host.claude.getSessionMeta(sessionId).catch(() => null)
         if (cancelled || !meta) return
         setSessionMeta(meta as unknown as SessionMeta)
-        if ((meta as unknown as SessionMeta).model) {
-          setCurrentModel(prev => prev || (meta as unknown as SessionMeta).model!)
+        const mountHostModel = (meta as unknown as SessionMeta).model
+        if (mountHostModel) {
+          const normalizedMountModel = normalizeClaudeModelSelection(mountHostModel) || mountHostModel
+          // Remote mode is host-owned: the picker chip must mirror the host
+          // session's live model. Adopt it even when our local value is already
+          // set, otherwise a stale cached terminal.model (e.g. clobbered by a
+          // host workspace reload) sticks and the chip shows the wrong model.
+          // Locally we keep our own value to avoid racing an in-flight change.
+          setCurrentModel(prev => isRemoteConnected ? normalizedMountModel : (prev || normalizedMountModel))
         }
         if (!(meta as unknown as SessionMeta).sdkSessionId) {
           setHasSdkSession(false)
@@ -1695,11 +1702,19 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
       host.claude.getSessionMeta(sessionId).then(meta => {
         if (meta) {
           setSessionMeta(meta as unknown as SessionMeta)
-          if ((meta as unknown as SessionMeta).model) setCurrentModel(prev => prev || (meta as unknown as SessionMeta).model!)
+          const hostModel = (meta as unknown as SessionMeta).model
+          if (hostModel) {
+            const normalizedHostModel = normalizeClaudeModelSelection(hostModel) || hostModel
+            // Remote mode is host-owned: on a window switch the chip must reflect
+            // the host session's live model, overwriting any stale local value.
+            // Locally we keep our own value to avoid racing an in-flight change
+            // the host hasn't applied yet.
+            setCurrentModel(prev => isRemoteConnected ? normalizedHostModel : (prev || normalizedHostModel))
+          }
         }
       }).catch(() => {})
     }
-  }, [isActive, sessionId])
+  }, [isActive, sessionId, isRemoteConnected])
 
   const ensureSessionStarted = useCallback(async () => {
     const existingStart = startedSessionPromises.get(sessionId)
