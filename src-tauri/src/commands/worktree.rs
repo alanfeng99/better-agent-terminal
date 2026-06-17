@@ -191,6 +191,29 @@ fn run_git_ok(cwd: &Path, args: &[&str]) -> bool {
     run_git(cwd, args, DEFAULT_TIMEOUT, MAX_OUTPUT_BYTES).is_ok()
 }
 
+/// Allocate a free worktree folder + branch under `worktree_base`. The folder
+/// name is host-owned — it is no longer derived from the client session id,
+/// whose first 8 chars aren't guaranteed unique across remote clients. The hex
+/// token matches the renderer's `[0-9a-f]+` worktree-folder regex; a
+/// same-millisecond clash or a pre-existing folder/branch bumps a counter until
+/// a free slot is found.
+fn allocate_worktree_slot(worktree_base: &Path, git_root: &Path) -> (PathBuf, String) {
+    let base = now_ms();
+    let mut counter: u64 = 0;
+    loop {
+        let token = base.wrapping_add(counter) & 0xffff_ffff;
+        let short_id = format!("{token:08x}");
+        let worktree_path = worktree_base.join(&short_id);
+        let branch_name = format!("bat/worktree-{short_id}");
+        if !worktree_path.exists()
+            && !run_git_ok(git_root, &["rev-parse", "--verify", &branch_name])
+        {
+            return (worktree_path, branch_name);
+        }
+        counter += 1;
+    }
+}
+
 fn get_git_root(cwd: &str) -> Option<String> {
     run_git(
         Path::new(cwd),
@@ -337,29 +360,20 @@ fn create_worktree_native(
         return Ok(json!({ "success": false, "error": "Not a git repository" }));
     };
     let git_root_path = PathBuf::from(&git_root);
-    let short_id: String = session_id.chars().take(8).collect();
     let worktree_base = git_root_path.join(WORKTREE_DIR);
-    let worktree_path = worktree_base.join(&short_id);
     let source_branch = get_branch(&git_root_path);
     let fork_head = rev_parse(&git_root_path, &source_branch);
-    let mut branch_name = format!("bat/worktree-{short_id}");
 
     fs::create_dir_all(&worktree_base).map_err(|err| bridge_error(err.to_string()))?;
     add_worktree_to_git_exclude(&git_root_path);
 
-    if worktree_path.exists() {
-        return Ok(json!({
-            "success": false,
-            "error": format!(
-                "Worktree already exists at {}. Use rehydrate() to reuse it.",
-                worktree_path.to_string_lossy()
-            )
-        }));
-    }
-
-    if run_git_ok(&git_root_path, &["rev-parse", "--verify", &branch_name]) {
-        branch_name = format!("{}-{}", branch_name, now_ms());
-    }
+    // The host owns the filesystem, so it — not the client — picks the worktree
+    // folder and branch. The name used to be the client session id's first 8
+    // chars, but remote clients use id formats whose first 8 chars aren't unique
+    // (e.g. a shared "session-" prefix), so every worktree resolved to the same
+    // path and only the first one could be created. Allocate a free,
+    // collision-proof slot here instead.
+    let (worktree_path, branch_name) = allocate_worktree_slot(&worktree_base, &git_root_path);
 
     let worktree_path_arg = worktree_path.to_string_lossy().to_string();
     run_git(
