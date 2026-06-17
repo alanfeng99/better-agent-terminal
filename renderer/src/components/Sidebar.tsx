@@ -118,6 +118,18 @@ export function Sidebar({
   const groupInputRef = useRef<HTMLInputElement>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   const workspaceListRef = useRef<HTMLDivElement>(null)
+  // Latest workspaces / reorder callback kept in refs so the native Tauri drop
+  // listener can reorder without re-subscribing on every render.
+  const workspacesRef = useRef(workspaces)
+  workspacesRef.current = workspaces
+  const onReorderRef = useRef(onReorderWorkspaces)
+  onReorderRef.current = onReorderWorkspaces
+  // Windows WebView2 aborts in-page HTML5 drags immediately (dragstart→dragend
+  // with no dragover/drop) while Tauri's native drag-drop handler is active, so
+  // workspace reordering there must be driven by pointer events instead.
+  const usePointerReorder = isTauri() && host.platform === 'win32'
+  const pointerDragRef = useRef<{ id: string; startX: number; startY: number; active: boolean } | null>(null)
+  const didPointerDragRef = useRef(false)
 
   // Filter workspaces by active group
   const filteredWorkspaces = activeGroup
@@ -207,6 +219,99 @@ export function Sidebar({
     }
     if (added > 0) await workspaceStore.save()
     return added
+  }, [])
+
+  // Shared reorder applied by both the HTML5 drop handler (web/remote) and the
+  // pointer-driven reorder (Windows, where the in-page HTML5 `drop` event never
+  // fires while Tauri's native drag-drop handler is active).
+  const applyWorkspaceReorder = useCallback((sourceId: string, targetId: string, position: 'before' | 'after') => {
+    if (!sourceId || sourceId === targetId) return
+    const currentOrder = workspacesRef.current.map(w => w.id)
+    const draggedIndex = currentOrder.indexOf(sourceId)
+    if (draggedIndex === -1 || !currentOrder.includes(targetId)) return
+    currentOrder.splice(draggedIndex, 1)
+    let newIndex = currentOrder.indexOf(targetId)
+    if (position === 'after') newIndex += 1
+    currentOrder.splice(newIndex, 0, sourceId)
+    onReorderRef.current(currentOrder)
+  }, [])
+
+  // Hit-test a client Y coordinate against the rendered workspace rows to find
+  // the drop target id and whether to insert before/after it.
+  const findReorderTarget = useCallback((y: number | null): { id: string; position: 'before' | 'after' } | null => {
+    const listEl = workspaceListRef.current
+    if (!listEl || y === null) return null
+    const items = Array.from(listEl.querySelectorAll<HTMLElement>('[data-workspace-id]'))
+    if (items.length === 0) return null
+    for (const item of items) {
+      const rect = item.getBoundingClientRect()
+      if (y < rect.bottom) {
+        const midY = rect.top + rect.height / 2
+        return { id: item.dataset.workspaceId!, position: y < midY ? 'before' : 'after' }
+      }
+    }
+    return { id: items[items.length - 1].dataset.workspaceId!, position: 'after' }
+  }, [])
+
+  // Pointer-driven reorder (used where HTML5 DnD is unreliable, i.e. Windows
+  // WebView2). Movement past a small threshold starts the drag; the row under
+  // the cursor drives the before/after indicator; release applies the reorder.
+  const handleReorderPointerDown = useCallback((e: React.PointerEvent, workspaceId: string) => {
+    if (e.button !== 0 || editingId === workspaceId) return
+    pointerDragRef.current = { id: workspaceId, startX: e.clientX, startY: e.clientY, active: false }
+    didPointerDragRef.current = false
+  }, [editingId])
+
+  const handleReorderPointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = pointerDragRef.current
+    if (!drag) return
+    if (!drag.active) {
+      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 5) return
+      drag.active = true
+      didPointerDragRef.current = true
+      setDraggedId(drag.id)
+      try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId) } catch { /* capture unsupported */ }
+    }
+    e.preventDefault()
+    const target = findReorderTarget(e.clientY)
+    if (target && target.id !== drag.id) {
+      setDragOverId(target.id)
+      setDragPosition(target.position)
+    } else {
+      setDragOverId(null)
+      setDragPosition(null)
+    }
+  }, [findReorderTarget])
+
+  const handleReorderPointerUp = useCallback((e: React.PointerEvent) => {
+    const drag = pointerDragRef.current
+    pointerDragRef.current = null
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch { /* capture unsupported */ }
+    if (drag?.active) {
+      const rect = workspaceListRef.current?.getBoundingClientRect()
+      const inside = rect
+        && e.clientX >= rect.left && e.clientX <= rect.right
+        && e.clientY >= rect.top - 24 && e.clientY <= rect.bottom + 24
+      const target = inside ? findReorderTarget(e.clientY) : null
+      debugLog('[Sidebar] pointer reorder drop', {
+        workspaceId: drag.id,
+        inside: Boolean(inside),
+        targetId: target?.id ?? null,
+        position: target?.position ?? null,
+      })
+      if (target && target.id !== drag.id) applyWorkspaceReorder(drag.id, target.id, target.position)
+    }
+    setDraggedId(null)
+    setDragOverId(null)
+    setDragPosition(null)
+  }, [findReorderTarget, applyWorkspaceReorder])
+
+  const handleReorderPointerCancel = useCallback((e: React.PointerEvent) => {
+    pointerDragRef.current = null
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch { /* capture unsupported */ }
+    setDraggedId(null)
+    setDragOverId(null)
+    setDragPosition(null)
   }, [])
 
   useEffect(() => {
@@ -454,30 +559,12 @@ export function Sidebar({
       return
     }
 
-    const currentOrder = workspaces.map(w => w.id)
-    const draggedIndex = currentOrder.indexOf(draggedId)
-    const targetIndex = currentOrder.indexOf(targetId)
-
-    if (draggedIndex === -1 || targetIndex === -1) return
-
-    // Remove dragged item
-    currentOrder.splice(draggedIndex, 1)
-
-    // Calculate new index
-    let newIndex = currentOrder.indexOf(targetId)
-    if (dragPosition === 'after') {
-      newIndex += 1
-    }
-
-    // Insert at new position
-    currentOrder.splice(newIndex, 0, draggedId)
-
-    onReorderWorkspaces(currentOrder)
+    applyWorkspaceReorder(draggedId, targetId, dragPosition ?? 'before')
 
     setDraggedId(null)
     setDragOverId(null)
     setDragPosition(null)
-  }, [draggedId, dragPosition, workspaces, onReorderWorkspaces, windowId, parseCrossWindowDrop, moveWorkspaceToWindow])
+  }, [draggedId, dragPosition, workspaces, applyWorkspaceReorder, windowId, parseCrossWindowDrop, moveWorkspaceToWindow])
 
   return (
     <aside className="sidebar" style={{ width }}>
@@ -607,15 +694,23 @@ export function Sidebar({
         {filteredWorkspaces.map(workspace => (
           <div
             key={workspace.id}
-            className={`workspace-item ${workspace.id === activeWorkspaceId ? 'active' : ''} ${dragOverId === workspace.id ? `drag-over-${dragPosition}` : ''}`}
-            onClick={() => onSelectWorkspace(workspace.id)}
+            data-workspace-id={workspace.id}
+            className={`workspace-item ${workspace.id === activeWorkspaceId ? 'active' : ''} ${draggedId === workspace.id ? 'dragging' : ''} ${dragOverId === workspace.id ? `drag-over-${dragPosition}` : ''}`}
+            onClick={() => {
+              if (didPointerDragRef.current) { didPointerDragRef.current = false; return }
+              onSelectWorkspace(workspace.id)
+            }}
             onContextMenu={(e) => handleContextMenu(e, workspace.id)}
-            draggable
-            onDragStart={(e) => handleDragStart(e, workspace.id)}
-            onDragEnd={handleDragEnd}
-            onDragOver={(e) => handleDragOver(e, workspace.id)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleDrop(e, workspace.id)}
+            draggable={!usePointerReorder}
+            onDragStart={usePointerReorder ? undefined : (e) => handleDragStart(e, workspace.id)}
+            onDragEnd={usePointerReorder ? undefined : handleDragEnd}
+            onDragOver={usePointerReorder ? undefined : (e) => handleDragOver(e, workspace.id)}
+            onDragLeave={usePointerReorder ? undefined : handleDragLeave}
+            onDrop={usePointerReorder ? undefined : (e) => handleDrop(e, workspace.id)}
+            onPointerDown={usePointerReorder ? (e) => handleReorderPointerDown(e, workspace.id) : undefined}
+            onPointerMove={usePointerReorder ? handleReorderPointerMove : undefined}
+            onPointerUp={usePointerReorder ? handleReorderPointerUp : undefined}
+            onPointerCancel={usePointerReorder ? handleReorderPointerCancel : undefined}
           >
             {workspace.color && (
               <div className="workspace-color-bar" style={{ backgroundColor: workspace.color }} />
