@@ -535,13 +535,23 @@ export function ClaudeAgentPanel({ sessionId, cwd, isActive, workspaceId, onClos
     return undefined
   }, [isStreaming])
   const TURN_QUIET_WARN_SEC = 30
+  // While a permission prompt or ask-user question is pending, the agent is
+  // legitimately blocked waiting on the user — not stalled. Freeze the quiet
+  // timer (so it doesn't keep counting "no new events" while we wait) and
+  // suppress the stall warning until the user answers.
+  const awaitingUser = !!(pendingPermission || pendingQuestion)
   const turnElapsedSec = isStreaming && turnStartedAt
     ? Math.max(0, Math.floor((turnNow - turnStartedAt) / 1000))
     : 0
-  const turnQuietSec = isStreaming
+  const turnQuietSec = isStreaming && !awaitingUser
     ? Math.max(0, Math.floor((turnNow - lastAgentEventAtRef.current) / 1000))
     : 0
-  const turnStalled = isStreaming && turnQuietSec >= TURN_QUIET_WARN_SEC
+  const turnStalled = isStreaming && !awaitingUser && turnQuietSec >= TURN_QUIET_WARN_SEC
+  // Reset the quiet clock when the user finishes answering so the next turn
+  // segment isn't instantly flagged as stalled by the time spent waiting.
+  useEffect(() => {
+    if (!awaitingUser) noteAgentEvent()
+  }, [awaitingUser, noteAgentEvent])
   const [filePickerPreview, setFilePickerPreview] = useState<string | null>(null)
   const filePickerInputRef = useRef<HTMLInputElement>(null)
   // Message archiving — keep renderer memory bounded
