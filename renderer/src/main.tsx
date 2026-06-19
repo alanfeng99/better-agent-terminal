@@ -53,7 +53,52 @@ function installVisualViewportVars(): void {
   window.addEventListener('orientationchange', schedule)
 }
 
+// White-screen / WebView2 paint-stall detector. JS crashes are already logged
+// below ([window.error], [unhandledrejection], [react-error]); a blank window
+// with NONE of those logged means the compositor stopped presenting frames
+// while React/DOM keep updating. Timers keep firing when that happens but
+// requestAnimationFrame does not — so if rAF hasn't run for a while *while the
+// document is visible*, record it as a likely paint stall (the signature we
+// could not otherwise see in the log).
+function installRenderWatchdog(): void {
+  const STALL_MS = 5000
+  let lastRaf = Date.now()
+  let stalled = false
+
+  const tick = () => {
+    const now = Date.now()
+    if (stalled) {
+      dlog(`[render-watchdog] rAF resumed after ${now - lastRaf}ms gap (visibility=${document.visibilityState})`)
+      stalled = false
+    }
+    lastRaf = now
+    window.requestAnimationFrame(tick)
+  }
+  window.requestAnimationFrame(tick)
+
+  window.setInterval(() => {
+    // Hidden/minimized windows legitimately throttle rAF to ~0 — not a stall.
+    if (document.visibilityState !== 'visible') return
+    const gap = Date.now() - lastRaf
+    if (gap >= STALL_MS && !stalled) {
+      stalled = true
+      dlog(`[render-watchdog] rAF stalled ${gap}ms while visible (hasFocus=${document.hasFocus()}) — likely WebView2 paint stall`)
+    }
+  }, 2000)
+
+  // Occlusion/restore is the usual trigger; log transitions so a stall can be
+  // correlated with the window being minimised/occluded and brought back.
+  document.addEventListener('visibilitychange', () => {
+    dlog(`[render-watchdog] visibility=${document.visibilityState} hasFocus=${document.hasFocus()}`)
+    if (document.visibilityState === 'visible') {
+      lastRaf = Date.now()
+      stalled = false
+    }
+  })
+}
+
 installVisualViewportVars()
+installRenderWatchdog()
 dlog(`[startup] ── renderer ──────────────────────────────`)
 dlog(`[startup] host kind: ${getHostKind()}`)
 dlog(`[startup] location: ${window.location.href}`)
