@@ -7,7 +7,9 @@
 
 mod account_store;
 mod app_data;
+#[cfg(feature = "desktop")]
 mod app_menu;
+#[cfg(feature = "desktop")]
 mod claude_usage;
 mod codex_account_store;
 mod codex_app_server;
@@ -28,6 +30,11 @@ mod sidecar;
 mod subprocess;
 mod window_registry;
 
+// The command aliases, json helpers and tauri re-exports are only used by the
+// desktop shell entry (`run`/`app_builder`) and the Tauri-backed headless
+// server. The GUI-free (`--no-default-features`) build provides its own
+// tauri-free `run_headless_server`, so gate these to keep that build clean.
+#[cfg(feature = "desktop")]
 use commands::{
     agent as agent_cmd, app as app_cmd, claude as claude_cmd, claude_channel as claude_channel_cmd,
     claude_cli as claude_cli_cmd, clipboard as clipboard_cmd, debug as debug_cmd, dialog as dialog_cmd, fs as fs_cmd,
@@ -36,8 +43,10 @@ use commands::{
     shell as shell_cmd, snippet as snippet_cmd, tunnel as tunnel_cmd, update as update_cmd,
     worker_buffer as worker_buffer_cmd, workspace as workspace_cmd, worktree as worktree_cmd,
 };
+#[cfg(feature = "desktop")]
 use serde_json::{json, Value};
 use std::path::PathBuf;
+#[cfg(feature = "desktop")]
 use tauri::{Emitter, Manager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +103,7 @@ pub fn run_headless_server_cli() -> i32 {
     }
 }
 
+#[cfg(feature = "desktop")]
 pub fn run() {
     let context = app_context();
     let app = app_builder(false)
@@ -108,10 +118,12 @@ pub fn run() {
     });
 }
 
+#[cfg(feature = "desktop")]
 fn app_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
 
+#[cfg(feature = "desktop")]
 fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .menu(app_menu::build)
@@ -386,6 +398,16 @@ fn app_builder(headless: bool) -> tauri::Builder<tauri::Wry> {
         ])
 }
 
+// GUI-free build: the server backend (RemoteServer on a tauri-free
+// HostContext) is being wired up incrementally. Until it lands, this build
+// links no tauri/wry/webkit but cannot yet serve — it exists to keep the
+// headless target compiling and to prove the webkit-free link.
+#[cfg(not(feature = "desktop"))]
+fn run_headless_server(_args: HeadlessServerArgs) -> Result<(), String> {
+    Err("headless bat-server: GUI-free server backend not yet wired in this build".to_string())
+}
+
+#[cfg(feature = "desktop")]
 fn run_headless_server(args: HeadlessServerArgs) -> Result<(), String> {
     if let Some(data_dir) = &args.data_dir {
         std::env::set_var(app_data::TAURI_DATA_DIR_ENV, data_dir);
@@ -406,6 +428,7 @@ fn run_headless_server(args: HeadlessServerArgs) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn start_headless_remote_server(
     app: &tauri::AppHandle,
     args: &HeadlessServerArgs,
@@ -425,6 +448,7 @@ fn start_headless_remote_server(
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn print_headless_server_banner(app: &tauri::AppHandle, result: &Value) -> Result<(), String> {
     let port = result
         .get("port")
