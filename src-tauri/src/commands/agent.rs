@@ -1,10 +1,18 @@
 // agent.* — read-only host capability metadata.
 
+// The renderer-facing #[tauri::command] wrappers (and the remote-client /
+// window plumbing they use) are desktop-only; the remote dispatch calls the
+// pure `agent_supported_*` cores directly, which compile in the headless build.
+#[cfg(feature = "desktop")]
 use crate::commands::profile as profile_cmd;
+#[cfg(feature = "desktop")]
 use crate::remote_client::RustRemoteClientState;
+#[cfg(feature = "desktop")]
 use crate::window_registry;
 use serde_json::{json, Value};
+#[cfg(feature = "desktop")]
 use std::time::Duration;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub const AGENT_PRESET_IDS: &[&str] = &[
@@ -29,6 +37,7 @@ fn bat_debug_enabled() -> bool {
     )
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn agent_get_supported_session_types(app: AppHandle, window: WebviewWindow) -> Value {
     if let Some(remote_result) = remote_supported_session_types(&app, &window).await {
@@ -37,6 +46,7 @@ pub async fn agent_get_supported_session_types(app: AppHandle, window: WebviewWi
     agent_supported_session_type_ids()
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn agent_list_presets(app: AppHandle, window: WebviewWindow) -> Value {
     if let Some(remote_result) = remote_agent_presets(&app, &window).await {
@@ -45,6 +55,7 @@ pub async fn agent_list_presets(app: AppHandle, window: WebviewWindow) -> Value 
     agent_supported_session_presets()
 }
 
+#[cfg(feature = "desktop")]
 async fn remote_supported_session_types(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -71,6 +82,7 @@ async fn remote_supported_session_types(
     )
 }
 
+#[cfg(feature = "desktop")]
 async fn remote_agent_presets(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -95,6 +107,7 @@ async fn remote_agent_presets(
     )
 }
 
+#[cfg(feature = "desktop")]
 fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
     let Some(profile_id) = window_registry::profile_id_for_window(app, window.label()) else {
         return false;

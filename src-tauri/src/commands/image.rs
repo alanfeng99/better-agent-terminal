@@ -12,6 +12,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(feature = "desktop")]
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
@@ -109,7 +110,9 @@ fn decode_image_data_url(data_url: &str) -> Result<(String, Vec<u8>), CommandErr
     Ok((mime.to_ascii_lowercase(), bytes))
 }
 
-#[tauri::command]
+// Called directly by the remote dispatch (pure args), so it must compile in
+// the headless build — apply the tauri::command wrapper only on desktop.
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn image_read_as_data_url(path: String) -> Result<String, CommandError> {
     let abs = match std::path::absolute(&path) {
         Ok(p) => p,
@@ -145,6 +148,7 @@ pub async fn image_read_as_data_url(path: String) -> Result<String, CommandError
     Ok(format!("data:{mime};base64,{encoded}"))
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn image_save_data_url(
     app: tauri::AppHandle,
