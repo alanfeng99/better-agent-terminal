@@ -17,15 +17,21 @@
 // show". We intentionally do NOT propagate stderr to the caller;
 // a non-repo cwd is a normal state, not an error.
 
+// Remote-profile plumbing + the #[tauri::command] wrappers are desktop-only;
+// the remote dispatch calls the pure run_git/*_native cores, which stay.
+#[cfg(feature = "desktop")]
 use crate::commands::profile as profile_cmd;
+#[cfg(feature = "desktop")]
 use crate::remote_client::RustRemoteClientState;
 use crate::subprocess::hide_console_window;
+#[cfg(feature = "desktop")]
 use crate::window_registry;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 // Hard upper bound for log/status/diff output. Mirrors the Electron
@@ -47,6 +53,7 @@ pub struct GitFileEntry {
     pub file: String,
 }
 
+#[cfg(feature = "desktop")]
 fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
     let Some(profile_id) = window_registry::profile_id_for_window(app, window.label()) else {
         return false;
@@ -56,6 +63,7 @@ fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "desktop")]
 async fn remote_invoke_for_window(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -288,6 +296,7 @@ pub fn clamp_log_count(count: Option<i64>) -> u32 {
     raw.clamp(1, 500) as u32
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_github_url(
     app: AppHandle,
@@ -320,6 +329,7 @@ pub(crate) async fn git_get_github_url_native(folder_path: String) -> Option<Str
     parse_github_url(raw.trim())
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_branch(app: AppHandle, window: WebviewWindow, cwd: String) -> Option<String> {
     if let Some(result) =
@@ -348,6 +358,7 @@ pub(crate) async fn git_get_branch_native(cwd: String) -> Option<String> {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_log(
     app: AppHandle,
@@ -385,6 +396,7 @@ pub(crate) async fn git_get_log_native(cwd: String, count: Option<i64>) -> Vec<G
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_diff(
     app: AppHandle,
@@ -419,6 +431,7 @@ pub(crate) async fn git_get_diff_native(
         .unwrap_or_default()
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_diff_files(
     app: AppHandle,
@@ -452,6 +465,7 @@ pub(crate) async fn git_get_diff_files_native(
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_root(app: AppHandle, window: WebviewWindow, cwd: String) -> Option<String> {
     if let Some(result) =
@@ -480,6 +494,7 @@ pub(crate) async fn git_get_root_native(cwd: String) -> Option<String> {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn git_get_status(
     app: AppHandle,

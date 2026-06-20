@@ -16,12 +16,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+// Remote-profile plumbing + #[tauri::command] wrappers are desktop-only; the
+// remote dispatch calls the pure github_*_native cores, which stay.
+#[cfg(feature = "desktop")]
 use crate::commands::profile as profile_cmd;
+#[cfg(feature = "desktop")]
 use crate::remote_client::RustRemoteClientState;
 use crate::subprocess::hide_console_window;
+#[cfg(feature = "desktop")]
 use crate::window_registry;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
@@ -36,6 +42,7 @@ pub struct CliStatus {
     pub authenticated: bool,
 }
 
+#[cfg(feature = "desktop")]
 fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
     let Some(profile_id) = window_registry::profile_id_for_window(app, window.label()) else {
         return false;
@@ -45,6 +52,7 @@ fn is_remote_profile_window(app: &AppHandle, window: &WebviewWindow) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "desktop")]
 async fn remote_invoke_for_window(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -191,6 +199,7 @@ fn json_or_error(result: Result<String, String>) -> Value {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_check_cli(app: AppHandle, window: WebviewWindow) -> CliStatus {
     if let Some(result) =
@@ -227,6 +236,7 @@ pub(crate) async fn github_check_cli_native() -> CliStatus {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_pr_list(app: AppHandle, window: WebviewWindow, cwd: String) -> Value {
     if let Some(result) =
@@ -252,6 +262,7 @@ pub(crate) async fn github_pr_list_native(cwd: String) -> Value {
     json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_issue_list(app: AppHandle, window: WebviewWindow, cwd: String) -> Value {
     if let Some(result) =
@@ -277,6 +288,7 @@ pub(crate) async fn github_issue_list_native(cwd: String) -> Value {
     json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_pr_view(
     app: AppHandle,
@@ -309,6 +321,7 @@ pub(crate) async fn github_pr_view_native(cwd: String, number: i64) -> Value {
     json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_issue_view(
     app: AppHandle,
@@ -341,6 +354,7 @@ pub(crate) async fn github_issue_view_native(cwd: String, number: i64) -> Value 
     json_or_error(run_gh_blocking(Some(cwd), args, READ_TIMEOUT).await)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_pr_comment(
     app: AppHandle,
@@ -371,6 +385,7 @@ pub(crate) async fn github_pr_comment_native(cwd: String, number: i64, body: Str
     }
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn github_issue_comment(
     app: AppHandle,
