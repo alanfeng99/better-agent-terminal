@@ -15,6 +15,7 @@ mod codex_auth;
 mod commands;
 mod electron_safe_storage;
 mod event_hub;
+mod host_context;
 mod linux_wayland;
 mod log_file;
 mod network_addresses;

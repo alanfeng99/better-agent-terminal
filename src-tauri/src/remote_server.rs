@@ -18,7 +18,8 @@ use crate::remote_core::{
     RemoteCompression, RemoteFramePayload, RemoteProtocol, REMOTE_PROTOCOL_LEGACY_V1,
     REMOTE_PROTOCOL_V2,
 };
-use crate::sidecar::{app_handle_emit_sink, resolve_spawn_config, SidecarState};
+use crate::host_context::HostContext;
+use crate::sidecar::SidecarState;
 use crate::window_registry;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
@@ -1405,8 +1406,9 @@ fn invoke_sidecar_for_remote(
         return result;
     }
     let method = channel_to_sidecar_method(channel);
-    let cfg = resolve_spawn_config(app).map_err(|err| err.message)?;
-    let sink = app_handle_emit_sink(app.clone());
+    let ctx = HostContext::from_app(app.clone());
+    let cfg = ctx.sidecar_spawn_config().map_err(|err| err.message)?;
+    let sink = ctx.sidecar_emit_sink();
     let timeout = remote_invoke_timeout(channel);
     sidecar
         .call_with_emit(&cfg, Some(sink), &method, params, timeout)
