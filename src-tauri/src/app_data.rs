@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager};
 
 pub const TAURI_DATA_DIR_ENV: &str = "BAT_TAURI_DATA_DIR";
@@ -8,24 +9,47 @@ pub const TAURI_DATA_DIR_ENV: &str = "BAT_TAURI_DATA_DIR";
 // use Tauri's default app_data_dir(), which follows the bundle identifier.
 const ELECTRON_PRODUCT_NAME: &str = "BetterAgentTerminal";
 
-pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+// Shared, tauri-free resolution: explicit env override, then the migrated
+// Electron userData dir, then a caller-provided fallback (Tauri's app_data_dir
+// on desktop; none in the headless server, which always has the env set).
+fn resolve_app_data_dir(tauri_fallback: Result<PathBuf, String>) -> Result<PathBuf, String> {
     if let Ok(raw) = std::env::var(TAURI_DATA_DIR_ENV) {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
         }
     }
+    select_app_data_dir(electron_user_data_dir(), tauri_fallback)
+}
 
-    select_app_data_dir(
-        electron_user_data_dir(),
+#[cfg(feature = "desktop")]
+pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    resolve_app_data_dir(
         app.path()
             .app_data_dir()
             .map_err(|err| format!("could not resolve Tauri app data dir: {err}")),
     )
 }
 
+#[cfg(feature = "desktop")]
 pub fn app_data_dir_opt(app: &AppHandle) -> Option<PathBuf> {
     app_data_dir(app).ok()
+}
+
+// Headless server: the data dir is pinned via BAT_TAURI_DATA_DIR (set from the
+// --data-dir arg before the server starts), so the env branch always resolves;
+// the Electron fallback covers an existing install with the env unset.
+#[cfg(not(feature = "desktop"))]
+pub fn app_data_dir() -> Result<PathBuf, String> {
+    resolve_app_data_dir(Err(
+        "headless: app data dir not configured (set BAT_DATA_DIR)".into()
+    ))
+}
+
+#[cfg(not(feature = "desktop"))]
+#[allow(dead_code)]
+pub fn app_data_dir_opt() -> Option<PathBuf> {
+    app_data_dir().ok()
 }
 
 fn electron_user_data_dir() -> Option<PathBuf> {
