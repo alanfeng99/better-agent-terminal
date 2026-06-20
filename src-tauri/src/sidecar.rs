@@ -29,6 +29,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+// AppHandle is only needed by the desktop-backed spawn-config / emit-sink
+// helpers below; the sidecar bridge itself (SidecarState, spawn, call) is
+// tauri-free and compiles into the headless build.
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager};
 
 // Cap stderr tail buffer at this many lines. Enough to capture a typical
@@ -484,6 +488,7 @@ impl SidecarState {
 // production code wraps `app.emit(name, params)` from an AppHandle.
 pub type EventSink = Arc<dyn Fn(&str, &Value) + Send + Sync + 'static>;
 
+#[cfg(feature = "desktop")]
 pub fn app_handle_emit_sink(app: AppHandle) -> EventSink {
     Arc::new(move |name: &str, params: &Value| {
         publish_runtime_event(&app, name, params.clone(), "node-sidecar");
@@ -707,6 +712,7 @@ struct SidecarReplyError {
 // We keep this resolver outside SidecarState so the state struct stays
 // trivially constructible in tests.
 
+#[cfg(feature = "desktop")]
 pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, BridgeError> {
     use tauri::Manager;
 
@@ -809,6 +815,7 @@ fn node_runtime_key() -> Option<&'static str> {
     }
 }
 
+#[cfg(feature = "desktop")]
 fn find_managed_node(app: &tauri::AppHandle) -> Option<PathBuf> {
     let exe_name = if cfg!(windows) { "node.exe" } else { "node" };
     let root = crate::app_data::app_data_dir_opt(app)?
