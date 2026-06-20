@@ -79,7 +79,7 @@ fn maybe_auto_start_remote_server(app: AppHandle, state: SidecarState) -> Result
     let port = settings.port.unwrap_or(9876);
     let bind_interface = normalize_bind_interface(settings.bind_interface.as_deref());
     let result = remote_state.start(
-        app.clone(),
+        crate::host_context::HostContext::from_app(app.clone()),
         state,
         Some(json!({ "port": port, "bindInterface": bind_interface })),
     )?;
@@ -127,7 +127,11 @@ pub async fn remote_start_server(
     let sidecar_state = (*state).clone();
     let options = options.unwrap_or(Value::Null);
     remote_state
-        .start(app, sidecar_state, Some(options))
+        .start(
+            crate::host_context::HostContext::from_app(app),
+            sidecar_state,
+            Some(options),
+        )
         .map_err(BridgeError::from)
 }
 

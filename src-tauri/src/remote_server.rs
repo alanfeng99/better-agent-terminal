@@ -142,7 +142,7 @@ pub struct RustRemoteServerState {
 impl RustRemoteServerState {
     pub fn start(
         &self,
-        app: AppHandle,
+        ctx: HostContext,
         sidecar: SidecarState,
         options: Option<Value>,
     ) -> Result<Value, String> {
@@ -166,7 +166,7 @@ impl RustRemoteServerState {
                 .unwrap_or("localhost"),
         );
         let bound_host = network_addresses::bound_host_for_interface(&bind_interface);
-        let data_dir = crate::app_data::app_data_dir(&app)?;
+        let data_dir = ctx.data_dir()?;
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("remote data dir creation failed: {err}"))?;
 
@@ -200,14 +200,14 @@ impl RustRemoteServerState {
         let thread_clients = Arc::clone(&clients);
         let thread_recent = Arc::clone(&recent);
         let thread_token = Arc::clone(&token);
-        let thread_app = app.clone();
+        let thread_ctx = ctx.clone();
         let thread_sidecar = sidecar.clone();
         let log_bound_host = bound_host.clone();
         let log_bind_interface = bind_interface.clone();
         let log_fingerprint = fingerprint.clone();
         let handle = thread::spawn(move || {
             remote_debug_log(
-                &thread_app,
+                thread_ctx.app(),
                 format!(
                     "server started host={} port={} iface={} fingerprint={}",
                     log_bound_host,
@@ -220,7 +220,7 @@ impl RustRemoteServerState {
                 listener,
                 config,
                 thread_token,
-                thread_app,
+                thread_ctx,
                 thread_sidecar,
                 thread_clients,
                 thread_recent,
@@ -829,7 +829,7 @@ fn run_accept_loop(
     listener: TcpListener,
     config: Arc<ServerConfig>,
     token: Arc<Mutex<String>>,
-    app: AppHandle,
+    ctx: HostContext,
     sidecar: SidecarState,
     clients: Arc<Mutex<Vec<RemoteClientRecord>>>,
     recent: Arc<Mutex<Vec<RecentClient>>>,
@@ -843,24 +843,24 @@ fn run_accept_loop(
             Ok((stream, addr)) => {
                 let config = Arc::clone(&config);
                 let token = Arc::clone(&token);
-                let app = app.clone();
+                let ctx = ctx.clone();
                 let sidecar = sidecar.clone();
                 let clients = Arc::clone(&clients);
                 let recent = Arc::clone(&recent);
                 let peer = addr.to_string();
-                remote_debug_log(&app, format!("tcp accepted peer={peer}"));
+                remote_debug_log(ctx.app(), format!("tcp accepted peer={peer}"));
                 thread::spawn(move || {
                     if let Err(err) = handle_client(
                         stream,
                         config,
                         token,
-                        app.clone(),
+                        ctx.clone(),
                         sidecar,
                         clients,
                         recent,
                         peer.clone(),
                     ) {
-                        remote_debug_log(&app, format!("client closed peer={peer} error={err}"));
+                        remote_debug_log(ctx.app(), format!("client closed peer={peer} error={err}"));
                     }
                 });
             }
@@ -876,12 +876,15 @@ fn handle_client(
     stream: TcpStream,
     config: Arc<ServerConfig>,
     token: Arc<Mutex<String>>,
-    app: AppHandle,
+    ctx: HostContext,
     sidecar: SidecarState,
     clients: Arc<Mutex<Vec<RemoteClientRecord>>>,
     recent: Arc<Mutex<Vec<RecentClient>>>,
     peer: String,
 ) -> Result<(), String> {
+    // Desktop bridge during the app->ctx migration: most of this function still
+    // uses `app` directly; the dispatch entry already takes `&HostContext`.
+    let app = ctx.app().clone();
     stream
         .set_nonblocking(false)
         .map_err(|err| format!("remote stream blocking mode failed: {err}"))?;
@@ -1116,13 +1119,14 @@ fn handle_client(
             log_remote_pty_write_frame(&app, "remote-server.recv-frame", &channel, &frame);
             remote_debug_log(&app, format!("invoke start peer={peer} channel={channel}"));
             let invoke_app = app.clone();
+            let invoke_ctx = ctx.clone();
             let invoke_sidecar = sidecar.clone();
             let invoke_peer = peer.clone();
             let invoke_frame = frame.clone();
             let invoke_tx = out_tx.clone();
             thread::spawn(move || {
                 let result = invoke_sidecar_for_remote(
-                    &invoke_app,
+                    &invoke_ctx,
                     &invoke_sidecar,
                     client_protocol,
                     &channel,
@@ -1378,12 +1382,13 @@ fn websocket_accept_key_from_request(request: &[u8]) -> Result<String, String> {
 }
 
 fn invoke_sidecar_for_remote(
-    app: &AppHandle,
+    ctx: &HostContext,
     sidecar: &SidecarState,
     protocol: RemoteProtocol,
     channel: &str,
     frame: &Value,
 ) -> Result<Value, String> {
+    let app = ctx.app();
     if channel.is_empty() {
         return Err("remote invoke: missing channel".to_string());
     }
@@ -1402,11 +1407,10 @@ fn invoke_sidecar_for_remote(
         RemoteProtocol::LegacyV1 => legacy_v1_args_to_params(channel, &args),
     };
     log_remote_pty_write_params(app, "remote-server.decoded", channel, &params);
-    if let Some(result) = invoke_rust_for_remote(app, channel, &params) {
+    if let Some(result) = invoke_rust_for_remote(ctx, channel, &params) {
         return result;
     }
     let method = channel_to_sidecar_method(channel);
-    let ctx = HostContext::from_app(app.clone());
     let cfg = ctx.sidecar_spawn_config().map_err(|err| err.message)?;
     let sink = ctx.sidecar_emit_sink();
     let timeout = remote_invoke_timeout(channel);
@@ -1542,10 +1546,14 @@ fn codex_for_remote_session(
 }
 
 fn invoke_rust_for_remote(
-    app: &AppHandle,
+    ctx: &HostContext,
     channel: &str,
     params: &Value,
 ) -> Option<Result<Value, String>> {
+    // Desktop bridge during the app->ctx migration: the match arms below still
+    // use `app` (and the helpers they call) directly. Arms get migrated to the
+    // ctx accessors module-group by module-group.
+    let app = ctx.app();
     let result = match channel {
         "app:get-version" => Ok(json!({
             "version": app.package_info().version.to_string(),

@@ -443,7 +443,11 @@ fn start_headless_remote_server(
         options["token"] = Value::String(token.clone());
     }
 
-    let result = remote_state.start(app.clone(), sidecar_state, Some(options))?;
+    let result = remote_state.start(
+        crate::host_context::HostContext::from_app(app.clone()),
+        sidecar_state,
+        Some(options),
+    )?;
     print_headless_server_banner(app, &result)?;
     Ok(())
 }
