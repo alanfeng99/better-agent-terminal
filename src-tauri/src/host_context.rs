@@ -1,88 +1,191 @@
 // The decoupling seam between the RemoteServer / agent-session backend and
 // Tauri.
 //
-// Goal (issue #117): build a truly headless `bat-server` that links no
-// wry/webkit2gtk, so it runs on enterprise Linux (glibc 2.34 / EL9) and needs
-// no display server. Today the headless server reuses `tauri::Builder` purely
-// as a runtime + state registry + event bus — nothing in its job actually
-// needs a GUI (the remote server is plain TCP/websocket, the sidecar and codex
-// app-server are `std::process` subprocesses, and `app.emit` to local webviews
-// is a no-op when there are no windows).
+// Goal (issue #117 + architecture): the server core (remote server, sessions,
+// PTY, sidecar bridge) is domain logic and must not depend on the GUI shell
+// (`tauri` -> `wry` -> `webkit2gtk`). Server-reachable code takes `&HostContext`
+// instead of `tauri::AppHandle`; `HostContext` has two backings selected by the
+// `desktop` feature:
 //
-// Migration strategy: every server-reachable function moves from taking a
-// `tauri::AppHandle` to taking `&HostContext`. While that migration is in
-// flight `HostContext` is backed by an `AppHandle` and reproduces today's
-// behaviour exactly, so `cargo check` stays green after every batch. Once no
-// server-reachable code touches `tauri::` directly, the backing is swapped for
-// a GUI-free implementation and `tauri`/`wry` become a `desktop`-only feature.
+//   * desktop  -> wraps a live `tauri::AppHandle` (behaviour identical to before)
+//   * headless -> wraps an `Arc<HeadlessHost>`: a tauri-free state registry +
+//                 event sink, so the `bat-server` binary links no wry/webkit.
 //
-// `app()` is a deliberate escape hatch for not-yet-migrated callers; the final
-// batch removes it.
+// The headless backing stores states in a `TypeId`-keyed map of `dyn Any`, so
+// this module compiles without statically referencing each concrete state type
+// (breaking the `HeadlessHost` <-> `RustRemoteServerState` cycle). Concrete
+// states are inserted at construction time in the headless `run_headless_server`.
 
 use serde_json::Value;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter};
 
-use crate::app_data;
-use crate::sidecar::{self, BridgeError, EventSink, SidecarState, SpawnConfig};
+#[cfg(feature = "desktop")]
+use tauri::{AppHandle, Emitter, Manager};
 
-/// Host capabilities the agent-session / remote-server backend depends on,
-/// exposed without leaking `tauri::` into callers. Cheap to clone (the backing
-/// `AppHandle` is itself a handle).
+use crate::sidecar::{BridgeError, EventSink, SidecarState, SpawnConfig};
+
+// ===================== desktop backing =====================
+
+#[cfg(feature = "desktop")]
 #[derive(Clone)]
 pub struct HostContext {
-    // Backing is intentionally private. It is an `AppHandle` for the duration
-    // of the migration; it will become a GUI-free implementation later without
-    // changing this module's public API.
     app: AppHandle,
 }
 
+#[cfg(feature = "desktop")]
 impl HostContext {
-    /// Wrap the live Tauri app handle. Call sites at the Tauri boundary build
-    /// one of these and hand `&HostContext` to the backend.
     pub fn from_app(app: AppHandle) -> Self {
         Self { app }
     }
 
-    /// Escape hatch for code paths not yet migrated off `AppHandle`. New code
-    /// should prefer the typed accessors below; this only exists so a partly
-    /// migrated call graph still compiles. Removed in the final batch.
+    /// Escape hatch for call paths not yet migrated off `AppHandle` (desktop
+    /// only). New code should prefer the typed accessors below.
     #[allow(dead_code)]
     pub fn app(&self) -> &AppHandle {
         &self.app
     }
 
-    /// Push a renderer-facing event. On a headless host (no windows) the local
-    /// emit is a no-op; remote clients receive events via RemoteServer
-    /// broadcast (see `event_hub`).
+    /// A managed shared state, cloned out (states are cheap `Arc` handles).
+    #[allow(dead_code)]
+    pub fn state<T: Clone + Send + Sync + 'static>(&self) -> T {
+        self.app.state::<T>().inner().clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn try_state<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
+        self.app.try_state::<T>().map(|s| s.inner().clone())
+    }
+
+    /// Push a renderer-facing event to local webviews.
     #[allow(dead_code)]
     pub fn emit(&self, topic: &str, payload: Value) {
         let _ = self.app.emit(topic, payload);
     }
 
-    /// Resolve the persistent app-data directory.
     #[allow(dead_code)]
-    pub fn data_dir(&self) -> Result<PathBuf, String> {
-        app_data::app_data_dir(&self.app)
+    pub fn emit_to(&self, window: &str, topic: &str, payload: Value) {
+        let _ = self.app.emit_to(window, topic, payload);
     }
 
-    // ---- sidecar seam (already abstracted via EventSink; migrated first) ----
+    #[allow(dead_code)]
+    pub fn version(&self) -> String {
+        self.app.package_info().version.to_string()
+    }
 
-    /// The shared Node sidecar bridge state.
+    #[allow(dead_code)]
+    pub fn data_dir(&self) -> Result<PathBuf, String> {
+        crate::app_data::app_data_dir(&self.app)
+    }
+
     #[allow(dead_code)]
     pub fn sidecar(&self) -> SidecarState {
-        use tauri::Manager;
         self.app.state::<SidecarState>().inner().clone()
     }
 
-    /// Resolve the node binary + sidecar script + cwd for spawning the sidecar.
     pub fn sidecar_spawn_config(&self) -> Result<SpawnConfig, BridgeError> {
-        sidecar::resolve_spawn_config(&self.app)
+        crate::sidecar::resolve_spawn_config(&self.app)
     }
 
-    /// An event sink that forwards sidecar-emitted events to the host's
-    /// renderer/remote event path.
     pub fn sidecar_emit_sink(&self) -> EventSink {
-        sidecar::app_handle_emit_sink(self.app.clone())
+        crate::sidecar::app_handle_emit_sink(self.app.clone())
+    }
+}
+
+// ===================== headless backing =====================
+
+/// Tauri-free host registry backing `HostContext` in the `bat-server` build.
+/// Holds the managed states (as `dyn Any`), the data dir, and an event sink
+/// that broadcasts to connected remote clients. Constructed once by the
+/// headless `run_headless_server`.
+#[cfg(not(feature = "desktop"))]
+pub struct HeadlessHost {
+    states: std::collections::HashMap<std::any::TypeId, Box<dyn std::any::Any + Send + Sync>>,
+    data_dir: Option<PathBuf>,
+    emit_sink: EventSink,
+}
+
+#[cfg(not(feature = "desktop"))]
+impl HeadlessHost {
+    #[allow(dead_code)]
+    pub fn new(data_dir: Option<PathBuf>, emit_sink: EventSink) -> Self {
+        Self {
+            states: std::collections::HashMap::new(),
+            data_dir,
+            emit_sink,
+        }
+    }
+
+    /// Register a managed state. Call once per state type before serving.
+    #[allow(dead_code)]
+    pub fn manage<T: Send + Sync + 'static>(&mut self, state: T) {
+        self.states
+            .insert(std::any::TypeId::of::<T>(), Box::new(state));
+    }
+}
+
+#[cfg(not(feature = "desktop"))]
+#[derive(Clone)]
+pub struct HostContext {
+    inner: std::sync::Arc<HeadlessHost>,
+}
+
+#[cfg(not(feature = "desktop"))]
+impl HostContext {
+    #[allow(dead_code)]
+    pub fn from_headless(inner: std::sync::Arc<HeadlessHost>) -> Self {
+        Self { inner }
+    }
+
+    #[allow(dead_code)]
+    pub fn state<T: Clone + Send + Sync + 'static>(&self) -> T {
+        self.try_state::<T>()
+            .expect("HostContext::state: state type not registered on HeadlessHost")
+    }
+
+    #[allow(dead_code)]
+    pub fn try_state<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
+        self.inner
+            .states
+            .get(&std::any::TypeId::of::<T>())
+            .and_then(|b| b.downcast_ref::<T>())
+            .cloned()
+    }
+
+    /// No local webviews headless; events reach remote clients via the sink
+    /// (RemoteServer broadcast).
+    #[allow(dead_code)]
+    pub fn emit(&self, topic: &str, payload: Value) {
+        (self.inner.emit_sink)(topic, &payload);
+    }
+
+    #[allow(dead_code)]
+    pub fn emit_to(&self, _window: &str, topic: &str, payload: Value) {
+        (self.inner.emit_sink)(topic, &payload);
+    }
+
+    #[allow(dead_code)]
+    pub fn version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
+    #[allow(dead_code)]
+    pub fn data_dir(&self) -> Result<PathBuf, String> {
+        self.inner
+            .data_dir
+            .clone()
+            .ok_or_else(|| "headless: app data dir not configured".to_string())
+    }
+
+    #[allow(dead_code)]
+    pub fn sidecar(&self) -> SidecarState {
+        self.state::<SidecarState>()
+    }
+
+    pub fn sidecar_spawn_config(&self) -> Result<SpawnConfig, BridgeError> {
+        crate::sidecar::resolve_spawn_config_headless(self.inner.data_dir.clone())
+    }
+
+    pub fn sidecar_emit_sink(&self) -> EventSink {
+        self.inner.emit_sink.clone()
     }
 }

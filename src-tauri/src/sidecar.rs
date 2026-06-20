@@ -16,6 +16,7 @@
 // Repeated fast exits are rate-limited with a short backoff so a broken
 // packaged sidecar cannot create an unbounded spawn loop.
 
+#[cfg(feature = "desktop")]
 use crate::event_hub::publish_runtime_event;
 use crate::log_file::append_line;
 use crate::subprocess::hide_console_window;
@@ -777,6 +778,47 @@ pub fn resolve_spawn_config(app: &tauri::AppHandle) -> Result<SpawnConfig, Bridg
 
     Err(BridgeError {
         message: "sidecar: could not locate node-sidecar dist/server.mjs or src/server.mjs".into(),
+    })
+}
+
+// Headless equivalent of resolve_spawn_config: no AppHandle/resource_dir. Node
+// comes from a bundle next to the executable, the cwd, or PATH; the script from
+// BAT_SIDECAR_SCRIPT or the same exe-relative / cwd `node-sidecar/` locations.
+// data_dir is the headless server's --data-dir (already env-pinned).
+#[cfg(not(feature = "desktop"))]
+pub fn resolve_spawn_config_headless(
+    data_dir: Option<PathBuf>,
+) -> Result<SpawnConfig, BridgeError> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let bundled = exe_dir.as_deref().and_then(find_bundled_node);
+    let cwd_bundled = std::env::current_dir().ok().and_then(|cwd| find_bundled_node(&cwd));
+    let node_path = choose_node_path(None, bundled, cwd_bundled, which_node()).ok_or_else(|| {
+        BridgeError {
+            message: "bat-server: could not find `node` (no bundled runtime, no PATH node)".into(),
+        }
+    })?;
+
+    if let Ok(env_script) = std::env::var("BAT_SIDECAR_SCRIPT") {
+        let p = PathBuf::from(env_script);
+        if p.is_file() {
+            return Ok(SpawnConfig { node_path, script_path: p, data_dir, extra_env: Vec::new() });
+        }
+    }
+
+    let bases: Vec<PathBuf> = exe_dir
+        .into_iter()
+        .chain(std::env::current_dir().ok())
+        .collect();
+    for base in &bases {
+        if let Some(script) = find_sidecar_script(base, true) {
+            return Ok(SpawnConfig { node_path, script_path: script, data_dir, extra_env: Vec::new() });
+        }
+    }
+
+    Err(BridgeError {
+        message: "bat-server: could not locate node-sidecar dist/server.mjs or src/server.mjs".into(),
     })
 }
 
