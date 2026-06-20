@@ -4,13 +4,21 @@
 // event names and payload shapes must stay stable. This hub centralizes the
 // publish point in Rust without changing what JavaScript receives.
 
+#[cfg(feature = "desktop")]
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+// The publish path emits to local webviews (desktop only); the headless server
+// pushes events straight to RemoteServer::broadcast_event instead. Keep the
+// tauri-free RuntimeEventHubState struct compiling in both.
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter, Manager};
 
+#[cfg(feature = "desktop")]
 use crate::commands::notification;
+#[cfg(feature = "desktop")]
 use crate::remote_core::is_proxied_remote_event;
+#[cfg(feature = "desktop")]
 use crate::remote_server::RustRemoteServerState;
 
 #[derive(Clone, Default)]
@@ -18,6 +26,7 @@ pub struct RuntimeEventHubState {
     next_seq: Arc<AtomicU64>,
 }
 
+#[cfg(feature = "desktop")]
 impl RuntimeEventHubState {
     pub fn publish(&self, app: &AppHandle, topic: &str, payload: Value, origin: &'static str) {
         // Keep a monotonic sequence internally so future buffering/replay can
@@ -38,6 +47,7 @@ impl RuntimeEventHubState {
     }
 }
 
+#[cfg(feature = "desktop")]
 pub fn publish_runtime_event(app: &AppHandle, topic: &str, payload: Value, origin: &'static str) {
     let hub = app.state::<RuntimeEventHubState>();
     hub.publish(app, topic, payload, origin);
