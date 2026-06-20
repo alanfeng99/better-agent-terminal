@@ -7,12 +7,18 @@
 // rough order of magnitude as the Electron implementation but keeps memory
 // from blowing up if a runaway producer never calls clear().
 
+// The renderer-facing command wrappers are desktop-only; the headless dispatch
+// uses WorkerBufferState directly (the scrollback store), which is tauri-free.
+#[cfg(feature = "desktop")]
 use crate::commands::pty::{start_pty_session, write_pty_session, CreatePtyOptions, PtyState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(feature = "desktop")]
 use std::fs;
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "desktop")]
 use std::time::Duration;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, State};
 
 const MAX_BYTES_PER_PANEL: usize = 1 << 20; // 1 MiB
@@ -165,6 +171,7 @@ pub fn append_worker_log_lines(
     append_lines_to_map(&mut map, panel_id, lines);
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn worker_buffer_init(
     state: State<'_, WorkerBufferState>,
@@ -180,6 +187,7 @@ pub fn worker_buffer_init(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn worker_buffer_append(
     state: State<'_, WorkerBufferState>,
@@ -196,6 +204,7 @@ pub fn worker_buffer_append(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn worker_buffer_read_all(
     state: State<'_, WorkerBufferState>,
@@ -205,6 +214,7 @@ pub fn worker_buffer_read_all(
     Ok(map.get(&panel_id).cloned().unwrap_or_default())
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn worker_buffer_clear(
     state: State<'_, WorkerBufferState>,
@@ -215,6 +225,7 @@ pub fn worker_buffer_clear(
     Ok(true)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn worker_procfile_load(file_path: String) -> Result<Vec<ProcfileEntry>, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -227,6 +238,7 @@ pub async fn worker_procfile_load(file_path: String) -> Result<Vec<ProcfileEntry
     })?
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn worker_procfile_start(
     app: AppHandle,
@@ -272,6 +284,7 @@ pub async fn worker_procfile_start(
     Ok(started_id)
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn worker_procfile_stop(
     app: AppHandle,
