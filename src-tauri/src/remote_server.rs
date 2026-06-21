@@ -1561,11 +1561,13 @@ fn invoke_rust_for_remote(
             "version": ctx.version(),
             "protocol": REMOTE_PROTOCOL_V2,
         })),
+        #[cfg(feature = "desktop")]
         "app:new-window" => profile_id_from_params(channel, params)
             .map(|profile_id| Value::String(app_cmd::app_new_window_for_profile(app, &profile_id))),
         // Let a paired remote client (e.g. BAT Mobile) drive the desktop host's
         // self-update: check the per-channel manifest, download+install the new
         // bundle, then relaunch so it takes effect. Channel defaults to "stable".
+        #[cfg(feature = "desktop")]
         "app:check-update" => {
             let update_channel =
                 optional_string_param(params, "channel").unwrap_or_else(|| "stable".to_string());
@@ -1575,12 +1577,14 @@ fn invoke_rust_for_remote(
             ))
             .map_err(bridge_error_message)
         }
+        #[cfg(feature = "desktop")]
         "app:install-update" => {
             let update_channel =
                 optional_string_param(params, "channel").unwrap_or_else(|| "stable".to_string());
             tauri::async_runtime::block_on(update_cmd::update_install(app.clone(), update_channel))
                 .map_err(bridge_error_message)
         }
+        #[cfg(feature = "desktop")]
         "app:relaunch" => {
             // Ack first, then relaunch on a detached thread so the response
             // frame flushes to the client before the process restarts.
@@ -1590,6 +1594,12 @@ fn invoke_rust_for_remote(
                 restart_app.restart();
             });
             Ok(json!({ "ok": true }))
+        }
+        // GUI / self-update of the app bundle: meaningless on a headless server
+        // (no window, not an updatable bundle). Return a clear error instead.
+        #[cfg(not(feature = "desktop"))]
+        "app:new-window" | "app:check-update" | "app:install-update" | "app:relaunch" => {
+            Err(format!("{channel}: not supported on a headless bat-server"))
         }
         "agent:get-supported-session-types" => Ok(agent_cmd::agent_supported_session_type_ids()),
         "agent:list-presets" => Ok(agent_cmd::agent_supported_session_presets()),
