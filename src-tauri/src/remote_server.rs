@@ -2424,62 +2424,73 @@ fn invoke_rust_for_remote(
                     .map(Value::String)
                     .map_err(|err| err.to_string())
             }),
-        "snippet:getAll" => to_json_value(
-            channel,
-            snippet_cmd::snippet_get_all(app.clone(), app.state::<snippet_cmd::SnippetState>()),
-        ),
-        "snippet:getById" => i64_param(params, "id", channel).and_then(|id| {
+        "snippet:getAll" => remote_app_data_dir(ctx, channel).and_then(|dir| {
             to_json_value(
                 channel,
-                snippet_cmd::snippet_get_by_id(
-                    app.clone(),
-                    app.state::<snippet_cmd::SnippetState>(),
+                snippet_cmd::snippet_get_all_core(&dir, &ctx.state::<snippet_cmd::SnippetState>()),
+            )
+        }),
+        "snippet:getById" => i64_param(params, "id", channel).and_then(|id| {
+            let dir = remote_app_data_dir(ctx, channel)?;
+            to_json_value(
+                channel,
+                snippet_cmd::snippet_get_by_id_core(
+                    &dir,
+                    &ctx.state::<snippet_cmd::SnippetState>(),
                     id,
                 ),
             )
         }),
-        "snippet:getFavorites" => to_json_value(
-            channel,
-            snippet_cmd::snippet_get_favorites(
-                app.clone(),
-                app.state::<snippet_cmd::SnippetState>(),
-            ),
-        ),
+        "snippet:getFavorites" => remote_app_data_dir(ctx, channel).and_then(|dir| {
+            to_json_value(
+                channel,
+                snippet_cmd::snippet_get_favorites_core(
+                    &dir,
+                    &ctx.state::<snippet_cmd::SnippetState>(),
+                ),
+            )
+        }),
         "snippet:search" => {
             let query = match string_param(params, "query", channel) {
                 Ok(value) => value,
                 Err(_) => return Some(Ok(Value::Array(Vec::new()))),
             };
-            to_json_value(
-                channel,
-                snippet_cmd::snippet_search(
-                    app.clone(),
-                    app.state::<snippet_cmd::SnippetState>(),
-                    query,
-                ),
-            )
+            remote_app_data_dir(ctx, channel).and_then(|dir| {
+                to_json_value(
+                    channel,
+                    snippet_cmd::snippet_search_core(
+                        &dir,
+                        &ctx.state::<snippet_cmd::SnippetState>(),
+                        query,
+                    ),
+                )
+            })
         }
         "snippet:getByWorkspace" => {
             let workspace_id = params
                 .as_str()
                 .map(ToString::to_string)
                 .or_else(|| optional_string_param(params, "workspaceId"));
+            remote_app_data_dir(ctx, channel).and_then(|dir| {
+                to_json_value(
+                    channel,
+                    snippet_cmd::snippet_get_by_workspace_core(
+                        &dir,
+                        &ctx.state::<snippet_cmd::SnippetState>(),
+                        workspace_id,
+                    ),
+                )
+            })
+        }
+        "snippet:getCategories" => remote_app_data_dir(ctx, channel).and_then(|dir| {
             to_json_value(
                 channel,
-                snippet_cmd::snippet_get_by_workspace(
-                    app.clone(),
-                    app.state::<snippet_cmd::SnippetState>(),
-                    workspace_id,
+                snippet_cmd::snippet_get_categories_core(
+                    &dir,
+                    &ctx.state::<snippet_cmd::SnippetState>(),
                 ),
             )
-        }
-        "snippet:getCategories" => to_json_value(
-            channel,
-            snippet_cmd::snippet_get_categories(
-                app.clone(),
-                app.state::<snippet_cmd::SnippetState>(),
-            ),
-        ),
+        }),
         "snippet:create" => {
             let input_value = params
                 .get("input")
@@ -2495,11 +2506,12 @@ fn invoke_rust_for_remote(
             } else {
                 deserialize_param::<snippet_cmd::CreateSnippetInput>(input_value, channel, "input")
                     .and_then(|input| {
+                        let dir = remote_app_data_dir(ctx, channel)?;
                         to_json_value(
                             channel,
-                            snippet_cmd::snippet_create(
-                                app.clone(),
-                                app.state::<snippet_cmd::SnippetState>(),
+                            snippet_cmd::snippet_create_core(
+                                &dir,
+                                &ctx.state::<snippet_cmd::SnippetState>(),
                                 input,
                             ),
                         )
@@ -2513,30 +2525,33 @@ fn invoke_rust_for_remote(
                 .ok_or_else(|| "snippet:update: missing updates".to_string())?;
             deserialize_param::<snippet_cmd::UpdateSnippetInput>(updates_value, channel, "updates")
                 .and_then(|updates| {
+                    let dir = remote_app_data_dir(ctx, channel)?;
                     to_json_value(
                         channel,
-                        snippet_cmd::snippet_update(
-                            app.clone(),
-                            app.state::<snippet_cmd::SnippetState>(),
+                        snippet_cmd::snippet_update_core(
+                            &dir,
+                            &ctx.state::<snippet_cmd::SnippetState>(),
                             id,
                             updates,
                         ),
                     )
                 })
         }),
-        "snippet:delete" => i64_param(params, "id", channel).map(|id| {
-            Value::Bool(snippet_cmd::snippet_delete(
-                app.clone(),
-                app.state::<snippet_cmd::SnippetState>(),
+        "snippet:delete" => i64_param(params, "id", channel).and_then(|id| {
+            let dir = remote_app_data_dir(ctx, channel)?;
+            Ok(Value::Bool(snippet_cmd::snippet_delete_core(
+                &dir,
+                &ctx.state::<snippet_cmd::SnippetState>(),
                 id,
-            ))
+            )))
         }),
         "snippet:toggleFavorite" => i64_param(params, "id", channel).and_then(|id| {
+            let dir = remote_app_data_dir(ctx, channel)?;
             to_json_value(
                 channel,
-                snippet_cmd::snippet_toggle_favorite(
-                    app.clone(),
-                    app.state::<snippet_cmd::SnippetState>(),
+                snippet_cmd::snippet_toggle_favorite_core(
+                    &dir,
+                    &ctx.state::<snippet_cmd::SnippetState>(),
                     id,
                 ),
             )

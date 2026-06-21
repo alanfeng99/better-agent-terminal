@@ -23,12 +23,15 @@
 // threads see a consistent view; Tauri commands are dispatched on
 // the worker pool so concurrent reads need to share state.
 
+// app_data is only needed by the desktop command wrappers (which resolve the
+// data dir from an AppHandle); the headless dispatch passes ctx.data_dir().
+#[cfg(feature = "desktop")]
 use crate::app_data;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -118,9 +121,11 @@ pub struct UpdateSnippetInput {
     pub is_favorite: Option<bool>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SnippetState {
-    inner: Mutex<Option<SnippetData>>,
+    // Arc so HostContext can hand out cheap clones (all sharing the one store);
+    // the headless backing stores managed states by value in a type map.
+    inner: Arc<Mutex<Option<SnippetData>>>,
 }
 
 impl SnippetState {
@@ -129,9 +134,15 @@ impl SnippetState {
     }
 }
 
-fn snippet_path(app: &tauri::AppHandle) -> io::Result<PathBuf> {
-    let dir = app_data::app_data_dir(app).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    Ok(dir.join("snippets.json"))
+fn snippet_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("snippets.json")
+}
+
+// Desktop command wrappers resolve the data dir from the AppHandle; the
+// headless dispatch passes ctx.data_dir() directly to the *_core fns.
+#[cfg(feature = "desktop")]
+fn snippet_data_dir(app: &tauri::AppHandle) -> PathBuf {
+    app_data::app_data_dir(app).unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn now_ms() -> i64 {
@@ -192,31 +203,28 @@ fn write_atomic(path: &Path, data: &SnippetData) -> io::Result<()> {
     Ok(())
 }
 
-fn ensure_loaded(app: &tauri::AppHandle, state: &SnippetState) {
+fn ensure_loaded(data_dir: &Path, state: &SnippetState) {
     let mut guard = state.lock();
     if guard.is_none() {
-        let path = snippet_path(app).unwrap_or_else(|_| PathBuf::from("snippets.json"));
-        *guard = Some(load_from(&path));
+        *guard = Some(load_from(&snippet_file(data_dir)));
     }
 }
 
 fn with_data<R>(
-    app: &tauri::AppHandle,
+    data_dir: &Path,
     state: &SnippetState,
     mut_op: bool,
     f: impl FnOnce(&mut SnippetData) -> R,
 ) -> R {
-    ensure_loaded(app, state);
+    ensure_loaded(data_dir, state);
     let mut guard = state.lock();
     let data = guard.as_mut().expect("ensure_loaded set Some");
     let result = f(data);
     if mut_op {
-        if let Ok(path) = snippet_path(app) {
-            // Best-effort save; failures get logged but don't fail
-            // the renderer call. Mirrors Electron's logger.error path.
-            if let Err(e) = write_atomic(&path, data) {
-                eprintln!("[snippet] failed to save: {e}");
-            }
+        // Best-effort save; failures get logged but don't fail the call.
+        // Mirrors Electron's logger.error path.
+        if let Err(e) = write_atomic(&snippet_file(data_dir), data) {
+            eprintln!("[snippet] failed to save: {e}");
         }
     }
     result
@@ -227,35 +235,41 @@ fn sort_desc_updated(out: &mut Vec<Snippet>) {
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 }
 
-#[tauri::command]
-pub fn snippet_get_all(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SnippetState>,
-) -> Vec<Snippet> {
-    with_data(&app, &state, false, |d| {
+pub fn snippet_get_all_core(data_dir: &Path, state: &SnippetState) -> Vec<Snippet> {
+    with_data(data_dir, state, false, |d| {
         let mut out = d.snippets.clone();
         sort_desc_updated(&mut out);
         out
     })
 }
 
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub fn snippet_get_all(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SnippetState>,
+) -> Vec<Snippet> {
+    snippet_get_all_core(&snippet_data_dir(&app), &state)
+}
+
+pub fn snippet_get_by_id_core(data_dir: &Path, state: &SnippetState, id: i64) -> Option<Snippet> {
+    with_data(data_dir, state, false, |d| {
+        d.snippets.iter().find(|s| s.id == id).cloned()
+    })
+}
+
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn snippet_get_by_id(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
     id: i64,
 ) -> Option<Snippet> {
-    with_data(&app, &state, false, |d| {
-        d.snippets.iter().find(|s| s.id == id).cloned()
-    })
+    snippet_get_by_id_core(&snippet_data_dir(&app), &state, id)
 }
 
-#[tauri::command]
-pub fn snippet_get_favorites(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SnippetState>,
-) -> Vec<Snippet> {
-    with_data(&app, &state, false, |d| {
+pub fn snippet_get_favorites_core(data_dir: &Path, state: &SnippetState) -> Vec<Snippet> {
+    with_data(data_dir, state, false, |d| {
         let mut out: Vec<Snippet> = d
             .snippets
             .iter()
@@ -267,14 +281,18 @@ pub fn snippet_get_favorites(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
-pub fn snippet_search(
+pub fn snippet_get_favorites(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
-    query: String,
 ) -> Vec<Snippet> {
+    snippet_get_favorites_core(&snippet_data_dir(&app), &state)
+}
+
+pub fn snippet_search_core(data_dir: &Path, state: &SnippetState, query: String) -> Vec<Snippet> {
     let term = query.to_lowercase();
-    with_data(&app, &state, false, |d| {
+    with_data(data_dir, state, false, |d| {
         let mut out: Vec<Snippet> = d
             .snippets
             .iter()
@@ -286,6 +304,16 @@ pub fn snippet_search(
     })
 }
 
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub fn snippet_search(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SnippetState>,
+    query: String,
+) -> Vec<Snippet> {
+    snippet_search_core(&snippet_data_dir(&app), &state, query)
+}
+
 fn matches_query(s: &Snippet, term: &str) -> bool {
     s.title.to_lowercase().contains(term)
         || s.content.to_lowercase().contains(term)
@@ -294,13 +322,12 @@ fn matches_query(s: &Snippet, term: &str) -> bool {
             .map_or(false, |t| t.to_lowercase().contains(term))
 }
 
-#[tauri::command]
-pub fn snippet_get_by_workspace(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SnippetState>,
+pub fn snippet_get_by_workspace_core(
+    data_dir: &Path,
+    state: &SnippetState,
     workspace_id: Option<String>,
 ) -> Vec<Snippet> {
-    with_data(&app, &state, false, |d| {
+    with_data(data_dir, state, false, |d| {
         let mut out: Vec<Snippet> = d
             .snippets
             .iter()
@@ -319,12 +346,18 @@ pub fn snippet_get_by_workspace(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
-pub fn snippet_get_categories(
+pub fn snippet_get_by_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
-) -> Vec<String> {
-    with_data(&app, &state, false, |d| {
+    workspace_id: Option<String>,
+) -> Vec<Snippet> {
+    snippet_get_by_workspace_core(&snippet_data_dir(&app), &state, workspace_id)
+}
+
+pub fn snippet_get_categories_core(data_dir: &Path, state: &SnippetState) -> Vec<String> {
+    with_data(data_dir, state, false, |d| {
         let set: BTreeSet<String> = d
             .snippets
             .iter()
@@ -334,13 +367,21 @@ pub fn snippet_get_categories(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
-pub fn snippet_create(
+pub fn snippet_get_categories(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
+) -> Vec<String> {
+    snippet_get_categories_core(&snippet_data_dir(&app), &state)
+}
+
+pub fn snippet_create_core(
+    data_dir: &Path,
+    state: &SnippetState,
     input: CreateSnippetInput,
 ) -> Snippet {
-    with_data(&app, &state, true, |d| {
+    with_data(data_dir, state, true, |d| {
         let now = now_ms();
         let snippet = Snippet {
             id: d.next_id,
@@ -361,14 +402,23 @@ pub fn snippet_create(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
-pub fn snippet_update(
+pub fn snippet_create(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
+    input: CreateSnippetInput,
+) -> Snippet {
+    snippet_create_core(&snippet_data_dir(&app), &state, input)
+}
+
+pub fn snippet_update_core(
+    data_dir: &Path,
+    state: &SnippetState,
     id: i64,
     updates: UpdateSnippetInput,
 ) -> Option<Snippet> {
-    with_data(&app, &state, true, |d| {
+    with_data(data_dir, state, true, |d| {
         let s = d.snippets.iter_mut().find(|s| s.id == id)?;
         if let Some(v) = updates.title {
             s.title = v;
@@ -399,31 +449,56 @@ pub fn snippet_update(
     })
 }
 
+#[cfg(feature = "desktop")]
 #[tauri::command]
-pub fn snippet_delete(
+pub fn snippet_update(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
     id: i64,
-) -> bool {
-    with_data(&app, &state, true, |d| {
+    updates: UpdateSnippetInput,
+) -> Option<Snippet> {
+    snippet_update_core(&snippet_data_dir(&app), &state, id, updates)
+}
+
+pub fn snippet_delete_core(data_dir: &Path, state: &SnippetState, id: i64) -> bool {
+    with_data(data_dir, state, true, |d| {
         let before = d.snippets.len();
         d.snippets.retain(|s| s.id != id);
         d.snippets.len() != before
     })
 }
 
+#[cfg(feature = "desktop")]
+#[tauri::command]
+pub fn snippet_delete(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SnippetState>,
+    id: i64,
+) -> bool {
+    snippet_delete_core(&snippet_data_dir(&app), &state, id)
+}
+
+pub fn snippet_toggle_favorite_core(
+    data_dir: &Path,
+    state: &SnippetState,
+    id: i64,
+) -> Option<Snippet> {
+    with_data(data_dir, state, true, |d| {
+        let s = d.snippets.iter_mut().find(|s| s.id == id)?;
+        s.is_favorite = !s.is_favorite;
+        s.updated_at = now_ms();
+        Some(s.clone())
+    })
+}
+
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn snippet_toggle_favorite(
     app: tauri::AppHandle,
     state: tauri::State<'_, SnippetState>,
     id: i64,
 ) -> Option<Snippet> {
-    with_data(&app, &state, true, |d| {
-        let s = d.snippets.iter_mut().find(|s| s.id == id)?;
-        s.is_favorite = !s.is_favorite;
-        s.updated_at = now_ms();
-        Some(s.clone())
-    })
+    snippet_toggle_favorite_core(&snippet_data_dir(&app), &state, id)
 }
 
 #[cfg(test)]
