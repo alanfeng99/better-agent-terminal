@@ -824,6 +824,50 @@ fn discover_codex_homes(app: &AppHandle) -> Vec<PathBuf> {
     homes
 }
 
+// Read the Sakana/Fugu API key for the codex app-server runtime: an explicit
+// env var wins, otherwise parse SAKANA_API_KEY from the codex home's `.env`
+// (where the Fugu installer writes it, dotenvy KEY=VALUE). Returns None when
+// Fugu isn't configured, so the default codex path is unaffected.
+fn sakana_api_key_for_runtime(app: &AppHandle) -> Option<String> {
+    if let Ok(key) = std::env::var("SAKANA_API_KEY") {
+        if !key.trim().is_empty() {
+            return Some(key);
+        }
+    }
+    let mut homes: Vec<PathBuf> = Vec::new();
+    if let Some(h) = active_codex_home(app) {
+        homes.push(h);
+    }
+    if let Some(h) = default_codex_home(app) {
+        if !homes.contains(&h) {
+            homes.push(h);
+        }
+    }
+    homes
+        .iter()
+        .find_map(|home| read_env_file_key(&home.join(".env"), "SAKANA_API_KEY"))
+}
+
+fn read_env_file_key(path: &Path, key: &str) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        if let Some(rest) = line.strip_prefix(key) {
+            if let Some(val) = rest.trim_start().strip_prefix('=') {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn build_codex_command(app: &AppHandle) -> Command {
     build_codex_command_with_args(app, &["app-server"], true)
 }
@@ -861,6 +905,12 @@ fn build_codex_command_with_args(
     if with_api_key_env {
         if let Some(api_key) = codex_auth::configured_openai_key_for_runtime(app) {
             command.env("OPENAI_API_KEY", api_key);
+        }
+        // Additive: the Sakana/Fugu provider authenticates with SAKANA_API_KEY
+        // (the Fugu installer stores it in $CODEX_HOME/.env). Setting it never
+        // affects the default OpenAI codex path; fugu just won't auth if absent.
+        if let Some(sakana_key) = sakana_api_key_for_runtime(app) {
+            command.env("SAKANA_API_KEY", sakana_key);
         }
     }
     if let Some(codex_home) = active_codex_home(app) {
@@ -1401,6 +1451,36 @@ fn app_server_sandbox_policy(value: &str) -> Value {
     }
 }
 
+// Codex models served by a non-default provider (currently Sakana, for the
+// experimental Fugu agent) must pass their provider per-thread. Returns None
+// for the built-in OpenAI models so their thread params stay byte-identical —
+// the codex path is unchanged unless one of these specific models is selected.
+fn provider_for_model(model: &str) -> Option<&'static str> {
+    match model {
+        "fugu" | "fugu-ultra" => Some("sakana"),
+        _ => None,
+    }
+}
+
+fn build_thread_start_params(
+    model: &str,
+    cwd: &str,
+    approval_policy: &str,
+    sandbox_mode: &str,
+) -> Value {
+    let mut params = json!({
+        "model": model,
+        "cwd": cwd,
+        "approvalPolicy": approval_policy,
+        "sandbox": app_server_sandbox(sandbox_mode),
+        "serviceName": "better_agent_terminal",
+    });
+    if let Some(provider) = provider_for_model(model) {
+        params["modelProvider"] = Value::String(provider.to_string());
+    }
+    params
+}
+
 fn build_thread_resume_params(
     thread_id: &str,
     model: &str,
@@ -1408,14 +1488,18 @@ fn build_thread_resume_params(
     approval_policy: &str,
     sandbox_mode: &str,
 ) -> Value {
-    json!({
+    let mut params = json!({
         "threadId": thread_id,
         "model": model,
         "cwd": cwd,
         "approvalPolicy": approval_policy,
         "sandbox": app_server_sandbox(sandbox_mode),
         "serviceName": "better_agent_terminal",
-    })
+    });
+    if let Some(provider) = provider_for_model(model) {
+        params["modelProvider"] = Value::String(provider.to_string());
+    }
+    params
 }
 
 fn is_thread_not_found_error(message: &str) -> bool {
@@ -2008,17 +2092,26 @@ impl CodexAppServerState {
     }
 
     pub fn supported_models(&self) -> Value {
-        json!([
-            { "value": "gpt-5.5", "displayName": "GPT-5.5", "description": "Newest frontier - recommended (ChatGPT login)", "source": "builtin" },
-            { "value": "gpt-5.4", "displayName": "GPT-5.4", "description": "Flagship GPT-5.4", "source": "builtin" },
-            { "value": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini", "description": "Fast GPT-5.4", "source": "builtin" },
-            { "value": "gpt-5.3-codex", "displayName": "GPT-5.3 Codex", "description": "GPT-5.3 - codex variant", "source": "builtin" },
-            { "value": "gpt-5.3-codex-spark", "displayName": "GPT-5.3 Codex Spark", "description": "GPT-5.3 - lightweight codex", "source": "builtin" },
-            { "value": "codex-mini-latest", "displayName": "Codex Mini", "description": "codex-mini - optimized for code", "source": "builtin" },
-            { "value": "o4-mini", "displayName": "o4-mini", "description": "OpenAI o4-mini - fast reasoning", "source": "builtin" },
-            { "value": "o3", "displayName": "o3", "description": "OpenAI o3 - reasoning model", "source": "builtin" },
-            { "value": "gpt-4.1", "displayName": "GPT-4.1", "description": "OpenAI GPT-4.1", "source": "builtin" },
-        ])
+        let mut models = vec![
+            json!({ "value": "gpt-5.5", "displayName": "GPT-5.5", "description": "Newest frontier - recommended (ChatGPT login)", "source": "builtin" }),
+            json!({ "value": "gpt-5.4", "displayName": "GPT-5.4", "description": "Flagship GPT-5.4", "source": "builtin" }),
+            json!({ "value": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini", "description": "Fast GPT-5.4", "source": "builtin" }),
+            json!({ "value": "gpt-5.3-codex", "displayName": "GPT-5.3 Codex", "description": "GPT-5.3 - codex variant", "source": "builtin" }),
+            json!({ "value": "gpt-5.3-codex-spark", "displayName": "GPT-5.3 Codex Spark", "description": "GPT-5.3 - lightweight codex", "source": "builtin" }),
+            json!({ "value": "codex-mini-latest", "displayName": "Codex Mini", "description": "codex-mini - optimized for code", "source": "builtin" }),
+            json!({ "value": "o4-mini", "displayName": "o4-mini", "description": "OpenAI o4-mini - fast reasoning", "source": "builtin" }),
+            json!({ "value": "o3", "displayName": "o3", "description": "OpenAI o3 - reasoning model", "source": "builtin" }),
+            json!({ "value": "gpt-4.1", "displayName": "GPT-4.1", "description": "OpenAI GPT-4.1", "source": "builtin" }),
+        ];
+        // Sakana/Fugu provider models — experimental, only listed when BAT_DEBUG
+        // is on. Selecting one routes thread/start through provider "sakana"
+        // (requires the Fugu install + SAKANA_API_KEY). The list above is
+        // unchanged for normal codex users.
+        if codex_debug_enabled() {
+            models.push(json!({ "value": "fugu", "displayName": "Fugu (Sakana)", "description": "Sakana Fugu - experimental, needs Fugu install", "source": "sakana" }));
+            models.push(json!({ "value": "fugu-ultra", "displayName": "Fugu Ultra (Sakana)", "description": "Sakana Fugu Ultra - experimental", "source": "sakana" }));
+        }
+        Value::Array(models)
     }
 
     pub fn supported_efforts(&self) -> Value {
@@ -2693,13 +2786,7 @@ impl CodexAppServerState {
                 app,
                 session_id,
                 "thread/start",
-                json!({
-                    "model": model,
-                    "cwd": cwd,
-                    "approvalPolicy": approval_policy,
-                    "sandbox": app_server_sandbox(&sandbox_mode),
-                    "serviceName": "better_agent_terminal",
-                }),
+                build_thread_start_params(&model, &cwd, &approval_policy, &sandbox_mode),
                 REQUEST_TIMEOUT,
             )
             .map_err(bridge_error)?;
@@ -3229,13 +3316,7 @@ impl CodexAppServerState {
                 app,
                 &session_id,
                 "thread/start",
-                json!({
-                    "model": model,
-                    "cwd": cwd,
-                    "approvalPolicy": approval_policy,
-                    "sandbox": app_server_sandbox(&sandbox_mode),
-                    "serviceName": "better_agent_terminal",
-                }),
+                build_thread_start_params(&model, &cwd, &approval_policy, &sandbox_mode),
                 REQUEST_TIMEOUT,
             )
             .map_err(|err| {
@@ -3983,13 +4064,7 @@ impl CodexAppServerState {
                 app,
                 &session_id,
                 "thread/start",
-                json!({
-                    "model": model,
-                    "cwd": cwd,
-                    "approvalPolicy": approval_policy,
-                    "sandbox": app_server_sandbox(&sandbox_mode),
-                    "serviceName": "better_agent_terminal",
-                }),
+                build_thread_start_params(&model, &cwd, &approval_policy, &sandbox_mode),
                 REQUEST_TIMEOUT,
             )
             .map_err(bridge_error)?;
