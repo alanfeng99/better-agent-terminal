@@ -27,7 +27,7 @@ function normalizePersistedAgentPreset(value: unknown): AgentPresetId | undefine
 }
 
 export function sdkSessionRuntimeFamily(agentPreset?: AgentPresetId): 'claude' | 'codex' | null {
-  if (agentPreset === 'codex-agent' || agentPreset === 'codex-agent-worktree') return 'codex'
+  if (agentPreset === 'codex-agent' || agentPreset === 'codex-agent-worktree' || agentPreset === 'codex-fugu') return 'codex'
   if (agentPreset === 'claude-code' || agentPreset === 'claude-code-v2' || agentPreset === 'claude-code-worktree') return 'claude'
   return null
 }

@@ -24,11 +24,12 @@ pub const AGENT_PRESET_IDS: &[&str] = &[
     "claude-cli-worktree",
     "codex-agent",
     "codex-agent-worktree",
+    "codex-fugu",
     "codex-cli",
     "none",
 ];
 
-const DEBUG_ONLY_AGENT_PRESET_IDS: &[&str] = &["claude-channel", "claude-cli-agent"];
+const DEBUG_ONLY_AGENT_PRESET_IDS: &[&str] = &["claude-channel", "claude-cli-agent", "codex-fugu"];
 
 fn bat_debug_enabled() -> bool {
     matches!(
@@ -209,6 +210,14 @@ fn agent_preset_metadata(id: &str) -> Option<Value> {
             "color": "#10a37f",
             "backend": "sdk",
             "needsGitRepo": true,
+        }),
+        "codex-fugu" => json!({
+            "id": "codex-fugu",
+            "name": "Codex Fugu Agent",
+            "icon": "🐡",
+            "color": "#06b6d4",
+            "backend": "sdk",
+            "debug": true,
         }),
         "codex-cli" => json!({
             "id": "codex-cli",

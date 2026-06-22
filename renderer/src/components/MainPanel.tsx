@@ -31,9 +31,9 @@ export const MainPanel = memo(function MainPanel({ terminal, isActive, onClose, 
   const isAgent = terminal.agentPreset && terminal.agentPreset !== 'none'
   const isClaudeChannelAgent = terminal.agentPreset === 'claude-channel'
   const isClaudeCliAgent = terminal.agentPreset === 'claude-cli-agent'
-  const isSdkManaged = terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree'
+  const isSdkManaged = terminal.agentPreset === 'claude-code' || terminal.agentPreset === 'claude-code-v2' || terminal.agentPreset === 'claude-code-worktree' || terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree' || terminal.agentPreset === 'codex-fugu'
   const isClaudeCli = terminal.agentPreset === 'claude-cli' || terminal.agentPreset === 'claude-cli-worktree'
-  const isCodexAgent = terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree'
+  const isCodexAgent = terminal.agentPreset === 'codex-agent' || terminal.agentPreset === 'codex-agent-worktree' || terminal.agentPreset === 'codex-fugu'
   const isClaudeCode = isSdkManaged
   const hasRuntimeError = !!terminal.runtimeError
   const agentConfig = isAgent ? getAgentPreset(terminal.agentPreset!) : null

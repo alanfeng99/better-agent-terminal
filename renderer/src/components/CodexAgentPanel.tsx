@@ -322,7 +322,12 @@ export function CodexAgentPanel({ sessionId, cwd, isActive, workspaceId, onClose
   const [permissionMode, setPermissionMode] = useState<string>('bypassPermissions')
   const [currentModel, setCurrentModel] = useState<string>(() => {
     const t = workspaceStore.getState().terminals.find(t => t.id === sessionId)
-    if (isCodexSession) return resolveCodexModel(t?.model, settingsStore.getSettings().defaultCodexModel)
+    if (isCodexSession) {
+      // The Codex Fugu Agent preset defaults to the "fugu" model (provider
+      // sakana); everything else uses the configured default Codex model.
+      const codexFallback = t?.agentPreset === 'codex-fugu' ? 'fugu' : settingsStore.getSettings().defaultCodexModel
+      return resolveCodexModel(t?.model, codexFallback)
+    }
     return t?.model || settingsStore.getSettings().defaultClaudeModel || ''
   })
   const currentModelLabel = useMemo(() => displayNameForPanelModel(currentModel), [currentModel])
