@@ -118,6 +118,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [cxStatus, setCxStatus] = useState<CxDetectionStatus | null>(null)
   const [cxDetecting, setCxDetecting] = useState(false)
   const [codexUnifiedInfo, setCodexUnifiedInfo] = useState<string | null>(null)
+  const [fuguStatus, setFuguStatus] = useState<{ providerConfigured: boolean; keyConfigured: boolean; codexHome: string | null } | null>(null)
+  const [fuguKey, setFuguKey] = useState('')
+  const [fuguSaving, setFuguSaving] = useState(false)
+  const [fuguMsg, setFuguMsg] = useState<string | null>(null)
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
   const updateState = useSyncExternalStore(subscribeUpdate, getUpdateState)
   const [runtimeLoading, setRuntimeLoading] = useState(false)
@@ -178,6 +182,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     return settingsStore.subscribe(() => {
       setSettings(settingsStore.getSettings())
     })
+  }, [])
+
+  // Codex Fugu (Sakana) config status — debug-only feature.
+  useEffect(() => {
+    if (host.debug.isDebugMode !== true) return
+    host.codex.fuguStatus().then(setFuguStatus).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -984,6 +994,43 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                   <p className="settings-hint">{t('settings.codexUnifiedAccountsHint')}</p>
                   {codexUnifiedInfo && <p className="settings-hint">{codexUnifiedInfo}</p>}
                 </div>
+                {isDebugMode && (
+                  <div className="settings-group">
+                    <label>Codex Fugu (Sakana)</label>
+                    <p className="settings-hint">
+                      Experimental. Writes the Sakana provider + key into ~/.codex so the
+                      Codex Fugu Agent (model “fugu”) can authenticate — no need to run the
+                      Fugu installer. Get a key at console.sakana.ai.
+                    </p>
+                    <p className="settings-hint">
+                      Provider: {fuguStatus?.providerConfigured ? 'configured ✓' : 'not configured'}
+                      {' · '}
+                      Key: {fuguStatus?.keyConfigured ? 'set ✓' : 'not set'}
+                    </p>
+                    <input
+                      type="password"
+                      value={fuguKey}
+                      autoComplete="off"
+                      placeholder="SAKANA_API_KEY"
+                      onChange={e => setFuguKey(e.target.value)}
+                    />
+                    <button
+                      className="settings-btn"
+                      disabled={fuguSaving || !fuguKey.trim()}
+                      onClick={() => {
+                        setFuguSaving(true)
+                        setFuguMsg(null)
+                        host.codex.fuguSetKey(fuguKey.trim())
+                          .then(s => { setFuguStatus(s); setFuguKey(''); setFuguMsg('Saved to ~/.codex (provider + key).') })
+                          .catch(e => setFuguMsg(e instanceof Error ? e.message : String(e)))
+                          .finally(() => setFuguSaving(false))
+                      }}
+                    >
+                      {fuguSaving ? 'Saving…' : 'Save Sakana key'}
+                    </button>
+                    {fuguMsg && <p className="settings-hint">{fuguMsg}</p>}
+                  </div>
+                )}
               </div>
 
               <div className="settings-section">

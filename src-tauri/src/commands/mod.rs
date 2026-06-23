@@ -25,6 +25,8 @@ pub mod debug;
 #[cfg(feature = "desktop")]
 pub mod dialog;
 pub mod fs;
+#[cfg(feature = "desktop")]
+pub mod fugu;
 pub mod git;
 pub mod github;
 pub mod image;

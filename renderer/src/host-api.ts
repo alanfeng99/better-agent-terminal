@@ -786,6 +786,13 @@ function createTauriHost(): BatAppAPI {
         getInvoke()<unknown>('codex_account_login', { apiKey }),
       accountLoginCancel: () =>
         getInvoke()<unknown>('codex_account_login_cancel'),
+      // Codex Fugu (Sakana provider) config — write the provider block + key
+      // into ~/.codex so the app-server can route the fugu model to provider
+      // "sakana". BAT_DEBUG-gated feature.
+      fuguStatus: () =>
+        getInvoke()<{ codexHome: string | null; providerConfigured: boolean; keyConfigured: boolean }>('codex_fugu_status'),
+      fuguSetKey: (apiKey: string) =>
+        getInvoke()<{ codexHome: string | null; providerConfigured: boolean; keyConfigured: boolean }>('codex_fugu_set_key', { apiKey }),
     },
     git: {
       // Read-only git wrappers — see src-tauri/src/commands/git.rs.
