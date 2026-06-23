@@ -1,0 +1,108 @@
+[package]
+name = "better-agent-terminal"
+version = "0.1.0"
+description = "Better Agent Terminal — Tauri shell"
+authors = ["TonyQ CO., LTD."]
+edition = "2021"
+default-run = "better-agent-terminal"
+
+[lib]
+# Tauri 2 ships application code as a library so the desktop binary and
+# (later) mobile targets can share it.
+name = "better_agent_terminal_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# The desktop shell (GUI). It also handles `--bat-server` mode when launched
+# with the flag, but it links the full Tauri/Wry stack, so it cannot build
+# without `desktop` — `required-features` excludes it from `--no-default-features`
+# headless builds (otherwise `main.rs`'s `run()` would fail to compile there).
+[[bin]]
+name = "better-agent-terminal"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+# Dedicated headless RemoteServer entry. Built GUI-free with
+# `--no-default-features --features headless` (links no tauri/wry/webkit) for
+# enterprise Linux hosts (issue #117). It also builds under `desktop`, so the
+# desktop bundle keeps shipping a `bat-server` alongside the GUI binary.
+[[bin]]
+name = "bat-server"
+path = "src/bin/bat-server.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# The Tauri/Wry desktop stack is optional and gated behind the `desktop`
+# feature (on by default). A `--no-default-features` build links no tauri/wry
+# and therefore no webkit2gtk — the path to a GUI-free `bat-server` for
+# headless Linux hosts (issue #117). The headless build is being stood up
+# incrementally; until it lands, every supported build keeps `desktop` on.
+[dependencies]
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-clipboard-manager = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+libc = "0.2"
+base64 = "0.22"
+aes-gcm = "0.10"
+aes = "0.8"
+cbc = "0.1"
+flate2 = "1"
+pbkdf2 = "0.12"
+sha1 = "0.10"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+keyring = "4.0.0"
+keyring-core = "1.0.0"
+notify = "8"
+get_if_addrs = "0.5"
+# Cross-platform PTY (Unix pty + Windows ConPTY). Tauri itself doesn't ship
+# this; we keep the renderer-side shape identical to the Electron preload's
+# pty.* surface and let a reader thread emit pty:output / pty:exit events.
+portable-pty = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tungstenite = "0.29.0"
+rcgen = "0.14.8"
+rand = "0.10.1"
+sha2 = "0.10"
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1.14.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+
+# We keep the application small for the first release: the host commands we
+# expose are read/write JSON config files in the per-user data directory and
+# open external URLs. Heavy lifting (PTY, agent SDK) stays in the Node
+# sidecar plan documented in plans/tauri-migration-plan.md.
+
+[features]
+# `desktop` pulls the full Tauri/Wry shell (default). Building with
+# `--no-default-features` (optionally `--features headless`) drops the tauri
+# stack so the resulting `bat-server` links no webkit2gtk and runs on
+# enterprise Linux without a display server. The headless build target is
+# being assembled batch by batch; code paths that still require Tauri are
+# migrated behind `host_context::HostContext` first.
+default = ["desktop"]
+desktop = [
+    "dep:tauri",
+    "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-clipboard-manager",
+    "dep:tauri-plugin-updater",
+]
+headless = []
+
+[profile.release]
+# Parallelise our crate's codegen across all runner cores. The default of
+# 16 leaves 32-core Windows / macOS runners underutilised during the final
+# crate compile (deps come from rust-cache, only our crate rebuilds). 256
+# is what `cargo build --timings` recommends for parallel-bound builds.
+# Trade-off: tiny loss of cross-unit optimisation; imperceptible at runtime.
+codegen-units = 256
+# Drop debug symbols from the shipped binary. Smaller .exe / .dmg, no
+# compile-time cost.
+strip = "symbols"

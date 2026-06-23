@@ -1,89 +1,616 @@
 name: Release
+run-name: Release ${{ inputs.release_tag }}
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to build, for example v2.9.0-pre.23'
+        required: true
+        type: string
+      run_verification:
+        description: 'Run release verification checks before publishing'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  RUN_RELEASE_VERIFICATION: ${{ inputs.run_verification }}
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Skip release verification
+        if: env.RUN_RELEASE_VERIFICATION != 'true'
+        run: echo "Skipping release verification. Re-run manually with run_verification=true to enable it."
+
+      - name: Checkout code
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup pnpm
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node.js
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            node-sidecar/pnpm-lock.yaml
+
+      - name: Install dependencies
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Extract version from tag
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        id: version
+        shell: bash
+        run: echo "VERSION=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Update version metadata
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: pnpm run update:release-version
+
+      - name: Verify Tauri bundle resources
+        if: env.RUN_RELEASE_VERIFICATION == 'true'
+        run: pnpm run verify:tauri-release-ci
+
   build:
+    needs: verify
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
             platform: win
-          - os: macos-latest
+            arch: x64
+            artifact: release-win-all-in-one
+            release_exts: '.exe'
+            bundle: nsis
+            bundle_mode: all-in-one
+            asset_mode: all-in-one
+            prerelease: true
+          - os: windows-latest
+            platform: win
+            arch: x64
+            artifact: release-win-lightweight
+            release_exts: '.exe'
+            bundle: nsis
+            bundle_mode: lightweight
+            asset_mode: lightweight
+            prerelease: true
+          - os: macos-15-intel
             platform: mac
-          - os: ubuntu-latest
+            arch: x64
+            artifact: release-mac-x64
+            release_exts: '.dmg'
+            bundle: dmg,app
+            bundle_mode: all-in-one
+            asset_mode: ''
+            prerelease: false
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+            artifact: release-mac-x64-lightweight
+            release_exts: '.dmg'
+            bundle: dmg,app
+            bundle_mode: lightweight
+            asset_mode: lightweight
+            prerelease: false
+          - os: macos-14
+            platform: mac
+            arch: arm64
+            artifact: release-mac-arm64-all-in-one
+            release_exts: '.dmg'
+            bundle: dmg,app
+            bundle_mode: all-in-one
+            asset_mode: all-in-one
+            prerelease: true
+          - os: macos-14
+            platform: mac
+            arch: arm64
+            artifact: release-mac-arm64-lightweight
+            release_exts: '.dmg'
+            bundle: dmg,app
+            bundle_mode: lightweight
+            asset_mode: lightweight
+            prerelease: true
+          - os: ubuntu-22.04
             platform: linux
+            arch: x64
+            artifact: release-linux
+            release_exts: '.AppImage'
+            bundle: appimage
+            bundle_mode: all-in-one
+            asset_mode: ''
+            prerelease: false
+          # Linux arm64 AppImage (#113). The earlier "subprocess failed (exit code 2)"
+          # crash was caused by the Tauri bundle-tools cache leaking the x86_64
+          # linuxdeploy-plugin-appimage onto the aarch64 leg (now fixed by arch-scoping
+          # that cache key). With the root cause fixed, arm64 builds green (validated on
+          # v3.1.18-pre.2) and ships on BOTH stable and -pre tags like the other legs —
+          # so pre_only is false. (The pre_only gate stays as a one-line lever in case a
+          # future leg needs to be -pre-only while it is stabilized.)
+          - os: ubuntu-22.04-arm
+            platform: linux
+            arch: arm64
+            artifact: release-linux-arm64
+            release_exts: '.AppImage'
+            bundle: appimage
+            bundle_mode: all-in-one
+            asset_mode: ''
+            prerelease: true
+            pre_only: false
+          # Linux arm64 lightweight AppImage: same leg, no bundled runtimes —
+          # pairs with the in-app managed-runtime auto-install. Asset name gets
+          # the `.lightweight` suffix (BetterAgentTerminal-<ver>-arm64.lightweight.AppImage)
+          # and feeds the latest-<channel>-lightweight.json updater manifest, so
+          # a lightweight install only ever upgrades to a lightweight build.
+          - os: ubuntu-22.04-arm
+            platform: linux
+            arch: arm64
+            artifact: release-linux-arm64-lightweight
+            release_exts: '.AppImage'
+            bundle: appimage
+            bundle_mode: lightweight
+            asset_mode: lightweight
+            prerelease: true
+            pre_only: false
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      # pre_only legs (e.g. linux arm64) build ONLY on -pre tags and are skipped on
+      # stable tags, so an unstable leg can never block a stable release. All other
+      # legs follow the usual rule: build on stable tags, or on -pre tags when the leg
+      # opts in via prerelease: true.
+      BUILD_MATRIX_ENTRY: ${{ (matrix.pre_only && contains(inputs.release_tag, '-pre')) || (!matrix.pre_only && (!contains(inputs.release_tag, '-pre') || matrix.prerelease)) }}
 
     steps:
+      - name: Skip non-prerelease target
+        if: env.BUILD_MATRIX_ENTRY != 'true'
+        run: echo "Skipping ${{ matrix.artifact }} for prerelease tag ${RELEASE_TAG}"
+
       - name: Checkout code
+        if: env.BUILD_MATRIX_ENTRY == 'true'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup pnpm
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
 
       - name: Setup Node.js
+        if: env.BUILD_MATRIX_ENTRY == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: 'pnpm'
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            node-sidecar/pnpm-lock.yaml
+
+      - name: Setup Rust
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure Rust shims are first on PATH
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        shell: bash
+        run: |
+          RUST_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "$RUST_BIN" >> "$GITHUB_PATH"
+          export PATH="$RUST_BIN:$PATH"
+          command -v rustup
+          command -v cargo
+          "$RUST_BIN/cargo" --version
+
+      - name: Install Linux Tauri dependencies
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          # The lean ubuntu-*-arm hosted runner image does NOT preinstall the
+          # runtime helper tools that Tauri's AppImage bundler and the linuxdeploy
+          # gtk plugin shell out to (xdg-open, plus the *-bin tools: rsvg-convert,
+          # gdk-pixbuf-query-loaders, glib-compile-schemas, gtk-update-icon-cache).
+          # On the x64 ubuntu image these are already present; install them
+          # explicitly so the AppImage bundle step works on arm64 too.
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils \
+            librsvg2-bin \
+            libgdk-pixbuf2.0-bin \
+            libglib2.0-bin \
+            libgtk-3-bin
+          if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+            sudo apt-get install -y libfuse2t64
+          else
+            sudo apt-get install -y libfuse2
+          fi
+
+      - name: Configure Linux AppImage tooling
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
+        shell: bash
+        run: |
+          # Tauri shells out to linuxdeploy AppImages. GitHub runners can be
+          # unreliable for FUSE-backed AppImage execution, and linuxdeploy's
+          # bundled strip can fail on newer ELF sections from system libraries.
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          echo "NO_STRIP=true" >> "$GITHUB_ENV"
+          dpkg-query -W libfuse2 libfuse2t64 2>/dev/null || true
+
+      - name: Compute Rust base cache key
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        id: rust-base-cache-key
+        run: node scripts/rust-base-cache-key.mjs
+
+      - name: Cache Cargo registry base
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-registry-base-${{ steps.rust-base-cache-key.outputs.base }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-cargo-registry-base-
+
+      - name: Cache Rust build outputs
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: release-${{ matrix.platform }}-${{ matrix.arch }}
+          key: base-${{ steps.rust-base-cache-key.outputs.base }}
+          cache-on-failure: true
+          # ~/.cargo/bin is freshly populated by dtolnay/rust-toolchain on
+          # every run. Caching it means a later restore can overwrite the
+          # fresh rustup shims with stale binaries — on macOS-14 this has
+          # surfaced as `cargo metadata` invoking the rustup-init installer
+          # instead of cargo. Skip the bin cache; only target/ + registry
+          # caches matter for build speed.
+          cache-bin: "false"
+
+      - name: Cache Tauri bundle tools
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/tauri
+            ~/.cache/tauri-apps
+            ~/.cache/linuxdeploy
+          # MUST include matrix.arch. ~/.cache/tauri holds linuxdeploy + the
+          # arch-agnostic-named linuxdeploy-plugin-appimage.AppImage. Keying only on
+          # runner.os ("Linux" for both x64 and arm64) let the x86_64 leg's cache
+          # restore onto the aarch64 leg; tauri re-fetched linuxdeploy-aarch64 but
+          # reused the cached x86_64 appimage plugin, so linuxdeploy aborted at
+          # startup with "subprocess failed (exit code 2)" (Exec format error) — the
+          # #113 arm64 failure. Every other cache below is already arch-scoped.
+          key: ${{ runner.os }}-${{ matrix.arch }}-tauri-tools-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-tauri-tools-
+
+      - name: Cache root node_modules
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-root-node-modules-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-root-node-modules-
+
+      - name: Cache sidecar node_modules
+        id: sidecar-node-modules-cache
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: node-sidecar/node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-${{ hashFiles('node-sidecar/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-
+
+      - name: Wait before retrying sidecar node_modules cache
+        if: env.BUILD_MATRIX_ENTRY == 'true' && steps.sidecar-node-modules-cache.outcome == 'failure'
+        shell: bash
+        run: sleep 10
+
+      - name: Retry sidecar node_modules cache
+        if: env.BUILD_MATRIX_ENTRY == 'true' && steps.sidecar-node-modules-cache.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: node-sidecar/node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-${{ hashFiles('node-sidecar/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-sidecar-node-modules-
+
+      - name: Compute Tauri resource cache keys
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        id: tauri-resource-cache-keys
+        run: node scripts/tauri-resource-cache-keys.mjs
+
+      - name: Cache bundled Node runtime
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        continue-on-error: true
+        id: node-runtime-cache
+        uses: actions/cache@v4
+        with:
+          path: node-sidecar/runtime
+          key: ${{ runner.os }}-${{ matrix.arch }}-node-runtime-${{ steps.tauri-resource-cache-keys.outputs.node_runtime }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-node-runtime-
+
+      - name: Cache sidecar native modules
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        continue-on-error: true
+        id: sidecar-native-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: node-sidecar/dist-node_modules
+          key: ${{ runner.os }}-${{ matrix.arch }}-sidecar-native-modules-${{ steps.tauri-resource-cache-keys.outputs.sidecar_native_modules }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-sidecar-native-modules-
+
+      - name: Cache prepared Codex runtime
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.bundle_mode == 'all-in-one'
+        continue-on-error: true
+        id: codex-runtime-cache
+        uses: actions/cache@v4
+        with:
+          path: codex-runtime
+          key: ${{ runner.os }}-${{ matrix.arch }}-codex-runtime-${{ steps.tauri-resource-cache-keys.outputs.codex_runtime }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-codex-runtime-
 
       - name: Install dependencies
-        run: npm ci
-
-      - name: Rebuild @lydell/node-pty for Electron (Windows)
-        if: matrix.platform == 'win'
-        run: npx --yes @electron/rebuild
-
-      - name: Rebuild @lydell/node-pty for Electron (macOS/Linux)
-        if: matrix.platform != 'win'
-        run: npx --yes @electron/rebuild
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Extract version from tag
+        if: env.BUILD_MATRIX_ENTRY == 'true'
         id: version
         shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: echo "VERSION=${RELEASE_TAG}" >> $GITHUB_OUTPUT
 
-      - name: Update version and build
+      - name: Update version metadata
+        if: env.BUILD_MATRIX_ENTRY == 'true'
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
-        run: node scripts/build-version.js
+        run: pnpm run update:release-version
 
-      - name: Package for Windows
-        if: matrix.platform == 'win'
-        run: npx electron-builder --win --publish never
+      - name: Verify macOS signing secrets
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_CERTIFICATE" || (echo "Missing APPLE_CERTIFICATE or APPLE_CERTIFICATE_P12 secret" && exit 1)
+          test -n "$APPLE_CERTIFICATE_PASSWORD" || (echo "Missing APPLE_CERTIFICATE_PASSWORD secret" && exit 1)
+          test -n "$APPLE_ID" || (echo "Missing APPLE_ID secret" && exit 1)
+          test -n "$APPLE_PASSWORD" || (echo "Missing APPLE_PASSWORD or APPLE_APP_SPECIFIC_PASSWORD secret" && exit 1)
+          test -n "$APPLE_TEAM_ID" || (echo "Missing APPLE_TEAM_ID secret" && exit 1)
 
-      - name: Package for macOS
-        if: matrix.platform == 'mac'
-        run: npx electron-builder --mac --publish never
+      - name: Verify Apple notarization credentials
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac' && env.RUN_RELEASE_VERIFICATION == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "Testing notarytool credentials..."
+          xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" 2>&1 || true
 
-      - name: Package for Linux
-        if: matrix.platform == 'linux'
-        run: npx electron-builder --linux --publish never
+      - name: Prepare Tauri bundle resources
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        shell: bash
+        run: |
+          if [[ "${{ matrix.bundle_mode }}" == "lightweight" ]]; then
+            pnpm run prepare:tauri-bundle:ci:lightweight
+            pnpm run verify:tauri-preview-readiness:lightweight
+          else
+            node scripts/fetch-node-runtime.mjs
+            pnpm --dir node-sidecar install --frozen-lockfile --prefer-offline
+            pnpm run build:tauri-sidecar
+            if [[ "${{ steps.sidecar-native-modules-cache.outputs.cache-hit }}" == "true" ]]; then
+              echo "Prepared sidecar native modules restored from cache."
+            else
+              pnpm run prune:tauri-sidecar
+              pnpm run prepare:tauri-sidecar-node-modules
+            fi
+            if [[ "${{ steps.codex-runtime-cache.outputs.cache-hit }}" == "true" ]]; then
+              echo "Prepared Codex runtime restored from cache."
+            else
+              pnpm run prepare:tauri-codex-runtime
+            fi
+            pnpm run verify:tauri-preview-readiness:all-in-one
+          fi
+
+      - name: Sign macOS resource binaries
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac' && matrix.bundle_mode == 'all-in-one'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: bash scripts/sign-macos-resource-binaries.sh
+
+      - name: Build Linux Tauri release bundle
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          # Bake the bundle mode into the binary (build.rs -> update_get_bundle_mode)
+          # so a lightweight install only ever upgrades to a lightweight build.
+          BAT_BUNDLE_MODE: ${{ matrix.bundle_mode }}
+          # Sign the updater artifacts (.AppImage.sig) with the minisign key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: "true"
+          # On arm64 the linuxdeploy gtk plugin has been failing with a generic
+          # "subprocess failed (exit code 2)". The plugin is a bash script that turns
+          # on `set -x` when DEBUG is set, so this surfaces the exact failing
+          # subprocess inline in the build log. Harmless on the x64 leg, but scoped
+          # to arm64 to keep stable x64 logs clean.
+          DEBUG: ${{ matrix.arch == 'arm64' && '1' || '' }}
+        run: node scripts/tauri-build-mode.mjs --mode ${{ matrix.bundle_mode }} --bundles ${{ matrix.bundle }} --verbose
+
+      - name: Diagnose arm64 AppImage failure
+        if: ${{ failure() && matrix.platform == 'linux' && matrix.arch == 'arm64' }}
+        shell: bash
+        run: |
+          set +e
+          echo "===== arch / os ====="
+          uname -a
+          echo "===== gtk-plugin runtime tools (linuxdeploy-plugin-gtk depends on these) ====="
+          for tool in gdk-pixbuf-query-loaders gdk-pixbuf-query-loaders-64 gtk-update-icon-cache glib-compile-schemas rsvg-convert update-mime-database; do
+            printf '%-32s ' "$tool:"
+            command -v "$tool" || echo "MISSING"
+          done
+          echo "===== gdk-pixbuf loader dir (arm64 path) ====="
+          ls -la /usr/lib/aarch64-linux-gnu/gdk-pixbuf-2.0/*/loaders/ 2>&1 | head -50
+          find /usr -name 'gdk-pixbuf-query-loaders*' 2>/dev/null
+          echo "===== ~/.cache/tauri (linuxdeploy + plugins downloaded by tauri) ====="
+          ls -la "$HOME/.cache/tauri" 2>&1
+          echo "===== AppDir state (partial bundle before crash) ====="
+          ls -laR src-tauri/target/release/bundle/appimage 2>&1 | head -120
+          echo "===== linuxdeploy plugin list ====="
+          LD="$(find "$HOME/.cache/tauri" -name 'linuxdeploy-*.AppImage' 2>/dev/null | head -1)"
+          if [ -n "$LD" ]; then
+            echo "linuxdeploy: $LD"
+            APPIMAGE_EXTRACT_AND_RUN=1 "$LD" --list-plugins 2>&1 | head -40
+          else
+            echo "no linuxdeploy AppImage found in ~/.cache/tauri"
+          fi
+          echo "===== ldd of main binary (missing libs surface here) ====="
+          BIN="$(find src-tauri/target/release -maxdepth 1 -type f -executable 2>/dev/null | head -1)"
+          [ -n "$BIN" ] && ldd "$BIN" 2>&1 | grep -i 'not found' || echo "(no missing libs / binary not found)"
+          exit 0
+
+      - name: Build Tauri release bundle
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform != 'linux'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE || secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD || secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          # Bake the bundle mode into the binary (build.rs -> update_get_bundle_mode)
+          # so a lightweight install only ever upgrades to a lightweight build.
+          BAT_BUNDLE_MODE: ${{ matrix.bundle_mode }}
+          # Sign the updater artifacts (.app.tar.gz.sig on mac, -setup.exe.sig on
+          # win) with the minisign key matching the pubkey in tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/tauri-build-mode.mjs --mode ${{ matrix.bundle_mode }} --bundles ${{ matrix.bundle }}
+
+      - name: Normalize release asset names
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        env:
+          BAT_RELEASE_PLATFORM: ${{ matrix.platform }}
+          BAT_RELEASE_ARCH: ${{ matrix.arch }}
+          BAT_RELEASE_BUNDLE_MODE: ${{ matrix.asset_mode }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: node scripts/normalize-release-asset-names.mjs src-tauri/target/release/bundle
+
+      - name: Stage updater artifacts
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        env:
+          BAT_RELEASE_PLATFORM: ${{ matrix.platform }}
+          BAT_RELEASE_ARCH: ${{ matrix.arch }}
+          BAT_BUNDLE_MODE: ${{ matrix.bundle_mode }}
+          BAT_RELEASE_BUNDLE_MODE: ${{ matrix.asset_mode }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: node scripts/stage-updater-artifacts.mjs src-tauri/target/release/bundle updater-meta
+
+      - name: Smoke test Windows release binary
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'win' && env.RUN_RELEASE_VERIFICATION == 'true'
+        run: pnpm run test:tauri-launch
+
+      - name: Verify Tauri release asset sizes
+        if: env.BUILD_MATRIX_ENTRY == 'true' && env.RUN_RELEASE_VERIFICATION == 'true'
+        env:
+          BAT_RELEASE_PLATFORM: ${{ matrix.platform }}
+          BAT_RELEASE_EXTS: ${{ matrix.release_exts }}
+        run: node scripts/verify-release-asset-sizes.js src-tauri/target/release/bundle
 
       - name: Upload Windows artifact
-        if: matrix.platform == 'win'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'win'
         uses: actions/upload-artifact@v4
         with:
-          name: release-win
+          name: ${{ matrix.artifact }}
           path: |
-            release/*.zip
-            release/*.exe
+            src-tauri/target/release/bundle/**/*.exe
 
       - name: Upload macOS artifact
-        if: matrix.platform == 'mac'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'mac'
         uses: actions/upload-artifact@v4
         with:
-          name: release-mac
-          path: release/*.dmg
+          name: ${{ matrix.artifact }}
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            !src-tauri/target/release/bundle/**/rw.*.dmg
 
       - name: Upload Linux artifact
-        if: matrix.platform == 'linux'
+        if: env.BUILD_MATRIX_ENTRY == 'true' && matrix.platform == 'linux'
         uses: actions/upload-artifact@v4
         with:
-          name: release-linux
-          path: release/*.AppImage
+          name: ${{ matrix.artifact }}
+          path: |
+            src-tauri/target/release/bundle/**/*.AppImage
+
+      - name: Upload updater metadata
+        if: env.BUILD_MATRIX_ENTRY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-meta-${{ matrix.artifact }}
+          # The whole dir: updater-meta.json plus, for mac/linux, the separate
+          # *.tar.gz updater bundle copied alongside it. generate-update-manifest
+          # republishes those tarballs to the pinned `manifests` release.
+          path: updater-meta
+          if-no-files-found: error
 
   release:
     needs: build
@@ -92,6 +619,18 @@ jobs:
       contents: write
 
     steps:
+      # Checkout first: actions/checkout cleans the workspace, which would wipe
+      # the downloaded artifacts/ dir if it ran afterwards.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -100,15 +639,176 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R artifacts
 
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          # Installers ONLY. The macOS/Linux updater bundles (*.app.tar.gz /
+          # *.AppImage.tar.gz) are published to the pinned `manifests` release
+          # under fixed names, so the versioned release page stays unambiguous
+          # for humans (just .dmg / .exe / .AppImage).
           files: |
-            artifacts/release-win/*
-            artifacts/release-mac/*
-            artifacts/release-linux/*
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.AppImage
           generate_release_notes: true
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-pre') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate update manifests
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: node scripts/generate-update-manifest.mjs artifacts manifests-out
+
+      - name: Validate update manifests
+        run: |
+          node -e '
+            const fs = require("fs");
+            const dir = "manifests-out";
+            const files = fs.readdirSync(dir).filter(f => f.endsWith(".json"));
+            if (files.length === 0) throw new Error("no manifests generated");
+            for (const f of files) {
+              const m = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8"));
+              if (!m.version || typeof m.version !== "string") throw new Error(f + ": missing version");
+              if (!m.platforms || typeof m.platforms !== "object") throw new Error(f + ": missing platforms");
+              const keys = Object.keys(m.platforms);
+              if (keys.length === 0) throw new Error(f + ": empty platforms");
+              for (const k of keys) {
+                const p = m.platforms[k];
+                if (!p.url || !/^https:\/\//.test(p.url)) throw new Error(f + ": " + k + " bad url");
+                if (!p.signature) throw new Error(f + ": " + k + " missing signature");
+                // Updater bundles we republish to the `manifests` release must be
+                // present locally so the publish step actually uploads them.
+                if (p.url.includes("/releases/download/manifests/")) {
+                  const fname = p.url.split("/").pop();
+                  if (!fs.existsSync(dir + "/" + fname)) throw new Error(f + ": " + k + " references missing manifests asset " + fname);
+                }
+              }
+              console.log("✓ " + f + " (" + keys.join(", ") + ")");
+            }
+          '
+
+      - name: Ensure manifests release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view manifests >/dev/null 2>&1 || \
+            gh release create manifests \
+              --title "Updater manifests" \
+              --notes "Auto-update channel manifests. Do not delete — endpoints point here." \
+              --latest=false
+
+      - name: Publish update manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Uploads the latest-*.json manifests AND the fixed-name updater bundles
+        # (*.app.tar.gz / *.AppImage.tar.gz). --clobber overwrites the previous
+        # release's bundles so the pinned release never accumulates old versions.
+        run: gh release upload manifests manifests-out/* --clobber
+
+      - name: Update Homebrew tap
+        if: ${{ !contains(env.RELEASE_TAG, '-pre') }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          repository: tonyq-org/homebrew-tap
+          event-type: update-cask
+          client-payload: '{"version": "${{ steps.version.outputs.VERSION }}"}'
+
+      - name: Update Homebrew tap (pre-release)
+        if: ${{ contains(env.RELEASE_TAG, '-pre') }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          repository: tonyq-org/homebrew-tap
+          event-type: update-cask-pre
+          client-payload: '{"version": "${{ steps.version.outputs.VERSION }}"}'
+
+  choco:
+    needs: [build, release]
+    runs-on: windows-latest
+    if: ${{ !contains(inputs.release_tag, '-pre') }}
+
+    steps:
+      - name: Check if Chocolatey publish is enabled
+        id: gate
+        shell: bash
+        run: |
+          # Chocolatey package pending review — skip until after 2026-04-30 UTC
+          if [[ "$(date -u +%Y%m%d)" -lt "20260501" ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping: Chocolatey package not yet approved"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout code
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download Windows artifact
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-win-all-in-one
+          path: artifacts
+
+      - name: Extract version from tag
+        if: steps.gate.outputs.skip != 'true'
+        id: version
+        shell: bash
+        run: echo "VERSION=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
+
+      - name: Find installer and compute checksum
+        if: steps.gate.outputs.skip != 'true'
+        id: checksum
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path artifacts -Recurse -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "No .exe found in artifacts" }
+          Write-Host "Found installer: $($exe.Name)"
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          Write-Host "SHA256: $hash"
+          echo "SHA256=$hash" >> $env:GITHUB_OUTPUT
+          echo "EXE_NAME=$($exe.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Prepare Chocolatey package
+        if: steps.gate.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $checksum = "${{ steps.checksum.outputs.SHA256 }}"
+          $exeName = "${{ steps.checksum.outputs.EXE_NAME }}"
+
+          # Update version in nuspec
+          $nuspec = Get-Content choco/better-agent-terminal.nuspec -Raw
+          $nuspec = $nuspec -replace '<version>.*?</version>', "<version>$version</version>"
+          Set-Content choco/better-agent-terminal.nuspec $nuspec
+
+          # Update checksum and Tauri installer filename in install script
+          $install = Get-Content choco/tools/chocolateyinstall.ps1 -Raw
+          $install = $install -replace '__CHECKSUM64__', $checksum
+          $install = $install -replace '__EXE_NAME__', $exeName
+          Set-Content choco/tools/chocolateyinstall.ps1 $install
+
+      - name: Pack and push
+        if: steps.gate.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          choco pack choco/better-agent-terminal.nuspec --output-directory .
+          $nupkg = Get-ChildItem -Filter "*.nupkg" | Select-Object -First 1
+          if (-not $nupkg) { throw "choco pack failed - no .nupkg file created" }
+          Write-Host "Pushing $($nupkg.Name)..."
+          choco push $nupkg.FullName --source https://push.chocolatey.org/ --api-key "${{ secrets.CHOCO_API_KEY }}"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Chocolatey push failed with exit code $LASTEXITCODE; release artifacts were already published."
+            exit 0
+          }

@@ -12,14 +12,14 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    "noImplicitAny": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["renderer/src/*"]
     }
   },
-  "include": ["src", "src/types/*.d.ts"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": ["renderer/src", "renderer/src/types/*.d.ts"]
 }

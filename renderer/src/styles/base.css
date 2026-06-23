@@ -1,0 +1,127 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d2d;
+  --bg-hover: #3c3c3c;
+  --text-primary: #cccccc;
+  --text-secondary: #888888;
+  --border-color: #404040;
+  --accent-color: #0078d4;
+  --accent-hover: #1084d8;
+  --claude-accent: #d97706;
+  --danger-color: #f44336;
+  --bat-viewport-height: 100vh;
+  --bat-viewport-offset-top: 0px;
+  --bat-keyboard-bottom-offset: 0px;
+
+  /* Glass effect variables */
+  --glass-bg: rgba(31, 29, 26, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --blur-amount: 12px;
+
+  /* Rounded corners */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Custom Scrollbar - Dark Theme */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 5px;
+  border: 2px solid var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bg-hover);
+}
+
+/* Terminal specific scrollbar */
+.xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.app {
+  display: flex;
+  height: var(--bat-viewport-height, 100vh);
+  max-height: var(--bat-viewport-height, 100vh);
+}
+
+/* Sidebar */
+.sidebar {
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.sidebar-header {
+  padding: 16px;
+  font-weight: 600;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-profile-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent-color);
+  background: rgba(88, 166, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-profile-badge:hover {
+  background: rgba(88, 166, 255, 0.2);
+}

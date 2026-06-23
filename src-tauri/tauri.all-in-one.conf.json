@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../node-sidecar/dist/server.mjs": "node-sidecar/dist/server.mjs",
+      "../node-sidecar/package.json": "node-sidecar/package.json",
+      "../node-sidecar/dist-node_modules/": "node-sidecar/node_modules/",
+      "../codex-runtime/": "codex-runtime/",
+      "../node-sidecar/runtime/": "node-runtime/"
+    }
+  }
+}

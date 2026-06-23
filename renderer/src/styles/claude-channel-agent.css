@@ -1,0 +1,124 @@
+.claude-channel-panel {
+  --claude-accent: #f97316;
+  min-height: 0;
+}
+
+.claude-channel-messages {
+  padding: 16px 16px 24px 0;
+}
+
+.claude-channel-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.claude-channel-message {
+  max-width: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.claude-channel-message.user {
+  border-color: transparent;
+}
+
+.claude-channel-message.assistant {
+  border-color: transparent;
+}
+
+.claude-channel-message-role {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.claude-channel-message-text {
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.claude-channel-error-message {
+  color: #fecaca;
+  white-space: pre-wrap;
+}
+
+.claude-channel-input-area {
+  flex-shrink: 0;
+}
+
+.claude-channel-input {
+  min-height: 58px;
+}
+
+.claude-channel-status-btn {
+  color: var(--text-secondary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.claude-message-tool-use {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.claude-message-tool-use .claude-tool-name {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.claude-message-tool-use .claude-tool-input {
+  opacity: 0.75;
+  white-space: pre-wrap;
+}
+
+.claude-message-tool-result {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.claude-message-tool-result .claude-tool-result-label {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.claude-message-tool-result-error .claude-tool-result-label {
+  color: #f87171;
+}
+
+.claude-message-tool-result .claude-tool-result-preview {
+  opacity: 0.85;
+  white-space: pre-wrap;
+}
+
+.claude-message-thinking {
+  color: var(--text-secondary);
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.claude-message-thinking .claude-thinking-label {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  margin-right: 6px;
+}
+
+.claude-channel-message.tool-use,
+.claude-channel-message.tool-result,
+.claude-channel-message.thinking {
+  margin-left: 8px;
+}
+
+.tl-dot.dot-tool-use {
+  background: #fbbf24;
+}
+
+.tl-dot.dot-tool-result {
+  background: #4ade80;
+}

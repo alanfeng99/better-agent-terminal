@@ -16,7 +16,7 @@ const path = require('path')
 let pty = null
 let ptyAvailable = false
 
-// 注意: node-pty 可能是為 Electron 編譯的，在純 Node.js 環境下可能無法使用
+// 注意: node-pty native binding 可能與目前 Node.js ABI 不相容
 // 這個測試腳本預設使用 child_process，除非設定 USE_PTY=1
 if (process.env.USE_PTY === '1') {
   try {

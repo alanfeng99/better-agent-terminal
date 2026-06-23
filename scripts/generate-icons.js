@@ -1,7 +1,7 @@
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
-const toIco = require('to-ico');
+const { default: pngToIco } = require('png-to-ico');
 
 const assetsDir = path.join(__dirname, '..', 'assets');
 const svgPath = path.join(assetsDir, 'icon.svg');
@@ -28,18 +28,10 @@ async function generateIcons() {
     .toFile(path.join(assetsDir, 'icon.png'));
   console.log('Generated: icon.png');
 
-  // Generate ICO from multiple sizes
+  // Generate ICO from multiple PNG sizes (png-to-ico accepts file paths)
   const icoSizes = [16, 32, 48, 256];
-  const pngBuffers = await Promise.all(
-    icoSizes.map(size =>
-      sharp(svgPath)
-        .resize(size, size)
-        .png()
-        .toBuffer()
-    )
-  );
-
-  const icoBuffer = await toIco(pngBuffers);
+  const icoPngPaths = icoSizes.map(size => path.join(assetsDir, `icon-${size}.png`));
+  const icoBuffer = await pngToIco(icoPngPaths);
   fs.writeFileSync(path.join(assetsDir, 'icon.ico'), icoBuffer);
   console.log('Generated: icon.ico');
 

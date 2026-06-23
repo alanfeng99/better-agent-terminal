@@ -1,0 +1,631 @@
+/* Group Filter */
+.sidebar-group-filter {
+  padding: 8px 8px 0;
+  flex-shrink: 0;
+}
+
+.sidebar-group-filter select {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sidebar-group-filter select:focus {
+  border-color: var(--accent-color);
+}
+
+.workspace-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  transition: background 0.15s;
+}
+
+.workspace-list.external-drag-over {
+  background: rgba(88, 166, 255, 0.08);
+  outline: 2px dashed var(--accent-color, #58a6ff);
+  outline-offset: -4px;
+  border-radius: 4px;
+}
+
+.workspace-item {
+  position: relative;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.workspace-item-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.workspace-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.workspace-alias {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-folder {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-item.active .workspace-folder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.workspace-rename-input {
+  width: 100%;
+  padding: 2px 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent-color);
+  border-radius: 2px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+}
+
+/* Workspace Role Badge */
+.workspace-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-item:hover {
+  background: var(--bg-hover);
+}
+
+.workspace-item.active {
+  background: var(--accent-color);
+  color: white;
+}
+
+/* Workspace color bar */
+.workspace-color-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 4px 0 0 4px;
+}
+
+.workspace-item.active .workspace-color-bar {
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+  filter: brightness(1.3);
+}
+
+/* Color picker in context menu */
+.context-menu-color-picker {
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.color-palette {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  align-items: center;
+}
+
+.color-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.1s;
+}
+
+.color-dot:hover {
+  transform: scale(1.2);
+}
+
+.color-dot.active {
+  border-color: white;
+}
+
+.color-dot.clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.workspace-item .remove-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.workspace-item:hover .remove-btn {
+  opacity: 0.7;
+}
+
+.workspace-item .remove-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Drag handle */
+.drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 100%;
+  margin-right: 8px;
+  opacity: 0.4;
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.workspace-item:hover .drag-handle {
+  opacity: 0.7;
+}
+
+.workspace-item.dragging {
+  opacity: 0.5;
+}
+
+.workspace-item.drag-over-before {
+  border-top: 2px solid var(--accent-color);
+  margin-top: -2px;
+}
+
+.workspace-item.drag-over-after {
+  border-bottom: 2px solid var(--accent-color);
+  margin-bottom: -2px;
+}
+
+.sidebar-footer {
+  padding: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.add-workspace-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.add-workspace-btn:hover {
+  background: var(--bg-hover);
+}
+
+/* Main Content */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.empty-state h2 {
+  margin-bottom: 8px;
+}
+
+/* Workspace View */
+.workspace-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Workspace Tab Bar */
+.workspace-tab-bar {
+  display: flex;
+  gap: 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  height: 30px;
+}
+
+.workspace-tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.workspace-tab-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.workspace-tab-btn.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-color, #d97706);
+}
+
+.workspace-tab-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+.workspace-account-chip-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding-right: 8px;
+}
+
+.workspace-account-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(360px, 42vw);
+  height: 22px;
+  padding: 0 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: default;
+}
+
+.workspace-account-chip-codex,
+.workspace-account-chip-claude {
+  cursor: pointer;
+}
+
+.workspace-account-chip:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.workspace-account-kind {
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.workspace-account-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-account-version {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.workspace-account-plan {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+
+.workspace-account-menu {
+  position: absolute;
+  top: 28px;
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  max-width: min(520px, 90vw);
+  padding: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.workspace-account-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-account-menu-item:hover,
+.workspace-account-menu-item.active {
+  background: var(--bg-hover);
+}
+
+.workspace-account-menu-item.active .workspace-account-menu-label {
+  color: #3fb950;
+}
+
+/* While one account is switching, dim the others and stop the cursor hint. */
+.workspace-account-menu-item:disabled {
+  cursor: default;
+}
+
+.workspace-account-menu-item:disabled:not(.switching) {
+  opacity: 0.45;
+}
+
+.workspace-account-menu-item.needs-login {
+  opacity: 1;
+}
+
+.workspace-account-menu-item.needs-login .workspace-account-menu-label {
+  color: var(--text-secondary);
+}
+
+.workspace-account-menu-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workspace-account-menu-item-main .workspace-account-menu-label {
+  flex: 1 1 auto;
+}
+
+.workspace-account-menu-label,
+.workspace-account-menu-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-account-menu-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workspace-account-menu-path {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.workspace-account-menu-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid rgba(248, 81, 73, 0.55);
+  border-radius: 999px;
+  color: #f85149;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.workspace-account-menu-error {
+  margin: 2px 2px 4px;
+  padding: 7px 8px;
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  border-radius: 4px;
+  background: rgba(248, 81, 73, 0.10);
+  color: #ffb4ad;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.workspace-account-menu-action .workspace-account-menu-label {
+  color: var(--accent-color, #3b8eea);
+}
+
+.workspace-account-menu-hint {
+  padding: 7px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.workspace-account-menu-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.workspace-account-spinner {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent-color, #3b8eea);
+  animation: bat-account-spin 0.7s linear infinite;
+}
+
+.workspace-account-menu-pending-label {
+  flex: 1 1 auto;
+}
+
+.workspace-account-menu-cancel {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workspace-account-menu-cancel:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-color, #3b8eea);
+}
+
+@keyframes bat-account-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.workspace-account-menu-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.workspace-account-menu-usage-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.workspace-account-menu-usage-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.workspace-account-menu-usage-pct {
+  font-weight: 600;
+}
+
+/* Workspace Tab Content (Files / Git) */
+.workspace-tab-content {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  background: var(--bg-primary);
+  position: relative;
+  z-index: 2;
+}
+
+/* Terminals Container - holds all terminals, show/hide via CSS */
+.terminals-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.terminals-container.hidden {
+  visibility: hidden !important;
+  pointer-events: none !important;
+  position: absolute !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+
+.terminal-wrapper {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Workspace container - keep all workspaces rendered but hidden to preserve terminal state */
+.workspace-container {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  contain: layout style;
+}
+
+.workspace-container.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.workspace-container.active {
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.terminal-wrapper.hidden {
+  display: none;
+}
+
+.terminal-wrapper.active {
+  display: flex;
+}
